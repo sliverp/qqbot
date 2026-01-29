@@ -50,6 +50,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
   let quickDisconnectCount = 0; // 连续快速断开次数
   let isConnecting = false; // 防止并发连接
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null; // 重连定时器
+  let shouldRefreshToken = false; // 下次连接是否需要刷新 token
 
   abortSignal.addEventListener("abort", () => {
     isAborted = true;
@@ -111,8 +112,13 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
     try {
       cleanup();
 
-      // 获取 token（使用缓存，除非已过期）
-      // 注意：不要每次都 clearTokenCache，否则会触发频率限制
+      // 如果标记了需要刷新 token，则清除缓存
+      if (shouldRefreshToken) {
+        log?.info(`[qqbot:${account.accountId}] Refreshing token...`);
+        clearTokenCache();
+        shouldRefreshToken = false;
+      }
+      
       const accessToken = await getAccessToken(account.appId, account.clientSecret);
       const gatewayUrl = await getGatewayUrl(accessToken);
 
@@ -494,9 +500,12 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
               if (!canResume) {
                 sessionId = null;
                 lastSeq = null;
+                // 标记需要刷新 token（可能是 token 过期导致的）
+                shouldRefreshToken = true;
               }
               cleanup();
-              scheduleReconnect();
+              // Invalid Session 后等待一段时间再重连
+              scheduleReconnect(5000);
               break;
           }
         } catch (err) {
@@ -508,6 +517,14 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         log?.info(`[qqbot:${account.accountId}] WebSocket closed: ${code} ${reason.toString()}`);
         isConnecting = false; // 释放锁
         
+        // 4903 等错误码表示 session 创建失败，需要刷新 token
+        if (code === 4903 || code === 4009 || code === 4014) {
+          log?.info(`[qqbot:${account.accountId}] Session error (${code}), will refresh token`);
+          shouldRefreshToken = true;
+          sessionId = null;
+          lastSeq = null;
+        }
+        
         // 检测是否是快速断开（连接后很快就断了）
         const connectionDuration = Date.now() - lastConnectTime;
         if (connectionDuration < QUICK_DISCONNECT_THRESHOLD && lastConnectTime > 0) {
@@ -516,10 +533,12 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
           
           // 如果连续快速断开超过阈值，清除 session 并等待更长时间
           if (quickDisconnectCount >= MAX_QUICK_DISCONNECT_COUNT) {
-            log?.info(`[qqbot:${account.accountId}] Too many quick disconnects, clearing session and waiting longer`);
+            log?.info(`[qqbot:${account.accountId}] Too many quick disconnects, clearing session and refreshing token`);
             sessionId = null;
             lastSeq = null;
+            shouldRefreshToken = true;
             quickDisconnectCount = 0;
+            cleanup();
             // 快速断开太多次，等待更长时间再重连
             if (!isAborted && code !== 1000) {
               scheduleReconnect(RATE_LIMIT_DELAY);
