@@ -1,11 +1,12 @@
 import type { ResolvedQQBotAccount } from "./types.js";
-import { 
-  getAccessToken, 
-  sendC2CMessage, 
-  sendChannelMessage, 
+import {
+  getAccessToken,
+  sendC2CMessage,
+  sendChannelMessage,
   sendGroupMessage,
   sendProactiveC2CMessage,
   sendProactiveGroupMessage,
+  setProxyUrl,
 } from "./api.js";
 
 export interface OutboundContext {
@@ -57,6 +58,7 @@ export async function sendText(ctx: OutboundContext): Promise<OutboundResult> {
   }
 
   try {
+    setProxyUrl(account.httpProxy);
     const accessToken = await getAccessToken(account.appId, account.clientSecret);
     const target = parseTarget(to);
 
@@ -78,7 +80,7 @@ export async function sendText(ctx: OutboundContext): Promise<OutboundResult> {
 
 /**
  * 主动发送消息（不需要 replyToId，有配额限制：每月 4 条/用户/群）
- * 
+ *
  * @param account - 账户配置
  * @param to - 目标地址，格式：openid（单聊）或 group:xxx（群聊）
  * @param text - 消息内容
@@ -93,6 +95,7 @@ export async function sendProactiveMessage(
   }
 
   try {
+    setProxyUrl(account.httpProxy);
     const accessToken = await getAccessToken(account.appId, account.clientSecret);
     const target = parseTarget(to);
 
