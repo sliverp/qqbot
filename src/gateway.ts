@@ -135,13 +135,19 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 
         const envelopeOptions = pluginRuntime.channel.reply.resolveEnvelopeFormatOptions(cfg);
 
-        // 组装消息体，添加系统提示词
-        const builtinPrompt = "由于平台限制，你的回复中不可以包含任何URL";
-        const systemPrompts = [builtinPrompt];
-        if (account.systemPrompt) {
-          systemPrompts.push(account.systemPrompt);
+        // 组装消息体，添加系统提示词（以 "/" 开头的命令消息不添加提示词）
+        const isCommand = event.content.trim().startsWith("/");
+        let messageBody: string;
+        if (isCommand) {
+          messageBody = event.content;
+        } else {
+          const builtinPrompt = "由于平台限制，你的回复中不可以包含任何URL";
+          const systemPrompts = [builtinPrompt];
+          if (account.systemPrompt) {
+            systemPrompts.push(account.systemPrompt);
+          }
+          messageBody = `【系统提示】\n${systemPrompts.join("\n")}\n\n【用户输入】\n${event.content}`;
         }
-        const messageBody = `【系统提示】\n${systemPrompts.join("\n")}\n\n【用户输入】\n${event.content}`;
 
         const body = pluginRuntime.channel.reply.formatInboundEnvelope({
           channel: "QQBot",
