@@ -1,6 +1,7 @@
 import WebSocket from "ws";
+import { HttpsProxyAgent } from "https-proxy-agent";
 import type { ResolvedQQBotAccount, WSPayload, C2CMessageEvent, GuildMessageEvent, GroupMessageEvent } from "./types.js";
-import { getAccessToken, getGatewayUrl, sendC2CMessage, sendChannelMessage, sendGroupMessage, clearTokenCache } from "./api.js";
+import { getAccessToken, getGatewayUrl, sendC2CMessage, sendChannelMessage, sendGroupMessage, clearTokenCache, setProxyUrl } from "./api.js";
 import { getQQBotRuntime } from "./runtime.js";
 
 // QQ Bot intents
@@ -90,6 +91,12 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
     try {
       cleanup();
 
+      // 设置 HTTP 代理
+      setProxyUrl(account.httpProxy);
+      if (account.httpProxy) {
+        log?.info(`[qqbot:${account.accountId}] Using HTTP proxy: ${account.httpProxy}`);
+      }
+
       // 刷新 token（可能过期了）
       clearTokenCache();
       const accessToken = await getAccessToken(account.appId, account.clientSecret);
@@ -97,7 +104,11 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 
       log?.info(`[qqbot:${account.accountId}] Connecting to ${gatewayUrl}`);
 
-      const ws = new WebSocket(gatewayUrl);
+      const wsOptions: WebSocket.ClientOptions = {};
+      if (account.httpProxy) {
+        wsOptions.agent = new HttpsProxyAgent(account.httpProxy);
+      }
+      const ws = new WebSocket(gatewayUrl, wsOptions);
       currentWs = ws;
 
       const pluginRuntime = getQQBotRuntime();

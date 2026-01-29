@@ -2,10 +2,42 @@
  * QQ Bot API 鉴权和请求封装
  */
 
+import { fetch as undiciFetch, ProxyAgent, type Dispatcher } from "undici";
+
 const API_BASE = "https://api.sgroup.qq.com";
 const TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken";
 
 let cachedToken: { token: string; expiresAt: number } | null = null;
+
+// HTTP 代理支持
+let currentProxyUrl: string | undefined;
+let proxyDispatcher: Dispatcher | undefined;
+
+/**
+ * 设置 HTTP 代理地址
+ */
+export function setProxyUrl(url?: string): void {
+  currentProxyUrl = url;
+  proxyDispatcher = url ? new ProxyAgent(url) : undefined;
+}
+
+/**
+ * 获取当前代理 URL
+ */
+export function getProxyUrl(): string | undefined {
+  return currentProxyUrl;
+}
+
+/**
+ * 代理感知的 fetch 封装
+ */
+async function proxyFetch(url: string | URL, init?: RequestInit): Promise<Response> {
+  if (proxyDispatcher) {
+    const res = await undiciFetch(url, { ...init as any, dispatcher: proxyDispatcher });
+    return res as unknown as Response;
+  }
+  return fetch(url, init);
+}
 
 /**
  * 获取 AccessToken（带缓存）
@@ -16,7 +48,7 @@ export async function getAccessToken(appId: string, clientSecret: string): Promi
     return cachedToken.token;
   }
 
-  const response = await fetch(TOKEN_URL, {
+  const response = await proxyFetch(TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ appId, clientSecret }),
@@ -91,7 +123,7 @@ export async function apiRequest<T = unknown>(
     options.body = JSON.stringify(body);
   }
 
-  const res = await fetch(url, options);
+  const res = await proxyFetch(url, options);
   const data = (await res.json()) as T;
 
   if (!res.ok) {

@@ -63,7 +63,8 @@ clawdbot channels add --channel qqbot --token "102146862:xxxxxxxx"
       "enabled": true,
       "appId": "你的AppID",
       "clientSecret": "你的AppSecret",
-      "systemPrompt": "你是一个友好的助手"
+      "systemPrompt": "你是一个友好的助手",
+      "httpProxy": "http://127.0.0.1:7890"
     }
   }
 }

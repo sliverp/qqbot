@@ -19,6 +19,8 @@ export interface ResolvedQQBotAccount {
   secretSource: "config" | "file" | "env" | "none";
   /** 系统提示词 */
   systemPrompt?: string;
+  /** HTTP 代理地址 */
+  httpProxy?: string;
   config: QQBotAccountConfig;
 }
 
@@ -35,6 +37,8 @@ export interface QQBotAccountConfig {
   allowFrom?: string[];
   /** 系统提示词，会添加在用户消息前面 */
   systemPrompt?: string;
+  /** HTTP 代理地址，如 http://127.0.0.1:7890 */
+  httpProxy?: string;
 }
 
 /**

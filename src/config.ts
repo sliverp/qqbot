@@ -63,6 +63,7 @@ export function resolveQQBotAccount(
       dmPolicy: qqbot?.dmPolicy,
       allowFrom: qqbot?.allowFrom,
       systemPrompt: qqbot?.systemPrompt,
+      httpProxy: qqbot?.httpProxy,
     };
     appId = qqbot?.appId ?? "";
   } else {
@@ -89,6 +90,14 @@ export function resolveQQBotAccount(
     appId = process.env.QQBOT_APP_ID;
   }
 
+  // 解析 HTTP 代理：配置 > 环境变量
+  const httpProxy = accountConfig.httpProxy
+    || process.env.HTTPS_PROXY
+    || process.env.HTTP_PROXY
+    || process.env.https_proxy
+    || process.env.http_proxy
+    || undefined;
+
   return {
     accountId: resolvedAccountId,
     name: accountConfig.name,
@@ -97,6 +106,7 @@ export function resolveQQBotAccount(
     clientSecret,
     secretSource,
     systemPrompt: accountConfig.systemPrompt,
+    httpProxy,
     config: accountConfig,
   };
 }
