@@ -48,9 +48,15 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
   let lastSeq: number | null = null;
   let lastConnectTime: number = 0; // 上次连接成功的时间
   let quickDisconnectCount = 0; // 连续快速断开次数
+  let isConnecting = false; // 防止并发连接
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null; // 重连定时器
 
   abortSignal.addEventListener("abort", () => {
     isAborted = true;
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
     cleanup();
   });
 
@@ -76,11 +82,18 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
       return;
     }
 
+    // 取消已有的重连定时器
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+
     const delay = customDelay ?? getReconnectDelay();
     reconnectAttempts++;
     log?.info(`[qqbot:${account.accountId}] Reconnecting in ${delay}ms (attempt ${reconnectAttempts})`);
 
-    setTimeout(() => {
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
       if (!isAborted) {
         connect();
       }
@@ -88,6 +101,13 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
   };
 
   const connect = async () => {
+    // 防止并发连接
+    if (isConnecting) {
+      log?.debug?.(`[qqbot:${account.accountId}] Already connecting, skip`);
+      return;
+    }
+    isConnecting = true;
+
     try {
       cleanup();
 
@@ -349,6 +369,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 
       ws.on("open", () => {
         log?.info(`[qqbot:${account.accountId}] WebSocket connected`);
+        isConnecting = false; // 连接完成，释放锁
         reconnectAttempts = 0; // 连接成功，重置重试计数
         lastConnectTime = Date.now(); // 记录连接时间
       });
@@ -485,6 +506,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 
       ws.on("close", (code, reason) => {
         log?.info(`[qqbot:${account.accountId}] WebSocket closed: ${code} ${reason.toString()}`);
+        isConnecting = false; // 释放锁
         
         // 检测是否是快速断开（连接后很快就断了）
         const connectionDuration = Date.now() - lastConnectTime;
@@ -492,12 +514,17 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
           quickDisconnectCount++;
           log?.info(`[qqbot:${account.accountId}] Quick disconnect detected (${connectionDuration}ms), count: ${quickDisconnectCount}`);
           
-          // 如果连续快速断开超过阈值，清除 session 重新 identify
+          // 如果连续快速断开超过阈值，清除 session 并等待更长时间
           if (quickDisconnectCount >= MAX_QUICK_DISCONNECT_COUNT) {
-            log?.info(`[qqbot:${account.accountId}] Too many quick disconnects, clearing session to re-identify`);
+            log?.info(`[qqbot:${account.accountId}] Too many quick disconnects, clearing session and waiting longer`);
             sessionId = null;
             lastSeq = null;
             quickDisconnectCount = 0;
+            // 快速断开太多次，等待更长时间再重连
+            if (!isAborted && code !== 1000) {
+              scheduleReconnect(RATE_LIMIT_DELAY);
+            }
+            return;
           }
         } else {
           // 连接持续时间够长，重置计数
@@ -518,6 +545,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
       });
 
     } catch (err) {
+      isConnecting = false; // 释放锁
       const errMsg = String(err);
       log?.error(`[qqbot:${account.accountId}] Connection failed: ${err}`);
       
