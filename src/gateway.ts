@@ -1,7 +1,7 @@
 import WebSocket from "ws";
 import path from "node:path";
 import type { ResolvedQQBotAccount, WSPayload, C2CMessageEvent, GuildMessageEvent, GroupMessageEvent } from "./types.js";
-import { getAccessToken, getGatewayUrl, sendC2CMessage, sendChannelMessage, sendGroupMessage, clearTokenCache, sendC2CImageMessage, sendGroupImageMessage } from "./api.js";
+import { getAccessToken, getGatewayUrl, sendC2CMessage, sendChannelMessage, sendGroupMessage, clearTokenCache, sendC2CImageMessage, sendGroupImageMessage, sendC2CInputNotify } from "./api.js";
 import { getQQBotRuntime } from "./runtime.js";
 import { startImageServer, saveImage, saveImageFromPath, isImageServerRunning, downloadFile, type ImageServerConfig } from "./image-server.js";
 
@@ -216,6 +216,17 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         log?.info(`[qqbot:${account.accountId}] Processing message from ${event.senderId}: ${event.content}`);
         if (event.attachments?.length) {
           log?.info(`[qqbot:${account.accountId}] Attachments: ${event.attachments.length}`);
+        }
+
+        // 对于 C2C 消息，先发送输入状态提示用户机器人正在输入
+        if (event.type === "c2c") {
+          try {
+            const token = await getAccessToken(account.appId, account.clientSecret);
+            await sendC2CInputNotify(token, event.senderId, event.messageId, 60);
+            log?.info(`[qqbot:${account.accountId}] Sent input notify to ${event.senderId}`);
+          } catch (err) {
+            log?.error(`[qqbot:${account.accountId}] Failed to send input notify: ${err}`);
+          }
         }
 
         pluginRuntime.channel.activity.record({

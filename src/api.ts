@@ -154,6 +154,29 @@ export async function sendC2CMessage(
 }
 
 /**
+ * 发送 C2C 输入状态提示（告知用户机器人正在输入）
+ */
+export async function sendC2CInputNotify(
+  accessToken: string,
+  openid: string,
+  msgId?: string,
+  inputSecond: number = 60
+): Promise<void> {
+  const msgSeq = msgId ? getNextMsgSeq(msgId) : 1;
+  const body = {
+    msg_type: 6,
+    input_notify: {
+      input_type: 1,
+      input_second: inputSecond,
+    },
+    msg_seq: msgSeq,
+    ...(msgId ? { msg_id: msgId } : {}),
+  };
+  
+  await apiRequest(accessToken, "POST", `/v2/users/${openid}/messages`, body);
+}
+
+/**
  * 发送频道消息
  */
 export async function sendChannelMessage(
