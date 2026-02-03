@@ -406,6 +406,17 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
           log?.info(`[qqbot:${account.accountId}] Attachments: ${event.attachments.length}`);
         }
 
+        // 对于 C2C 消息，先发送输入状态提示用户机器人正在输入
+        if (event.type === "c2c") {
+          try {
+            const token = await getAccessToken(account.appId, account.clientSecret);
+            await sendC2CInputNotify(token, event.senderId, event.messageId, 60);
+            log?.info(`[qqbot:${account.accountId}] Sent input notify to ${event.senderId}`);
+          } catch (err) {
+            log?.error(`[qqbot:${account.accountId}] Failed to send input notify: ${err}`);
+          }
+        }
+
         pluginRuntime.channel.activity.record({
           channel: "qqbot",
           accountId: account.accountId,
@@ -610,6 +621,9 @@ openclaw cron add \\
           QQGuildId: event.guildId,
           QQGroupOpenid: event.groupOpenid,
         });
+
+        // 打印 ctxPayload 详细信息（便于调试）
+        log?.info(`[qqbot:${account.accountId}] ctxPayload: From=${fromAddress}, To=${toAddress}, SessionKey=${route.sessionKey}, AccountId=${route.accountId}, ChatType=${isGroup ? "group" : "direct"}, SenderId=${event.senderId}, MessageSid=${event.messageId}, BodyLen=${body?.length ?? 0}`);
 
         // 发送消息的辅助函数，带 token 过期重试
         const sendWithTokenRetry = async (sendFn: (token: string) => Promise<unknown>) => {
@@ -1269,7 +1283,7 @@ openclaw cron add \\
             }
             if (!hasResponse) {
               log?.error(`[qqbot:${account.accountId}] No response within timeout`);
-              await sendErrorMessage("[ClawdBot] QQ响应正常，但未收到clawdbot响应，请检查大模型是否正确配置");
+              await sendErrorMessage("QQ Channel 收到了你的请求，已经转交给了Openclaw，正在处理中...");
             }
           }
         } catch (err) {

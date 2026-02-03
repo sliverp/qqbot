@@ -166,10 +166,10 @@ export interface OutboundResult {
 /**
  * 解析目标地址
  * 格式：
- *   - openid (32位十六进制) -> C2C 单聊
+ *   - c2c:xxx -> C2C 单聊
  *   - group:xxx -> 群聊
  *   - channel:xxx -> 频道
- *   - 纯数字 -> 频道
+ *   - 无前缀 -> 默认当作 C2C 单聊
  */
 function parseTarget(to: string): { type: "c2c" | "group" | "channel"; id: string } {
   // 去掉 qqbot: 前缀
@@ -244,6 +244,8 @@ export async function sendText(ctx: OutboundContext): Promise<OutboundResult> {
       console.log(`[qqbot] sendText: 发送主动消息到 ${to}, 内容长度: ${text.length}`);
     }
   }
+
+  console.log("[qqbot] sendText ctx:", JSON.stringify({ to, text: text?.slice(0, 50), replyToId, accountId: account.accountId }, null, 2));
 
   if (!account.appId || !account.clientSecret) {
     return { channel: "qqbot", error: "QQBot not configured (missing appId or clientSecret)" };
