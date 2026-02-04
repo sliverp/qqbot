@@ -79,8 +79,6 @@ else
 fi
 
 openclaw channels add --channel qqbot --token "$QQBOT_TOKEN"
-# 启用 markdown 支持
-openclaw config set channels.qqbot.markdownSupport true
 
 # 4. 启动 openclaw
 echo ""
