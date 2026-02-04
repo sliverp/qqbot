@@ -139,18 +139,6 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
       });
     },
   },
-  // 新增：消息目标解析
-  messaging: {
-    normalizeTarget: (target) => {
-      // 支持格式: qqbot:openid, qqbot:group:xxx, openid, group:xxx
-      const normalized = target.replace(/^qqbot:/i, "");
-      return { ok: true, to: normalized };
-    },
-    targetResolver: {
-      looksLikeId: (id) => /^[A-F0-9]{32}$/i.test(id) || id.startsWith("group:") || id.startsWith("channel:"),
-      hint: "<openid> or group:<groupOpenid>",
-    },
-  },
   outbound: {
     deliveryMode: "direct",
     chunker: chunkText,

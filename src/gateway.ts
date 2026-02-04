@@ -429,70 +429,16 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 
         const envelopeOptions = pluginRuntime.channel.reply.resolveEnvelopeFormatOptions(cfg);
 
-        // 组装消息体，添加系统提示词
-        let builtinPrompt = "";
+        // 组装消息体
+        // 静态系统提示已移至 skills/qqbot-cron/SKILL.md 和 skills/qqbot-media/SKILL.md
+        // BodyForAgent 只保留必要的动态上下文信息
         
         // ============ 用户标识信息（用于定时提醒和主动消息） ============
         const isGroupChat = event.type === "group";
         const targetAddress = isGroupChat ? `group:${event.groupOpenid}` : event.senderId;
         
-        builtinPrompt += `
-【当前用户信息】
-- 用户 openid: ${event.senderId}
-- 用户昵称: ${event.senderName || "未知"}
-- 消息类型: ${isGroupChat ? "群聊" : "私聊"}
-- 当前消息 message_id: ${event.messageId}${isGroupChat ? `
-- 群组 group_openid: ${event.groupOpenid}` : ""}
-
-【定时提醒能力】
-你可以帮助用户设置定时提醒。使用 openclaw cron 命令：
-
-示例：5分钟后提醒用户喝水
-\`\`\`bash
-openclaw cron add \\
-  --name "提醒喝水-${event.senderName || "用户"}" \\
-  --at "5m" \\
-  --message "💧 该喝水啦！" \\
-  --deliver \\
-  --channel qqbot \\
-  --to "${targetAddress}" \\
-  --delete-after-run
-\`\`\`
-
-关键参数说明：
-- \`--to\`: 目标地址（当前用户: ${targetAddress}）
-- \`--at\`: 一次性定时任务的触发时间
-  - 相对时间格式：数字+单位，如 \`5m\`（5分钟）、\`1h\`（1小时）、\`2d\`（2天）【注意：不要加 + 号】
-  - 绝对时间格式：ISO 8601 带时区，如 \`2026-02-01T14:00:00+08:00\`
-- \`--cron\`: 周期性任务（如 \`0 8 * * *\` 每天早上8点）
-- \`--tz "Asia/Shanghai"\`: 周期任务务必设置时区
-- \`--delete-after-run\`: 一次性任务必须添加此参数
-- \`--message\`: 消息内容（必填，不能为空！这是定时提醒触发时直接发送给用户的内容）
-
-⚠️ 重要注意事项：
-1. --at 参数格式：相对时间用 \`5m\`、\`1h\` 等（不要加 + 号！）；绝对时间用完整 ISO 格式
-2. --message 参数必须有实际内容，不能为空字符串
-3. cron add 命令不支持 --reply-to 参数，定时提醒只能作为主动消息发送`;
-
-        // 🎯 发送图片功能：使用 <qqimg> 标签发送本地或网络图片
-        // 系统会自动将本地文件转换为 Base64 发送，不需要图床服务器
-        builtinPrompt += `
-
-【发送图片】
-你可以直接发送图片给用户！使用 <qqimg> 标签包裹图片路径：
-
-<qqimg>图片路径</qqimg>
-
-示例：
-- <qqimg>/Users/xxx/images/photo.jpg</qqimg>  （本地文件）
-- <qqimg>https://example.com/image.png</qqimg>  （网络图片）
-
-⚠️ 注意：
-- 必须使用 <qqimg>路径</qqimg> 格式
-- 本地路径必须是绝对路径，支持 png、jpg、jpeg、gif、webp 格式
-- 图片文件/URL 必须有效，否则发送失败`;
-        
-        const systemPrompts = [builtinPrompt];
+        // 收集额外的系统提示（如果配置了账户级别的 systemPrompt）
+        const systemPrompts: string[] = [];
         if (account.systemPrompt) {
           systemPrompts.push(account.systemPrompt);
         }
@@ -566,13 +512,17 @@ openclaw cron add \\
         }
         
         const userContent = event.content + attachmentInfo;
-        const messageBody = `【系统提示】\n${systemPrompts.join("\n")}\n\n【用户输入】\n${userContent}`;
-
-        const body = pluginRuntime.channel.reply.formatInboundEnvelope({
+        
+        // ============ 分离展示内容和 AI 上下文 ============
+        // Body: 展示在 Web 页面的内容（只包含用户原始消息）
+        // BodyForAgent: 传给 AI 的完整上下文（包含系统提示 + 用户消息）
+        
+        // 用户可见的消息体（Web 页面展示）
+        const displayBody = pluginRuntime.channel.reply.formatInboundEnvelope({
           channel: "QQBot",
           from: event.senderName ?? event.senderId,
           timestamp: new Date(event.timestamp).getTime(),
-          body: messageBody,
+          body: userContent,
           chatType: isGroup ? "group" : "direct",
           sender: {
             id: event.senderId,
@@ -582,6 +532,22 @@ openclaw cron add \\
           // 传递图片 URL 列表
           ...(imageUrls.length > 0 ? { imageUrls } : {}),
         });
+        
+        // AI 可见的完整上下文（简洁的动态信息 + 用户消息）
+        // 静态能力说明已通过 skills 加载，这里只提供必要的运行时上下文
+        const contextInfo = `你正在通过 QQ 与用户对话。
+
+【本次会话上下文】
+- 用户: ${event.senderName || "未知"} (${event.senderId})
+- 场景: ${isGroupChat ? "群聊" : "私聊"}${isGroupChat ? ` (群组: ${event.groupOpenid})` : ""}
+- 消息ID: ${event.messageId}
+- 投递目标: ${targetAddress}
+
+你已加载 qqbot 相关技能，可直接使用定时提醒（qqbot-cron）和图片发送（qqbot-media）等功能。`;
+
+        const agentBody = systemPrompts.length > 0 
+          ? `${contextInfo}\n\n${systemPrompts.join("\n")}\n\n${userContent}`
+          : `${contextInfo}\n\n${userContent}`;
 
         const fromAddress = event.type === "guild" ? `qqbot:channel:${event.channelId}`
                          : event.type === "group" ? `qqbot:group:${event.groupOpenid}`
@@ -589,7 +555,8 @@ openclaw cron add \\
         const toAddress = fromAddress;
 
         const ctxPayload = pluginRuntime.channel.reply.finalizeInboundContext({
-          Body: body,
+          Body: displayBody,
+          BodyForAgent: agentBody,  // AI 专用上下文，包含系统提示但不展示给用户
           RawBody: event.content,
           CommandBody: event.content,
           From: fromAddress,
@@ -1186,13 +1153,9 @@ openclaw cron add \\
                     textWithoutImages = textWithoutImages.replace(match[0], "").trim();
                   }
                   
-                  // 处理文本中的 URL 点号（防止被 QQ 解析为链接）
-                  if (textWithoutImages) {
-                    const originalText = textWithoutImages;
+                  // 处理文本中的 URL 点号（防止被 QQ 解析为链接），仅群聊时过滤，C2C 不过滤
+                  if (textWithoutImages && event.type !== "c2c") {
                     textWithoutImages = textWithoutImages.replace(/([a-zA-Z0-9])\.([a-zA-Z0-9])/g, "$1_$2");
-                    if (textWithoutImages !== originalText && textWithoutImages.trim()) {
-                      textWithoutImages += "\n\n（由于平台限制，回复中的部分符号已被替换）";
-                    }
                   }
                   
                   try {
@@ -1250,10 +1213,10 @@ openclaw cron add \\
                 // 发送错误提示给用户，显示完整错误信息
                 const errMsg = String(err);
                 if (errMsg.includes("401") || errMsg.includes("key") || errMsg.includes("auth")) {
-                  await sendErrorMessage("[ClawdBot] 大模型 API Key 可能无效，请检查配置");
+                  await sendErrorMessage("大模型 API Key 可能无效，请检查配置");
                 } else {
                   // 显示完整错误信息，截取前 500 字符
-                  await sendErrorMessage(`[ClawdBot] 出错: ${errMsg.slice(0, 500)}`);
+                  await sendErrorMessage(`出错: ${errMsg.slice(0, 500)}`);
                 }
               },
             },
@@ -1269,12 +1232,11 @@ openclaw cron add \\
             }
             if (!hasResponse) {
               log?.error(`[qqbot:${account.accountId}] No response within timeout`);
-              await sendErrorMessage("[ClawdBot] QQ响应正常，但未收到clawdbot响应，请检查大模型是否正确配置");
             }
           }
         } catch (err) {
           log?.error(`[qqbot:${account.accountId}] Message processing failed: ${err}`);
-          await sendErrorMessage(`[ClawdBot] 处理失败: ${String(err).slice(0, 500)}`);
+          await sendErrorMessage(`处理失败: ${String(err).slice(0, 500)}`);
         }
       };
 

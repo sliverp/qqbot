@@ -4,6 +4,16 @@
 
 set -e
 
+# 检查是否使用 sudo 运行（不建议）
+if [ "$EUID" -eq 0 ]; then
+    echo "⚠️  警告: 请不要使用 sudo 运行此脚本！"
+    echo "   使用 sudo 会导致配置文件权限问题。"
+    echo ""
+    echo "请直接运行:"
+    echo "   ./upgrade-and-run.sh"
+    exit 1
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
