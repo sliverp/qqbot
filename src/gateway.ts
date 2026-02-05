@@ -575,10 +575,15 @@ openclaw cron add \\
         }
         
         const userContent = event.content + attachmentInfo;
-        const messageBody = `【系统提示】\n${systemPrompts.join("\n")}\n\n【用户输入】\n${userContent}`;
+        let messageBody = `【系统提示】\n${systemPrompts.join("\n")}\n\n【用户输入】\n${userContent}`;
+
+        if(userContent.startsWith("/")){ // 保留Openclaw原始命令
+          messageBody = userContent
+        }
+        log?.info(`[qqbot:${account.accountId}] messageBody: ${messageBody}`);
 
         const body = pluginRuntime.channel.reply.formatInboundEnvelope({
-          channel: "QQBot",
+          channel: "qqbot",
           from: event.senderName ?? event.senderId,
           timestamp: new Date(event.timestamp).getTime(),
           body: messageBody,
