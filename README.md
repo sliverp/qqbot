@@ -38,8 +38,7 @@ QQ 开放平台 Bot API 的 Openclaw 渠道插件，支持 C2C 私聊、群聊 @
 
 ## ⭐ Star 趋势
 <div align="center">
-
-[![Star History Chart](https://api.star-history.com/svg?repos=sliverp/qqbot&type=date&legend=top-left)](https://www.star-history.com/#sliverp/qqbot&type=date&legend=top-left)
+<img width="666" height="464" alt="star-history-202626" src="https://github.com/user-attachments/assets/e4f0df0c-d99f-4db0-853f-1c51b2377ff8" />
 </div>
 
 ---
