@@ -76,7 +76,7 @@ export function resolveQQBotAccount(
       allowFrom: qqbot?.allowFrom,
       systemPrompt: qqbot?.systemPrompt,
       imageServerBaseUrl: qqbot?.imageServerBaseUrl,
-      markdownSupport: qqbot?.markdownSupport,
+      markdownSupport: qqbot?.markdownSupport ?? true,
     };
     appId = qqbot?.appId ?? "";
   } else {
