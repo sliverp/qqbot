@@ -401,7 +401,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         groupOpenid?: string;
         attachments?: Array<{ content_type: string; url: string; filename?: string }>;
       }) => {
-        log?.info(`[qqbot:${account.accountId}] Received Event: ${event}`);
+        log?.info(`[qqbot:${account.accountId}] Received Event: ${{event}}`);
         if (event.attachments?.length) {
           log?.info(`[qqbot:${account.accountId}] Attachments: ${event.attachments.length}`);
         }
@@ -1079,6 +1079,68 @@ openclaw cron add \\
                 // 这些标记可能被 AI 错误地学习并输出
                 textWithoutImages = filterInternalMarkers(textWithoutImages);
                 
+                // ============ 提取并处理 <qqimg> 标签中的本地图片 ============
+                // 在所有发送逻辑前，先检测 <qqimg> 标签，提取本地图片并通过富媒体 API 发送
+                // 然后从文本中移除这些标签
+                const qqimgRegexInMarkdown = /<qqimg>([^<>]+)<\/(?:qqimg|img)>/gi;
+                const qqimgMatchesInText = [...textWithoutImages.matchAll(qqimgRegexInMarkdown)];
+                const localImagesFromQqimg: string[] = []; // 存储需要通过富媒体 API 发送的本地图片
+                
+                if (qqimgMatchesInText.length > 0) {
+                  log?.info(`[qqbot:${account.accountId}] Found ${qqimgMatchesInText.length} <qqimg> tag(s) in text, processing...`);
+                  
+                  for (const match of qqimgMatchesInText) {
+                    const imagePath = match[1]?.trim();
+                    if (!imagePath) continue;
+                    
+                    // 从文本中移除 <qqimg> 标签
+                    textWithoutImages = textWithoutImages.replace(match[0], "");
+                    
+                    // 判断是本地文件还是 URL
+                    const isLocalPath = imagePath.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(imagePath);
+                    const isHttpUrl = imagePath.startsWith("http://") || imagePath.startsWith("https://");
+                    
+                    if (isLocalPath) {
+                      // 本地文件：转换为 Base64 Data URL
+                      if (!fs.existsSync(imagePath)) {
+                        log?.error(`[qqbot:${account.accountId}] <qqimg> Image file not found: ${imagePath}`);
+                        continue;
+                      }
+                      
+                      try {
+                        const fileBuffer = fs.readFileSync(imagePath);
+                        const base64Data = fileBuffer.toString("base64");
+                        const ext = path.extname(imagePath).toLowerCase();
+                        const mimeTypes: Record<string, string> = {
+                          ".jpg": "image/jpeg",
+                          ".jpeg": "image/jpeg",
+                          ".png": "image/png",
+                          ".gif": "image/gif",
+                          ".webp": "image/webp",
+                          ".bmp": "image/bmp",
+                        };
+                        const mimeType = mimeTypes[ext];
+                        if (!mimeType) {
+                          log?.error(`[qqbot:${account.accountId}] <qqimg> Unsupported image format: ${ext}`);
+                          continue;
+                        }
+                        const imageUrl = `data:${mimeType};base64,${base64Data}`;
+                        localImagesFromQqimg.push(imageUrl);
+                        log?.info(`[qqbot:${account.accountId}] <qqimg> Converted local image to Base64 (size: ${fileBuffer.length} bytes): ${imagePath}`);
+                      } catch (readErr) {
+                        log?.error(`[qqbot:${account.accountId}] <qqimg> Failed to read image file: ${readErr}`);
+                      }
+                    } else if (isHttpUrl) {
+                      // HTTP URL：添加到图片列表
+                      imageUrls.push(imagePath);
+                      log?.info(`[qqbot:${account.accountId}] <qqimg> Added HTTP URL to imageUrls: ${imagePath}`);
+                    }
+                  }
+                  
+                  // 清理多余的空行
+                  textWithoutImages = textWithoutImages.replace(/\n{3,}/g, "\n\n").trim();
+                }
+                
                 // 根据模式处理图片
                 if (useMarkdown) {
                   // ============ Markdown 模式 ============
@@ -1088,7 +1150,7 @@ openclaw cron add \\
                   
                   // 分离图片：公网 URL vs Base64/本地文件
                   const httpImageUrls: string[] = [];      // 公网 URL，用于 Markdown 嵌入
-                  const base64ImageUrls: string[] = [];    // Base64，用于富媒体 API
+                  const base64ImageUrls: string[] = [...localImagesFromQqimg];    // Base64，用于富媒体 API（包含从 <qqimg> 提取的本地图片）
                   
                   for (const url of imageUrls) {
                     if (url.startsWith("data:image/")) {
