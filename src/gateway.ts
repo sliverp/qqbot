@@ -499,7 +499,8 @@ openclaw cron add \\
 ⚠️ 注意：
 - 必须使用 <qqimg>路径</qqimg> 格式
 - 本地路径必须是绝对路径，支持 png、jpg、jpeg、gif、webp 格式
-- 图片文件/URL 必须有效，否则发送失败`;
+- 图片文件/URL 必须有效，否则发送失败
+- Markdown格式下，也必须使用该方式发送图片`;
         
         const systemPrompts = [builtinPrompt];
         if (account.systemPrompt) {
