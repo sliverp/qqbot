@@ -19,13 +19,19 @@
     "moltbot.plugin.json"
   ],
   "clawdbot": {
-    "extensions": ["./index.ts"]
+    "extensions": [
+      "./index.ts"
+    ]
   },
   "moltbot": {
-    "extensions": ["./index.ts"]
+    "extensions": [
+      "./index.ts"
+    ]
   },
   "openclaw": {
-    "extensions": ["./index.ts"]
+    "extensions": [
+      "./index.ts"
+    ]
   },
   "scripts": {
     "build": "tsc || true",
@@ -33,9 +39,11 @@
     "prepack": "npm install --omit=dev"
   },
   "dependencies": {
+    "silk-wasm": "^3.7.1",
     "ws": "^8.18.0"
   },
   "bundledDependencies": [
+    "silk-wasm",
     "ws"
   ],
   "devDependencies": {
@@ -48,5 +56,9 @@
     "moltbot": "*",
     "openclaw": "*"
   },
-  "homepage": "https://github.com/sliverp/qqbot"
+  "homepage": "https://github.com/sliverp/qqbot",
+  "bundleDependencies": [
+    "silk-wasm",
+    "ws"
+  ]
 }

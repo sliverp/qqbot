@@ -9,6 +9,7 @@ import { getQQBotRuntime } from "./runtime.js";
 import { startImageServer, isImageServerRunning, downloadFile, type ImageServerConfig } from "./image-server.js";
 import { getImageSize, formatQQBotMarkdownImage, hasQQBotImageSize, DEFAULT_IMAGE_SIZE } from "./utils/image-size.js";
 import { parseQQBotPayload, encodePayloadForCron, isCronReminderPayload, isMediaPayload, type CronReminderPayload, type MediaPayload } from "./utils/payload.js";
+import { convertSilkToWav, isVoiceAttachment, formatDuration } from "./utils/audio-convert.js";
 
 // QQ Bot intents - 按权限级别分组
 const INTENTS = {
@@ -539,9 +540,9 @@ openclaw cron add \\
         const downloadDir = path.join(process.env.HOME || "/home/ubuntu", "clawd", "downloads");
         
         if (event.attachments?.length) {
-          // ============ 接收图片的自然语言描述生成 ============
-          // 根据需求 4：将图片信息转换为自然语言描述，便于 AI 理解
+          // ============ 接收附件描述生成（图片 / 语音 / 其他） ============
           const imageDescriptions: string[] = [];
+          const voiceDescriptions: string[] = [];
           const otherAttachments: string[] = [];
           
           for (const att of event.attachments) {
@@ -563,6 +564,46 @@ openclaw cron add \\
 - 发送时间：${timestamp}
 
 请根据图片内容进行回复。`);
+              } else if (isVoiceAttachment(att)) {
+                // ============ 语音消息处理：SILK → WAV ============
+                log?.info(`[qqbot:${account.accountId}] Voice attachment detected: ${att.filename}, converting SILK to WAV...`);
+                try {
+                  const result = await convertSilkToWav(localPath, downloadDir);
+                  if (result) {
+                    const durationStr = formatDuration(result.duration);
+                    log?.info(`[qqbot:${account.accountId}] Voice converted: ${result.wavPath} (duration: ${durationStr})`);
+                    
+                    const timestamp = new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
+                    voiceDescriptions.push(`
+用户发送了一条语音消息：
+- 语音文件：${result.wavPath}
+- 语音时长：${durationStr}
+- 原始文件：${localPath}
+- 消息ID：${event.messageId}
+- 发送时间：${timestamp}
+
+请使用语音文件进行语音转文字处理后回复用户。`);
+                  } else {
+                    // SILK 解码失败，保留原始文件
+                    log?.info(`[qqbot:${account.accountId}] Voice file is not SILK format, keeping original: ${localPath}`);
+                    voiceDescriptions.push(`
+用户发送了一条语音消息（非SILK格式，无法转换）：
+- 语音文件：${localPath}
+- 原始格式：${att.filename || "unknown"}
+- 消息ID：${event.messageId}
+
+请告知用户该语音格式暂不支持解析。`);
+                  }
+                } catch (convertErr) {
+                  log?.error(`[qqbot:${account.accountId}] Voice conversion failed: ${convertErr}`);
+                  voiceDescriptions.push(`
+用户发送了一条语音消息（转换失败）：
+- 原始文件：${localPath}
+- 错误信息：${convertErr}
+- 消息ID：${event.messageId}
+
+请告知用户语音处理出现问题。`);
+                }
               } else {
                 otherAttachments.push(`[附件: ${localPath}]`);
               }
@@ -591,9 +632,12 @@ openclaw cron add \\
             }
           }
           
-          // 组合附件信息：先图片描述，后其他附件
+          // 组合附件信息：先图片描述，后语音描述，后其他附件
           if (imageDescriptions.length > 0) {
             attachmentInfo += "\n" + imageDescriptions.join("\n");
+          }
+          if (voiceDescriptions.length > 0) {
+            attachmentInfo += "\n" + voiceDescriptions.join("\n");
           }
           if (otherAttachments.length > 0) {
             attachmentInfo += "\n" + otherAttachments.join("\n");
