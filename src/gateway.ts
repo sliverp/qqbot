@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import type { ResolvedQQBotAccount, WSPayload, C2CMessageEvent, GuildMessageEvent, GroupMessageEvent } from "./types.js";
 import { getAccessToken, getGatewayUrl, sendC2CMessage, sendChannelMessage, sendGroupMessage, clearTokenCache, sendC2CImageMessage, sendGroupImageMessage, initApiConfig, startBackgroundTokenRefresh, stopBackgroundTokenRefresh, sendC2CInputNotify } from "./api.js";
 import { loadSession, saveSession, clearSession, type SessionState } from "./session-store.js";
+import { generateBuiltinPrompt } from "./system-prompt.js";
 import { recordKnownUser, flushKnownUsers } from "./known-users.js";
 import { getQQBotRuntime } from "./runtime.js";
 import { startImageServer, isImageServerRunning, downloadFile, type ImageServerConfig } from "./image-server.js";
@@ -463,70 +464,14 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         const envelopeOptions = pluginRuntime.channel.reply.resolveEnvelopeFormatOptions(cfg);
 
         // 组装消息体，添加系统提示词
-        let builtinPrompt = "";
-        
-        // ============ 用户标识信息（用于定时提醒和主动消息） ============
-        const isGroupChat = event.type === "group";
-        const targetAddress = isGroupChat ? `group:${event.groupOpenid}` : event.senderId;
-        
-        builtinPrompt += `
-【当前用户信息】
-- 用户 openid: ${event.senderId}
-- 用户昵称: ${event.senderName || "未知"}
-- 消息类型: ${isGroupChat ? "群聊" : "私聊"}
-- 当前消息 message_id: ${event.messageId}${isGroupChat ? `
-- 群组 group_openid: ${event.groupOpenid}` : ""}
-
-【定时提醒能力】
-你可以帮助用户设置定时提醒。使用exec工具来来运行bash命令 openclaw cron 命令而不是直接使用 "cron" 工具：
-
-示例：5分钟后提醒用户喝水
-\`\`\`bash
-openclaw cron add \\
-  --name "提醒喝水-${event.senderName || "用户"}" \\
-  --at "5m" \\
-  --session isolated \\
-  --message "💧 该喝水啦！" \\
-  --deliver \\
-  --channel qqbot \\
-  --to "${targetAddress}" \\
-  --delete-after-run
-\`\`\`
-
-关键参数说明：
-- \`--to\`: 目标地址（当前用户: ${targetAddress}）
-- \`--at\`: 一次性定时任务的触发时间
-  - 相对时间格式：数字+单位，如 \`5m\`（5分钟）、\`1h\`（1小时）、\`2d\`（2天）【注意：不要加 + 号】
-  - 绝对时间格式：ISO 8601 带时区，如 \`2026-02-01T14:00:00+08:00\`
-- \`--cron\`: 周期性任务（如 \`0 8 * * *\` 每天早上8点）
-- \`--tz "Asia/Shanghai"\`: 周期任务务必设置时区
-- \`--delete-after-run\`: 一次性任务必须添加此参数
-- \`--message\`: 消息内容（必填，不能为空！这是定时提醒触发时直接发送给用户的内容）
-- \`--session isolated\` 独立会话任务
-
-⚠️ 重要注意事项：
-1. --at 参数格式：相对时间用 \`5m\`、\`1h\` 等（不要加 + 号！）；绝对时间用完整 ISO 格式
-2. --message 参数必须有实际内容，不能为空字符串
-3. cron add 命令不支持 --reply-to 参数，定时提醒只能作为主动消息发送`;
-
-        // 🎯 发送图片功能：使用 <qqimg> 标签发送本地或网络图片
-        // 系统会自动将本地文件转换为 Base64 发送，不需要图床服务器
-        builtinPrompt += `
-
-【发送图片】
-你可以直接发送图片给用户！使用 <qqimg> 标签包裹图片路径：
-
-<qqimg>图片路径</qqimg>
-
-示例：
-- <qqimg>/Users/xxx/images/photo.jpg</qqimg>  （本地文件）
-- <qqimg>https://example.com/image.png</qqimg>  （网络图片）
-
-⚠️ 注意：
-- 必须使用 <qqimg>路径</qqimg> 格式
-- 本地路径必须是绝对路径，支持 png、jpg、jpeg、gif、webp 格式
-- 图片文件/URL 必须有效，否则发送失败
-- Markdown格式下，也必须使用该方式发送图片`;
+        const builtinPrompt = generateBuiltinPrompt({
+          eventType: event.type,
+          senderId: event.senderId,
+          senderName: event.senderName,
+          messageId: event.messageId,
+          timestamp: event.timestamp,
+          groupOpenid: event.groupOpenid,
+        });
         
         const systemPrompts = [builtinPrompt];
         if (account.systemPrompt) {
