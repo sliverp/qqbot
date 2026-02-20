@@ -511,7 +511,12 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         let attachmentInfo = "";
         const imageUrls: string[] = [];
         // 存到 clawdbot 工作目录下的 downloads 文件夹
-        const downloadDir = path.join(process.env.HOME || "/home/ubuntu", ".openclaw", "downloads");
+        const downloadDir = path.join(
+          process.env.HOME || process.env.USERPROFILE || "/tmp",
+          ".openclaw",
+          "workspace",
+          "downloads"
+        );
         log?.debug?.(`[qqbot:${account.accountId}] Download directory: ${downloadDir}`);
         
         if (event.attachments?.length) {

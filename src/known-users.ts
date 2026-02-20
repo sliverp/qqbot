@@ -29,8 +29,9 @@ export interface KnownUser {
 
 // 存储文件路径
 const KNOWN_USERS_DIR = path.join(
-  process.env.HOME || "/tmp",
-  "clawd",
+  process.env.HOME || process.env.USERPROFILE || "/tmp",
+  ".openclaw",
+  "workspace",
   "qqbot-data"
 );
 

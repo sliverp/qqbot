@@ -25,8 +25,9 @@ export interface SessionState {
 
 // Session 文件目录
 const SESSION_DIR = path.join(
-  process.env.HOME || "/tmp",
-  "clawd",
+  process.env.HOME || process.env.USERPROFILE || "/tmp",
+  ".openclaw",
+  "workspace",
   "qqbot-data"
 );
 

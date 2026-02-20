@@ -1,5 +1,18 @@
 # QQ
 
+> **⚠️ Fork Notice**
+>
+> This project is a modified fork of [sliverp/qqbot](https://github.com/sliverp/qqbot).
+>
+> **Key Changes:**
+> - ❌ **Removed cron functionality** - The official QQ Bot API strictly limits active messaging capabilities, making scheduled messages unreliable
+> - ✅ **Added media receiving support** - Voice, images, and video messages can now be received and processed
+> - ✅ **Added media sending support** - Voice and video messages can now be sent (original project only supported images)
+>
+> This fork is primarily for personal use. Due to time constraints, a PR has not been submitted to the upstream project yet.
+
+---
+
 QQ is a widely-used instant messaging platform that provides various communication capabilities such as text, voice, images, and files. It supports collaborative scenarios like group chats and channels, making it suitable for both personal communication and team collaboration.
 
 This integration method connects OpenClaw with a QQ Bot. It utilizes the platform's long-connection event subscription mechanism to receive message and event callbacks, enabling stable and secure message exchange and automation capability integration without exposing a public webhook address.
