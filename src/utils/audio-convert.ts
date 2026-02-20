@@ -116,13 +116,39 @@ export async function convertSilkToWav(
 
 /**
  * 判断是否为语音附件（根据 content_type 或文件扩展名）
+ * QQ Bot 语音消息的 content_type 通常为 "voice"
  */
 export function isVoiceAttachment(att: { content_type?: string; filename?: string }): boolean {
+  // QQ Bot 语音消息的 content_type 是 "voice" 而不是 "audio/*"
   if (att.content_type === "voice" || att.content_type?.startsWith("audio/")) {
     return true;
   }
+  // 根据文件扩展名判断
   const ext = att.filename ? path.extname(att.filename).toLowerCase() : "";
-  return [".amr", ".silk", ".slk"].includes(ext);
+  return [".amr", ".silk", ".slk", ".mp3", ".wav", ".ogg"].includes(ext);
+}
+
+/**
+ * 判断是否为视频附件（根据 content_type 或文件扩展名）
+ * QQ Bot 视频消息的 content_type 通常为 "video" 或 "video/mp4"
+ */
+export function isVideoAttachment(att: { content_type?: string; filename?: string }): boolean {
+  if (att.content_type === "video" || att.content_type?.startsWith("video/")) {
+    return true;
+  }
+  const ext = att.filename ? path.extname(att.filename).toLowerCase() : "";
+  return [".mp4", ".mov", ".avi", ".mkv", ".flv", ".wmv"].includes(ext);
+}
+
+/**
+ * 判断是否为图片附件（根据 content_type 或文件扩展名）
+ */
+export function isImageAttachment(att: { content_type?: string; filename?: string }): boolean {
+  if (att.content_type?.startsWith("image/")) {
+    return true;
+  }
+  const ext = att.filename ? path.extname(att.filename).toLowerCase() : "";
+  return [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"].includes(ext);
 }
 
 /**

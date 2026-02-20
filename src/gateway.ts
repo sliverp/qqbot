@@ -9,7 +9,7 @@ import { getQQBotRuntime } from "./runtime.js";
 import { startImageServer, isImageServerRunning, downloadFile, type ImageServerConfig } from "./image-server.js";
 import { getImageSize, formatQQBotMarkdownImage, hasQQBotImageSize, DEFAULT_IMAGE_SIZE } from "./utils/image-size.js";
 import { parseQQBotPayload, encodePayloadForCron, isCronReminderPayload, isMediaPayload, type CronReminderPayload, type MediaPayload } from "./utils/payload.js";
-import { convertSilkToWav, isVoiceAttachment, formatDuration, needsSilkConversion, convertAudioToSilk, convertAudioDataToSilk, isFfmpegAvailable } from "./utils/audio-convert.js";
+import { convertSilkToWav, isVoiceAttachment, isVideoAttachment, isImageAttachment, formatDuration, needsSilkConversion, convertAudioToSilk, convertAudioDataToSilk, isFfmpegAvailable } from "./utils/audio-convert.js";
 
 // QQ Bot intents - 按权限级别分组
 const INTENTS = {
@@ -427,7 +427,6 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
       }) => {
 
         log?.debug?.(`[qqbot:${account.accountId}] Received message: ${JSON.stringify(event)}`);
-        log?.info(`[qqbot:${account.accountId}] Processing message from ${event.senderId}: ${event.content}`);
         if (event.attachments?.length) {
           log?.info(`[qqbot:${account.accountId}] Attachments: ${event.attachments.length}`);
         }
@@ -440,9 +439,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 
         try{
           await sendC2CInputNotify(accessToken, event.senderId, event.messageId, 60);
-          log?.info(`[qqbot:${account.accountId}] Sent input notify to ${event.senderId}`);
         }catch(err){
-          log?.error(`[qqbot:${account.accountId}] sendC2CInputNotify error: ${err}`);
         }
 
         const isGroup = event.type === "guild" || event.type === "group";
@@ -555,14 +552,13 @@ Key points:
 - 必须使用 <qqvoice>路径</qqvoice> 格式
 - 本地路径必须是绝对路径
 - 支持多种格式：mp3、wav、ogg、flac、aac、m4a、silk（自动转换为 SILK 格式）
-- 系统会自动将音频转换为 QQ 要求的 SILK 格式（需要服务器安装 ffmpeg）
+- 系统会自动将音频转换为 QQ 要求的 SILK 格式
 - 语音文件/URL 必须有效，否则发送失败`;
 
         builtinPrompt += `
 
 【Tool and skills usage guide】
 When users ask you to perform tasks, consider using the available skills to complete them efficiently. For example, you can leverage bash commands, file operations, or other tools to achieve the desired outcome. Always aim to provide accurate and helpful responses by utilizing the most appropriate skill for the task at hand.
-
 `;
         
         const systemPrompts = [builtinPrompt];
@@ -574,36 +570,40 @@ When users ask you to perform tasks, consider using the available skills to comp
         let attachmentInfo = "";
         const imageUrls: string[] = [];
         // 存到 clawdbot 工作目录下的 downloads 文件夹
-        const downloadDir = path.join(process.env.HOME || "/home/ubuntu", "clawd", "downloads");
+        const downloadDir = path.join(process.env.HOME || "/home/ubuntu", ".openclaw", "downloads");
         
         if (event.attachments?.length) {
-          // ============ 接收附件描述生成（图片 / 语音 / 其他） ============
+          // ============ 接收附件描述生成（图片 / 语音 / 视频 / 其他） ============
           const imageDescriptions: string[] = [];
           const voiceDescriptions: string[] = [];
+          const videoDescriptions: string[] = [];
           const otherAttachments: string[] = [];
           
           for (const att of event.attachments) {
+            log?.info(`[qqbot:${account.accountId}] Processing attachment: filename=${att.filename}, content_type=${att.content_type}, url=${att.url?.slice(0, 60)}...`);
+            
             // 下载附件到本地，使用原始文件名
             const localPath = await downloadFile(att.url, downloadDir, att.filename);
             if (localPath) {
-              if (att.content_type?.startsWith("image/")) {
+              // ============ 图片附件处理 ============
+              if (isImageAttachment(att)) {
                 imageUrls.push(localPath);
                 
-                // 构建自然语言描述（根据需求 4.2）
-                const format = att.content_type?.split("/")[1] || "未知格式";
+                // 构建自然语言描述
+                const format = att.content_type?.split("/")[1] || path.extname(att.filename || "").slice(1) || "未知格式";
                 const timestamp = new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
                 
-                imageDescriptions.push(`
-用户发送了一张图片：
+                imageDescriptions.push(`图片附件信息：
 - 图片地址：${localPath}
 - 图片格式：${format}
 - 消息ID：${event.messageId}
 - 发送时间：${timestamp}
-
-请根据图片内容进行回复。`);
-              } else if (isVoiceAttachment(att)) {
-                // ============ 语音消息处理：SILK → WAV ============
-                log?.info(`[qqbot:${account.accountId}] Voice attachment detected: ${att.filename}, converting SILK to WAV...`);
+请根据图片内容路径找到图片进行回复。`);
+                log?.info(`[qqbot:${account.accountId}] Image attachment processed: ${localPath}`);
+              } 
+              // ============ 语音附件处理：SILK → WAV ============
+              else if (isVoiceAttachment(att)) {
+                log?.info(`[qqbot:${account.accountId}] Voice attachment detected: ${att.filename}, converting to WAV...`);
                 try {
                   const result = await convertSilkToWav(localPath, downloadDir);
                   if (result) {
@@ -611,76 +611,97 @@ When users ask you to perform tasks, consider using the available skills to comp
                     log?.info(`[qqbot:${account.accountId}] Voice converted: ${result.wavPath} (duration: ${durationStr})`);
                     
                     const timestamp = new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
-                    voiceDescriptions.push(`
-用户发送了一条语音消息：
+                    voiceDescriptions.push(`语音附件信息：
 - 语音文件：${result.wavPath}
 - 语音时长：${durationStr}
 - 发送时间：${timestamp}`);
                   } else {
                     // SILK 解码失败，保留原始文件
                     log?.info(`[qqbot:${account.accountId}] Voice file is not SILK format, keeping original: ${localPath}`);
-                    voiceDescriptions.push(`
-用户发送了一条语音消息（非SILK格式，无法转换）：
+                    voiceDescriptions.push(`语音附件信息：
 - 语音文件：${localPath}
 - 原始格式：${att.filename || "unknown"}
 - 消息ID：${event.messageId}
-
 请告知用户该语音格式暂不支持解析。`);
                   }
                 } catch (convertErr) {
                   log?.error(`[qqbot:${account.accountId}] Voice conversion failed: ${convertErr}`);
-                  voiceDescriptions.push(`
-用户发送了一条语音消息（转换失败）：
+                  voiceDescriptions.push(`语音附件信息：
 - 原始文件：${localPath}
 - 错误信息：${convertErr}
 - 消息ID：${event.messageId}
-
 请告知用户语音处理出现问题。`);
                 }
-              } else {
-                otherAttachments.push(`[附件: ${localPath}]`);
               }
-              log?.info(`[qqbot:${account.accountId}] Downloaded attachment to: ${localPath}`);
+              // ============ 视频附件处理 ============
+              else if (isVideoAttachment(att)) {
+                const format = att.content_type?.split("/")[1] || path.extname(att.filename || "").slice(1) || "未知格式";
+                const timestamp = new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
+                
+                videoDescriptions.push(`视频附件信息：
+- 视频文件：${localPath}
+- 视频格式：${format}
+- 消息ID：${event.messageId}
+- 发送时间：${timestamp}
+请根据视频内容路径找到视频进行回复。`);
+                log?.info(`[qqbot:${account.accountId}] Video attachment processed: ${localPath}`);
+              }
+              // ============ 其他附件 ============
+              else {
+                otherAttachments.push(`其他附件信息： ${localPath} (类型: ${att.content_type || "unknown"})`);
+                log?.info(`[qqbot:${account.accountId}] Other attachment processed: ${localPath}, type: ${att.content_type}`);
+              }
             } else {
               // 下载失败，提供原始 URL 作为后备
               log?.error(`[qqbot:${account.accountId}] Failed to download attachment: ${att.url}`);
-              if (att.content_type?.startsWith("image/")) {
+              
+              if (isImageAttachment(att)) {
                 imageUrls.push(att.url);
                 
-                // 下载失败时的自然语言描述
-                const format = att.content_type?.split("/")[1] || "未知格式";
+                const format = att.content_type?.split("/")[1] || path.extname(att.filename || "").slice(1) || "未知格式";
                 const timestamp = new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
                 
-                imageDescriptions.push(`
-用户发送了一张图片（下载失败，使用原始URL）：
+                imageDescriptions.push(`图片附件信息：
 - 图片地址：${att.url}
 - 图片格式：${format}
 - 消息ID：${event.messageId}
 - 发送时间：${timestamp}
-
 请根据图片内容进行回复。`);
+              } else if (isVoiceAttachment(att)) {
+                voiceDescriptions.push(`语音附件信息：
+- 原始URL：${att.url}
+- 文件名：${att.filename || "unknown"}
+- 消息ID：${event.messageId}`);
+              } else if (isVideoAttachment(att)) {
+                videoDescriptions.push(`视频附件信息：
+- 原始URL：${att.url}
+- 文件名：${att.filename || "unknown"}
+- 消息ID：${event.messageId}`);
               } else {
-                otherAttachments.push(`[附件: ${att.filename ?? att.content_type}] (下载失败)`);
+                otherAttachments.push(`其他附件信息： ${att.filename ?? att.content_type}] (下载失败)`);
               }
             }
           }
           
-          // 组合附件信息：先图片描述，后语音描述，后其他附件
+          // 组合附件信息：先图片描述，后语音描述，后视频描述，后其他附件
           if (imageDescriptions.length > 0) {
-            attachmentInfo += "\n" + imageDescriptions.join("\n");
+            attachmentInfo += "" + imageDescriptions.join("\n");
           }
           if (voiceDescriptions.length > 0) {
-            attachmentInfo += "\n" + voiceDescriptions.join("\n");
+            attachmentInfo += "" + voiceDescriptions.join("\n");
+          }
+          if (videoDescriptions.length > 0) {
+            attachmentInfo += "" + videoDescriptions.join("\n");
           }
           if (otherAttachments.length > 0) {
-            attachmentInfo += "\n" + otherAttachments.join("\n");
+            attachmentInfo += "" + otherAttachments.join("\n");
           }
         }
         
         // 解析 QQ 表情标签，将 <faceType=...,ext="base64"> 替换为 【表情: 中文名】
         const parsedContent = parseFaceTags(event.content);
-        const userContent = parsedContent + attachmentInfo;
-        let messageBody = `【系统提示】\n${systemPrompts.join("\n")}\n\n【用户输入】\n${userContent}`;
+        const userContent = "\n" + parsedContent + attachmentInfo;
+        let messageBody = `【系统提示】\n${systemPrompts.join("\n")}\n\n【下面是用户发送的文本内容和多媒体附件】${userContent}`;
 
         if(userContent.startsWith("/")){ // 保留Openclaw原始命令
           messageBody = userContent
@@ -715,10 +736,14 @@ When users ask you to perform tasks, consider using the available skills to comp
           entry.toUpperCase() === event.senderId.toUpperCase()
         );
 
+        // 当用户发送纯图片/视频/语音时，event.content 可能为空
+        // 此时应该使用包含附件信息的 messageBody 作为 RawBody 和 CommandBody
+        const effectiveContent = event.content?.trim() || messageBody;
+        
         const ctxPayload = pluginRuntime.channel.reply.finalizeInboundContext({
           Body: body,
-          RawBody: event.content,
-          CommandBody: event.content,
+          RawBody: effectiveContent,
+          CommandBody: effectiveContent,
           From: fromAddress,
           To: toAddress,
           SessionKey: route.sessionKey,

@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "skills": {
+    "capability-evolver": {
+      "version": "1.0.0",
+      "installedAt": 1771311931895
+    },
+    "git-workflows": {
+      "version": "1.0.0",
+      "installedAt": 1771312138467
+    },
+    "desktop-control": {
+      "version": "1.0.0",
+      "installedAt": 1771312299315
+    },
+    "agent-browser": {
+      "version": "0.2.0",
+      "installedAt": 1771312463828
+    },
+    "news-feeds": {
+      "version": "1.0.1",
+      "installedAt": 1771312574633
+    },
+    "reflect": {
+      "version": "1.0.0",
+      "installedAt": 1771312686578
+    }
+  }
+}

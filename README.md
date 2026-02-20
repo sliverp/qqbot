@@ -120,6 +120,80 @@ openclaw gateway
 
 <img width="990" height="984" alt="18" src="https://github.com/user-attachments/assets/b2776c8b-de72-4e37-b34d-e8287ce45de1" />
 
+# Features
+
+## Rich Media Support
+
+This QQ Bot plugin supports receiving and sending various types of media messages, including images, voice, video, and other attachments.
+
+### Receiving Media
+
+When users send media messages to the bot, the plugin will:
+
+- **Images**: Automatically download and provide local file path for AI processing
+  - Supported formats: JPG, PNG, GIF, WebP, BMP
+  
+- **Voice**: Automatically convert SILK/AMR format to WAV for better compatibility
+  - Supported formats: SILK, AMR, MP3, WAV, OGG (auto-converted to WAV)
+  
+- **Video**: Download and provide local file path for AI processing
+  - Supported formats: MP4, MOV, AVI, MKV, FLV, WMV
+  
+- **Other Attachments**: Download and provide file information
+
+### Sending Media
+
+The bot can send media messages using special tags in the response:
+
+#### Send Images
+
+Use `<qqimg>` tag to send images:
+
+```
+<qqimg>/path/to/image.jpg</qqimg>
+<qqimg>https://example.com/image.png</qqimg>
+```
+
+- Local files: Must use absolute path
+- Network images: Must be valid HTTP/HTTPS URL
+- Supported formats: PNG, JPG, JPEG, GIF, WebP
+
+#### Send Video
+
+Use `<qqvideo>` tag to send videos:
+
+```
+<qqvideo>/path/to/video.mp4</qqvideo>
+<qqvideo>https://example.com/video.mp4</qqvideo>
+```
+
+- Local files: Must use absolute path
+- Network videos: Must be valid HTTP/HTTPS URL
+- Supported formats: MP4, MOV, AVI
+
+#### Send Voice
+
+Use `<qqvoice>` tag to send voice messages:
+
+```
+<qqvoice>/path/to/audio.mp3</qqvoice>
+<qqvoice>/path/to/recording.wav</qqvoice>
+<qqvoice>https://example.com/audio.mp3</qqvoice>
+```
+
+- Local files: Must use absolute path
+- Network audio: Must be valid HTTP/HTTPS URL
+- Supported formats: MP3, WAV, OGG, FLAC, AAC, M4A, SILK
+- **Auto-conversion**: Non-SILK formats are automatically converted to SILK format required by QQ
+
+### Important Notes
+
+1. **File Paths**: Always use absolute paths for local files
+2. **Network URLs**: Must be valid and accessible HTTP/HTTPS URLs
+3. **Format Conversion**: Voice messages are automatically converted to SILK format
+4. **File Size**: Large files may take longer to process
+5. **Passive Reply**: All media sending must be done as passive replies (within 5 minutes of receiving a message)
+
 
 # Upgrade
 ## Using openclaw/npm(Recommendation)

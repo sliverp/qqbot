@@ -111,5 +111,79 @@ openclaw gateway
 
 <img width="990" height="984" alt="18" src="https://github.com/user-attachments/assets/b2776c8b-de72-4e37-b34d-e8287ce45de1" />
 
+# 功能特性
+
+## 富媒体支持
+
+本 QQ Bot 插件支持接收和发送多种类型的媒体消息，包括图片、语音、视频和其他附件。
+
+### 接收媒体
+
+当用户向机器人发送媒体消息时，插件会：
+
+- **图片**: 自动下载并提供本地文件路径供 AI 处理
+  - 支持格式: JPG, PNG, GIF, WebP, BMP
+  
+- **语音**: 自动将 SILK/AMR 格式转换为 WAV 以获得更好的兼容性
+  - 支持格式: SILK, AMR, MP3, WAV, OGG (自动转换为 WAV)
+  
+- **视频**: 下载并提供本地文件路径供 AI 处理
+  - 支持格式: MP4, MOV, AVI, MKV, FLV, WMV
+  
+- **其他附件**: 下载并提供文件信息
+
+### 发送媒体
+
+机器人可以使用特殊标签在回复中发送媒体消息：
+
+#### 发送图片
+
+使用 `<qqimg>` 标签发送图片：
+
+```
+<qqimg>/path/to/image.jpg</qqimg>
+<qqimg>https://example.com/image.png</qqimg>
+```
+
+- 本地文件: 必须使用绝对路径
+- 网络图片: 必须是有效的 HTTP/HTTPS URL
+- 支持格式: PNG, JPG, JPEG, GIF, WebP
+
+#### 发送视频
+
+使用 `<qqvideo>` 标签发送视频：
+
+```
+<qqvideo>/path/to/video.mp4</qqvideo>
+<qqvideo>https://example.com/video.mp4</qqvideo>
+```
+
+- 本地文件: 必须使用绝对路径
+- 网络视频: 必须是有效的 HTTP/HTTPS URL
+- 支持格式: MP4, MOV, AVI
+
+#### 发送语音
+
+使用 `<qqvoice>` 标签发送语音消息：
+
+```
+<qqvoice>/path/to/audio.mp3</qqvoice>
+<qqvoice>/path/to/recording.wav</qqvoice>
+<qqvoice>https://example.com/audio.mp3</qqvoice>
+```
+
+- 本地文件: 必须使用绝对路径
+- 网络音频: 必须是有效的 HTTP/HTTPS URL
+- 支持格式: MP3, WAV, OGG, FLAC, AAC, M4A, SILK
+- **自动转换**: 非 SILK 格式会自动转换为 QQ 要求的 SILK 格式
+
+### 重要提示
+
+1. **文件路径**: 本地文件必须使用绝对路径
+2. **网络地址**: 必须是有效且可访问的 HTTP/HTTPS URL
+3. **格式转换**: 语音消息会自动转换为 SILK 格式
+4. **文件大小**: 大文件可能需要更长的处理时间
+5. **被动回复**: 所有媒体发送必须作为被动回复进行（在收到消息后 5 分钟内）
+
 # 其他语言 README
 [英文](README.md)
