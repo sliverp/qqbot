@@ -26,8 +26,9 @@ export interface SessionState {
 // Session 文件目录
 const SESSION_DIR = path.join(
   process.env.HOME || "/tmp",
-  "clawd",
-  "qqbot-data"
+  ".openclaw",
+  "qqbot",
+  "sessions"
 );
 
 // Session 过期时间（5分钟）- Resume 要求在断开后一定时间内恢复
