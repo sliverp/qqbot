@@ -10,7 +10,6 @@ import { getAccessToken, getGatewayUrl, clearTokenCache, initApiConfig, startBac
 import { loadSession, saveSession, clearSession } from "./session-store.js";
 import { recordKnownUser, flushKnownUsers } from "./known-users.js";
 import { getQQBotRuntime } from "./runtime.js";
-import { startImageServer, isImageServerRunning, type ImageServerConfig } from "./image-server.js";
 import { buildInboundMessage, type InboundMessageEvent } from "./gateway-inbound.js";
 import { handleDeliver, type DeliverContext } from "./gateway-deliver.js";
 import { withTokenRetry, targetFromEvent, sendTextToTarget } from "./utils/send-target.js";
@@ -37,9 +36,6 @@ const MAX_RECONNECT_ATTEMPTS = 100;
 const MAX_QUICK_DISCONNECT_COUNT = 3;
 const QUICK_DISCONNECT_THRESHOLD = 5000;
 
-// 图床配置
-const IMAGE_SERVER_PORT = parseInt(process.env.QQBOT_IMAGE_SERVER_PORT || "18765", 10);
-
 // 消息队列配置
 const MESSAGE_QUEUE_SIZE = 1000;
 const MESSAGE_QUEUE_WARN_THRESHOLD = 800;
@@ -58,29 +54,6 @@ export interface GatewayContext {
 }
 
 /**
- * 启动图床服务器
- */
-async function ensureImageServer(log?: GatewayContext["log"], publicBaseUrl?: string): Promise<string | null> {
-  if (isImageServerRunning()) {
-    return publicBaseUrl || `http://0.0.0.0:${IMAGE_SERVER_PORT}`;
-  }
-  try {
-    const config: Partial<ImageServerConfig> = {
-      port: IMAGE_SERVER_PORT,
-      storageDir: process.env.QQBOT_IMAGE_SERVER_DIR || undefined,
-      baseUrl: publicBaseUrl || `http://0.0.0.0:${IMAGE_SERVER_PORT}`,
-      ttlSeconds: 3600,
-    };
-    await startImageServer(config);
-    log?.info(`[qqbot] Image server started on port ${IMAGE_SERVER_PORT}, baseUrl: ${config.baseUrl}`);
-    return config.baseUrl!;
-  } catch (err) {
-    log?.error(`[qqbot] Failed to start image server: ${err}`);
-    return null;
-  }
-}
-
-/**
  * 启动 Gateway WebSocket 连接（带自动重连）
  */
 export async function startGateway(ctx: GatewayContext): Promise<void> {
@@ -92,12 +65,6 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 
   initApiConfig({ markdownSupport: account.markdownSupport });
   log?.info(`[qqbot:${account.accountId}] API config: markdownSupport=${account.markdownSupport === true}`);
-
-  // 图床
-  if (account.imageServerBaseUrl) {
-    await ensureImageServer(log, account.imageServerBaseUrl);
-    log?.info(`[qqbot:${account.accountId}] Image server enabled with URL: ${account.imageServerBaseUrl}`);
-  }
 
   let reconnectAttempts = 0;
   let isAborted = false;

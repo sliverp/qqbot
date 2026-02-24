@@ -3,20 +3,6 @@ import * as path from "node:path";
 import { decode, isSilk } from "silk-wasm";
 
 /**
- * 检查文件是否为 SILK 格式（QQ/微信语音常用格式）
- * QQ 语音文件通常以 .amr 扩展名保存，但实际编码可能是 SILK v3
- * SILK 文件头部标识: 0x02 "#!SILK_V3"
- */
-function _isSilkFile(filePath: string): boolean {
-  try {
-    const buf = fs.readFileSync(filePath);
-    return isSilk(new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength));
-  } catch {
-    return false;
-  }
-}
-
-/**
  * 将 PCM (s16le) 数据封装为 WAV 文件格式
  * WAV = 44 字节 RIFF 头 + PCM 原始数据
  */

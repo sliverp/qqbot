@@ -13,7 +13,7 @@ export interface ImageSize {
 }
 
 /** 默认图片尺寸（当无法获取时使用） */
-export const DEFAULT_IMAGE_SIZE: ImageSize = { width: 512, height: 512 };
+const DEFAULT_IMAGE_SIZE: ImageSize = { width: 512, height: 512 };
 
 /**
  * 从 PNG 文件头解析图片尺寸
@@ -141,7 +141,7 @@ function parseWebpSize(buffer: Buffer): ImageSize | null {
 /**
  * 从图片数据 Buffer 解析尺寸
  */
-export function parseImageSize(buffer: Buffer): ImageSize | null {
+function parseImageSize(buffer: Buffer): ImageSize | null {
   // 尝试各种格式
   return parsePngSize(buffer) 
     ?? parseJpegSize(buffer) 
@@ -153,7 +153,7 @@ export function parseImageSize(buffer: Buffer): ImageSize | null {
  * 从公网 URL 获取图片尺寸
  * 只下载前 64KB 数据，足够解析大部分图片格式的头部
  */
-export async function getImageSizeFromUrl(url: string, timeoutMs = 5000): Promise<ImageSize | null> {
+async function getImageSizeFromUrl(url: string, timeoutMs = 5000): Promise<ImageSize | null> {
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -192,7 +192,7 @@ export async function getImageSizeFromUrl(url: string, timeoutMs = 5000): Promis
 /**
  * 从 Base64 Data URL 获取图片尺寸
  */
-export function getImageSizeFromDataUrl(dataUrl: string): ImageSize | null {
+function getImageSizeFromDataUrl(dataUrl: string): ImageSize | null {
   try {
     // 格式: data:image/png;base64,xxxxx
     const matches = dataUrl.match(/^data:image\/[^;]+;base64,(.+)$/);
@@ -253,14 +253,3 @@ export function hasQQBotImageSize(markdownImage: string): boolean {
   return /!\[#\d+px\s+#\d+px\]/.test(markdownImage);
 }
 
-/**
- * 从已有的 QQBot 格式 markdown 图片中提取尺寸
- * 格式: ![#宽px #高px](url)
- */
-export function extractQQBotImageSize(markdownImage: string): ImageSize | null {
-  const match = markdownImage.match(/!\[#(\d+)px\s+#(\d+)px\]/);
-  if (match) {
-    return { width: parseInt(match[1], 10), height: parseInt(match[2], 10) };
-  }
-  return null;
-}

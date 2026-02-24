@@ -11,7 +11,7 @@ import type {
   ChannelOnboardingResult,
   OpenClawConfig,
 } from "openclaw/plugin-sdk";
-import { DEFAULT_ACCOUNT_ID, listQQBotAccountIds, resolveQQBotAccount } from "./config.js";
+import { DEFAULT_ACCOUNT_ID, listQQBotAccountIds, resolveQQBotAccount, resolveDefaultQQBotAccountId } from "./config.js";
 
 // 内部类型（用于类型安全）
 interface QQBotChannelConfig {
@@ -20,7 +20,6 @@ interface QQBotChannelConfig {
   clientSecret?: string;
   clientSecretFile?: string;
   name?: string;
-  imageServerBaseUrl?: string;
   markdownSupport?: boolean;
   allowFrom?: string[];
   accounts?: Record<string, {
@@ -29,7 +28,6 @@ interface QQBotChannelConfig {
     clientSecret?: string;
     clientSecretFile?: string;
     name?: string;
-    imageServerBaseUrl?: string;
     markdownSupport?: boolean;
     allowFrom?: string[];
   }>;
@@ -41,14 +39,6 @@ interface Prompter {
   confirm: (opts: { message: string; initialValue?: boolean }) => Promise<boolean>;
   text: (opts: { message: string; placeholder?: string; initialValue?: string; validate?: (value: string) => string | undefined }) => Promise<string>;
   select: <T>(opts: { message: string; options: Array<{ value: T; label: string }>; initialValue?: T }) => Promise<T>;
-}
-
-/**
- * 解析默认账户 ID
- */
-function resolveDefaultQQBotAccountId(cfg: OpenClawConfig): string {
-  const ids = listQQBotAccountIds(cfg);
-  return ids[0] ?? DEFAULT_ACCOUNT_ID;
 }
 
 /**
