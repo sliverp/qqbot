@@ -692,7 +692,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 
         const ctxPayload = pluginRuntime.channel.reply.finalizeInboundContext({
           Body: body,
-          BodyForAgent: messageBody,
+          BodyForAgent: agentBody,
           RawBody: event.content,
           CommandBody: event.content,
           From: fromAddress,
