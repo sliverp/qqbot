@@ -480,6 +480,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         // 处理附件（图片等）- 下载到本地供 clawdbot 访问
         let attachmentInfo = "";
         const imageUrls: string[] = [];
+        const imageMediaTypes: string[] = [];
         // 存到 .openclaw/qqbot 目录下的 downloads 文件夹
         const downloadDir = path.join(process.env.HOME || "/home/ubuntu", ".openclaw", "qqbot", "downloads");
         
