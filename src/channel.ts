@@ -71,26 +71,6 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
   reload: { configPrefixes: ["channels.qqbot"] },
   // CLI onboarding wizard
   onboarding: qqbotOnboardingAdapter,
-  // 消息目标解析
-  messaging: {
-    normalizeTarget: (target) => {
-      // 支持格式: qqbot:c2c:xxx, qqbot:group:xxx, c2c:xxx, group:xxx, openid
-      const normalized = target.replace(/^qqbot:/i, "");
-      return { ok: true, to: normalized };
-    },
-    targetResolver: {
-      looksLikeId: (id) => {
-        // 先去掉 qqbot: 前缀
-        const normalized = id.replace(/^qqbot:/i, "");
-        // 支持 c2c:xxx, group:xxx, channel:xxx 格式
-        if (normalized.startsWith("c2c:") || normalized.startsWith("group:") || normalized.startsWith("channel:")) return true;
-        // 支持纯 openid（32位十六进制）
-        if (/^[A-F0-9]{32}$/i.test(normalized)) return true;
-        return false;
-      },
-      hint: "c2c:<openid> or group:<groupOpenid>",
-    },
-  },
   config: {
     listAccountIds: (cfg) => listQQBotAccountIds(cfg),
     resolveAccount: (cfg, accountId) => resolveQQBotAccount(cfg, accountId),

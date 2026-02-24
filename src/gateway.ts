@@ -1,8 +1,10 @@
 import WebSocket from "ws";
 import path from "node:path";
 import * as fs from "node:fs";
+import type { Agent } from "https";
 import type { ResolvedQQBotAccount, WSPayload, C2CMessageEvent, GuildMessageEvent, GroupMessageEvent } from "./types.js";
 import { getAccessToken, getGatewayUrl, sendC2CMessage, sendChannelMessage, sendGroupMessage, clearTokenCache, sendC2CImageMessage, sendGroupImageMessage, initApiConfig, startBackgroundTokenRefresh, stopBackgroundTokenRefresh, sendC2CInputNotify } from "./api.js";
+import { getProxyAgent } from "./utils/proxy.js";
 import { loadSession, saveSession, clearSession, type SessionState } from "./session-store.js";
 import { recordKnownUser, flushKnownUsers } from "./known-users.js";
 import { getQQBotRuntime } from "./runtime.js";
@@ -232,11 +234,13 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
     throw new Error("QQBot not configured (missing appId or clientSecret)");
   }
 
-  // 初始化 API 配置（markdown 支持）
+  // 初始化 API 配置（markdown 支持 + 代理）
+  const proxyUrl = (cfg as { proxyUrl?: string })?.proxyUrl;
   initApiConfig({
     markdownSupport: account.markdownSupport,
+    proxyUrl,
   });
-  log?.info(`[qqbot:${account.accountId}] API config: markdownSupport=${account.markdownSupport === true}`);
+  log?.info(`[qqbot:${account.accountId}] API config: markdownSupport=${account.markdownSupport === true}${proxyUrl ? `, proxyUrl=${proxyUrl}` : ''}`);
 
   // 如果配置了公网 URL，启动图床服务器
   let imageServerBaseUrl: string | null = null;
@@ -408,7 +412,16 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 
       log?.info(`[qqbot:${account.accountId}] Connecting to ${gatewayUrl}`);
 
-      const ws = new WebSocket(gatewayUrl);
+      // 创建 WebSocket 连接，支持代理
+      const wsOptions: WebSocket.ClientOptions = {};
+      if (proxyUrl) {
+        const proxyAgent = getProxyAgent(proxyUrl);
+        if (proxyAgent) {
+          wsOptions.agent = proxyAgent as unknown as Agent | undefined;
+          log?.info(`[qqbot:${account.accountId}] Using proxy: ${proxyUrl}`);
+        }
+      }
+      const ws = new WebSocket(gatewayUrl, undefined, wsOptions);
       currentWs = ws;
 
       const pluginRuntime = getQQBotRuntime();

@@ -43,6 +43,8 @@ export interface QQBotAccountConfig {
   imageServerBaseUrl?: string;
   /** 是否支持 markdown 消息（默认 true，设为 false 可禁用） */
   markdownSupport?: boolean;
+  /** 代理 URL，例如：socks5://100.67.244.78:1080 */
+  proxyUrl?: string;
 }
 
 /**

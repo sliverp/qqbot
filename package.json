@@ -40,6 +40,7 @@
   },
   "dependencies": {
     "silk-wasm": "^3.7.1",
+    "socks-proxy-agent": "^8.0.0",
     "ws": "^8.18.0"
   },
   "bundledDependencies": [

@@ -113,7 +113,11 @@ export function resolveQQBotAccount(
     systemPrompt: accountConfig.systemPrompt,
     imageServerBaseUrl: accountConfig.imageServerBaseUrl || process.env.QQBOT_IMAGE_SERVER_BASE_URL,
     markdownSupport: accountConfig.markdownSupport !== false,
-    config: accountConfig,
+    // proxyUrl 从 openclaw.json 全局配置读取
+    config: {
+      ...accountConfig,
+      proxyUrl: cfg?.proxyUrl as string | undefined,
+    },
   };
 }
 

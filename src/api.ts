@@ -2,18 +2,24 @@
  * QQ Bot API 鉴权和请求封装
  */
 
+import { getProxyAgent } from "./utils/proxy.js";
+import type { Agent } from "https";
+
 const API_BASE = "https://api.sgroup.qq.com";
 const TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken";
 
 // 运行时配置
 let currentMarkdownSupport = false;
+let proxyUrl: string | undefined;
 
 /**
  * 初始化 API 配置
  * @param options.markdownSupport - 是否支持 markdown 消息（默认 false，需要机器人具备该权限才能启用）
+ * @param options.proxyUrl - 代理 URL，例如：socks5://100.67.244.78:1080
  */
-export function initApiConfig(options: { markdownSupport?: boolean }): void {
-  currentMarkdownSupport = options.markdownSupport === true; // 默认为 false，需要机器人具备 markdown 消息权限才能启用
+export function initApiConfig(options: { markdownSupport?: boolean; proxyUrl?: string }): void {
+  currentMarkdownSupport = options.markdownSupport === true;
+  proxyUrl = options.proxyUrl;
 }
 
 /**
@@ -65,19 +71,37 @@ async function doFetchToken(appId: string, clientSecret: string): Promise<string
 
   const requestBody = { appId, clientSecret };
   const requestHeaders = { "Content-Type": "application/json" };
-  
+
+  // 获取代理 Agent
+  const proxyAgent = getProxyAgent(proxyUrl);
+
   // 打印请求信息（隐藏敏感信息）
   console.log(`[qqbot-api] >>> POST ${TOKEN_URL}`);
   console.log(`[qqbot-api] >>> Headers:`, JSON.stringify(requestHeaders, null, 2));
   console.log(`[qqbot-api] >>> Body:`, JSON.stringify({ appId, clientSecret: "***" }, null, 2));
+  if (proxyUrl) {
+    console.log(`[qqbot-api] >>> Using proxy: ${proxyUrl}`);
+  }
 
   let response: Response;
   try {
-    response = await fetch(TOKEN_URL, {
+    const fetchOptions: RequestInit = {
       method: "POST",
       headers: requestHeaders,
       body: JSON.stringify(requestBody),
-    });
+    };
+
+    // 如果有代理，使用 undici 的 Agent
+    if (proxyAgent) {
+      const { setGlobalDispatcher, Agent } = await import("undici");
+      setGlobalDispatcher(new Agent({
+        connect: {
+          [Symbol.for("undici.customDispatcher")]: proxyAgent as unknown as never,
+        },
+      }));
+    }
+
+    response = await fetch(TOKEN_URL, fetchOptions);
   } catch (err) {
     console.error(`[qqbot-api] <<< Network error:`, err);
     throw new Error(`Network error getting access_token: ${err instanceof Error ? err.message : String(err)}`);
@@ -194,18 +218,18 @@ export async function apiRequest<T = unknown>(
     Authorization: `QQBot ${accessToken}`,
     "Content-Type": "application/json",
   };
-  
+
   // 根据请求类型自动选择超时时间
   // 文件上传接口 (/files) 使用更长的超时时间
   const isFileUpload = path.includes("/files");
   const timeout = timeoutMs ?? (isFileUpload ? FILE_UPLOAD_TIMEOUT : DEFAULT_API_TIMEOUT);
-  
+
   // 创建 AbortController 用于超时控制
   const controller = new AbortController();
   const timeoutId = setTimeout(() => {
     controller.abort();
   }, timeout);
-  
+
   const options: RequestInit = {
     method,
     headers,
@@ -222,9 +246,25 @@ export async function apiRequest<T = unknown>(
   if (body) {
     console.log(`[qqbot-api] >>> Body:`, JSON.stringify(body, null, 2));
   }
+  if (proxyUrl) {
+    console.log(`[qqbot-api] >>> Using proxy: ${proxyUrl}`);
+  }
 
   let res: Response;
   try {
+    // 如果有代理，设置 undici dispatcher
+    if (proxyUrl) {
+      const proxyAgent = getProxyAgent(proxyUrl);
+      if (proxyAgent) {
+        const { setGlobalDispatcher, Agent } = await import("undici");
+        setGlobalDispatcher(new Agent({
+          connect: {
+            [Symbol.for("undici.customDispatcher")]: proxyAgent as unknown as never,
+          },
+        }));
+      }
+    }
+
     res = await fetch(url, options);
   } catch (err) {
     clearTimeout(timeoutId);
