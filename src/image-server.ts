@@ -181,7 +181,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
     return;
   }
 
-  const [, imageId, requestedExt] = match;
+  const [, imageId, _requestedExt] = match;
   const image = imageIndex.get(imageId);
 
   if (!image) {
@@ -220,7 +220,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
       "Cache-Control": image.ttl > 0 ? `max-age=${image.ttl}` : "max-age=31536000",
     });
     res.end(imageData);
-  } catch (err) {
+  } catch {
     res.writeHead(500, { "Content-Type": "text/plain" });
     res.end("Internal Server Error");
   }

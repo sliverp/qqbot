@@ -1,33 +1,28 @@
 /**
  * QQ Bot 主动发送消息模块
- * 
+ *
  * 该模块提供以下能力：
- * 1. 记录已知用户（曾与机器人交互过的用户）
- * 2. 主动发送消息给用户或群组
- * 3. 查询已知用户列表
+ * 1. 主动发送消息给用户或群组
+ * 2. 批量发送 / 广播
+ *
+ * 用户存储统一使用 known-users.ts，不再重复实现。
  */
 
-import * as fs from "node:fs";
-import * as path from "node:path";
 import type { ResolvedQQBotAccount } from "./types.js";
+import {
+  getAccessToken,
+  sendProactiveC2CMessage,
+  sendProactiveGroupMessage,
+  sendC2CImageMessage,
+  sendGroupImageMessage,
+} from "./api.js";
+import { resolveQQBotAccount } from "./config.js";
+import { listKnownUsers } from "./known-users.js";
+import type { OpenClawConfig } from "openclaw/plugin-sdk";
 
-// ============ 类型定义（本地） ============
+// ============ 类型定义 ============
 
-/**
- * 已知用户信息
- */
-export interface KnownUser {
-  type: "c2c" | "group" | "channel";
-  openid: string;
-  accountId: string;
-  nickname?: string;
-  firstInteractionAt: number;
-  lastInteractionAt: number;
-}
-
-/**
- * 主动发送消息选项
- */
+/** 主动发送消息选项 */
 export interface ProactiveSendOptions {
   to: string;
   text: string;
@@ -36,228 +31,12 @@ export interface ProactiveSendOptions {
   accountId?: string;
 }
 
-/**
- * 主动发送消息结果
- */
+/** 主动发送消息结果 */
 export interface ProactiveSendResult {
   success: boolean;
   messageId?: string;
   timestamp?: number | string;
   error?: string;
-}
-
-/**
- * 列出已知用户选项
- */
-export interface ListKnownUsersOptions {
-  type?: "c2c" | "group" | "channel";
-  accountId?: string;
-  sortByLastInteraction?: boolean;
-  limit?: number;
-}
-import {
-  getAccessToken,
-  sendProactiveC2CMessage,
-  sendProactiveGroupMessage,
-  sendChannelMessage,
-  sendC2CImageMessage,
-  sendGroupImageMessage,
-} from "./api.js";
-import { resolveQQBotAccount } from "./config.js";
-import type { OpenClawConfig } from "openclaw/plugin-sdk";
-
-// ============ 用户存储管理 ============
-
-/**
- * 已知用户存储
- * 使用简单的 JSON 文件存储，保存在 .openclaw/qqbot 目录下
- */
-const STORAGE_DIR = path.join(process.env.HOME || "/home/ubuntu", ".openclaw", "qqbot", "data");
-const KNOWN_USERS_FILE = path.join(STORAGE_DIR, "known-users.json");
-
-// 内存缓存
-let knownUsersCache: Map<string, KnownUser> | null = null;
-let cacheLastModified = 0;
-
-/**
- * 确保存储目录存在
- */
-function ensureStorageDir(): void {
-  if (!fs.existsSync(STORAGE_DIR)) {
-    fs.mkdirSync(STORAGE_DIR, { recursive: true });
-  }
-}
-
-/**
- * 生成用户唯一键
- */
-function getUserKey(type: string, openid: string, accountId: string): string {
-  return `${accountId}:${type}:${openid}`;
-}
-
-/**
- * 从文件加载已知用户
- */
-function loadKnownUsers(): Map<string, KnownUser> {
-  if (knownUsersCache !== null) {
-    // 检查文件是否被修改
-    try {
-      const stat = fs.statSync(KNOWN_USERS_FILE);
-      if (stat.mtimeMs <= cacheLastModified) {
-        return knownUsersCache;
-      }
-    } catch {
-      // 文件不存在，使用缓存
-      return knownUsersCache;
-    }
-  }
-
-  const users = new Map<string, KnownUser>();
-  
-  try {
-    if (fs.existsSync(KNOWN_USERS_FILE)) {
-      const data = fs.readFileSync(KNOWN_USERS_FILE, "utf-8");
-      const parsed = JSON.parse(data) as KnownUser[];
-      for (const user of parsed) {
-        const key = getUserKey(user.type, user.openid, user.accountId);
-        users.set(key, user);
-      }
-      cacheLastModified = fs.statSync(KNOWN_USERS_FILE).mtimeMs;
-    }
-  } catch (err) {
-    console.error(`[qqbot:proactive] Failed to load known users: ${err}`);
-  }
-
-  knownUsersCache = users;
-  return users;
-}
-
-/**
- * 保存已知用户到文件
- */
-function saveKnownUsers(users: Map<string, KnownUser>): void {
-  try {
-    ensureStorageDir();
-    const data = Array.from(users.values());
-    fs.writeFileSync(KNOWN_USERS_FILE, JSON.stringify(data, null, 2), "utf-8");
-    cacheLastModified = Date.now();
-    knownUsersCache = users;
-  } catch (err) {
-    console.error(`[qqbot:proactive] Failed to save known users: ${err}`);
-  }
-}
-
-/**
- * 记录一个已知用户（当收到用户消息时调用）
- * 
- * @param user - 用户信息
- */
-export function recordKnownUser(user: Omit<KnownUser, "firstInteractionAt">): void {
-  const users = loadKnownUsers();
-  const key = getUserKey(user.type, user.openid, user.accountId);
-  
-  const existing = users.get(key);
-  const now = user.lastInteractionAt || Date.now();
-  
-  users.set(key, {
-    ...user,
-    lastInteractionAt: now,
-    firstInteractionAt: existing?.firstInteractionAt ?? now,
-    // 更新昵称（如果有新的）
-    nickname: user.nickname || existing?.nickname,
-  });
-  
-  saveKnownUsers(users);
-  console.log(`[qqbot:proactive] Recorded user: ${key}`);
-}
-
-/**
- * 获取一个已知用户
- * 
- * @param type - 用户类型
- * @param openid - 用户 openid
- * @param accountId - 账户 ID
- */
-export function getKnownUser(type: string, openid: string, accountId: string): KnownUser | undefined {
-  const users = loadKnownUsers();
-  const key = getUserKey(type, openid, accountId);
-  return users.get(key);
-}
-
-/**
- * 列出已知用户
- * 
- * @param options - 过滤选项
- */
-export function listKnownUsers(options?: ListKnownUsersOptions): KnownUser[] {
-  const users = loadKnownUsers();
-  let result = Array.from(users.values());
-  
-  // 过滤类型
-  if (options?.type) {
-    result = result.filter(u => u.type === options.type);
-  }
-  
-  // 过滤账户
-  if (options?.accountId) {
-    result = result.filter(u => u.accountId === options.accountId);
-  }
-  
-  // 排序
-  if (options?.sortByLastInteraction !== false) {
-    result.sort((a, b) => b.lastInteractionAt - a.lastInteractionAt);
-  }
-  
-  // 限制数量
-  if (options?.limit && options.limit > 0) {
-    result = result.slice(0, options.limit);
-  }
-  
-  return result;
-}
-
-/**
- * 删除一个已知用户
- * 
- * @param type - 用户类型
- * @param openid - 用户 openid
- * @param accountId - 账户 ID
- */
-export function removeKnownUser(type: string, openid: string, accountId: string): boolean {
-  const users = loadKnownUsers();
-  const key = getUserKey(type, openid, accountId);
-  const deleted = users.delete(key);
-  if (deleted) {
-    saveKnownUsers(users);
-  }
-  return deleted;
-}
-
-/**
- * 清除所有已知用户
- * 
- * @param accountId - 可选，只清除指定账户的用户
- */
-export function clearKnownUsers(accountId?: string): number {
-  const users = loadKnownUsers();
-  let count = 0;
-  
-  if (accountId) {
-    for (const [key, user] of users) {
-      if (user.accountId === accountId) {
-        users.delete(key);
-        count++;
-      }
-    }
-  } else {
-    count = users.size;
-    users.clear();
-  }
-  
-  if (count > 0) {
-    saveKnownUsers(users);
-  }
-  return count;
 }
 
 // ============ 主动发送消息 ============
@@ -423,7 +202,8 @@ export async function broadcastMessage(
     type: options?.type,
     accountId: options?.accountId,
     limit: options?.limit,
-    sortByLastInteraction: true,
+    sortBy: "lastSeenAt",
+    sortOrder: "desc",
   });
   
   // 过滤掉频道用户（不支持主动发送）
@@ -509,20 +289,6 @@ export async function sendProactiveMessageDirect(
 }
 
 /**
- * 获取已知用户统计
+ * 获取已知用户统计（代理到 known-users 模块）
  */
-export function getKnownUsersStats(accountId?: string): {
-  total: number;
-  c2c: number;
-  group: number;
-  channel: number;
-} {
-  const users = listKnownUsers({ accountId });
-  
-  return {
-    total: users.length,
-    c2c: users.filter(u => u.type === "c2c").length,
-    group: users.filter(u => u.type === "group").length,
-    channel: users.filter(u => u.type === "channel").length,
-  };
-}
+export { getKnownUsersStats } from "./known-users.js";

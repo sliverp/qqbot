@@ -7,7 +7,7 @@ import { decode, isSilk } from "silk-wasm";
  * QQ 语音文件通常以 .amr 扩展名保存，但实际编码可能是 SILK v3
  * SILK 文件头部标识: 0x02 "#!SILK_V3"
  */
-function isSilkFile(filePath: string): boolean {
+function _isSilkFile(filePath: string): boolean {
   try {
     const buf = fs.readFileSync(filePath);
     return isSilk(new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength));

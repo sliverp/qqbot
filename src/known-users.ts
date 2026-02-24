@@ -264,7 +264,7 @@ export function getKnownUsersStats(accountId?: string): {
   activeIn24h: number;
   activeIn7d: number;
 } {
-  let users = listKnownUsers({ accountId });
+  const users = listKnownUsers({ accountId });
   
   const now = Date.now();
   const day = 24 * 60 * 60 * 1000;
