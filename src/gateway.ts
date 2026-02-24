@@ -54,7 +54,7 @@ const QUICK_DISCONNECT_THRESHOLD = 5000; // 5秒内断开视为快速断开
 // 图床服务器配置（可通过环境变量覆盖）
 const IMAGE_SERVER_PORT = parseInt(process.env.QQBOT_IMAGE_SERVER_PORT || "18765", 10);
 // 使用绝对路径，确保文件保存和读取使用同一目录
-const IMAGE_SERVER_DIR = process.env.QQBOT_IMAGE_SERVER_DIR || path.join(process.env.HOME || "/home/ubuntu", "clawd", "qqbot-images");
+const IMAGE_SERVER_DIR = process.env.QQBOT_IMAGE_SERVER_DIR || path.join(process.env.HOME || "/home/ubuntu", ".openclaw", "qqbot", "images");
 
 // 消息队列配置（异步处理，防止阻塞心跳）
 const MESSAGE_QUEUE_SIZE = 1000; // 最大队列长度
@@ -403,6 +403,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
       }
       
       const accessToken = await getAccessToken(account.appId, account.clientSecret);
+      log?.info(`[qqbot:${account.accountId}] ✅ Access token obtained successfully`);
       const gatewayUrl = await getGatewayUrl(accessToken);
 
       log?.info(`[qqbot:${account.accountId}] Connecting to ${gatewayUrl}`);
@@ -462,73 +463,16 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 
         const envelopeOptions = pluginRuntime.channel.reply.resolveEnvelopeFormatOptions(cfg);
 
-        // 组装消息体，添加系统提示词
-        let builtinPrompt = "";
+        // 组装消息体
+        // 静态系统提示已移至 skills/qqbot-cron/SKILL.md 和 skills/qqbot-media/SKILL.md
+        // BodyForAgent 只保留必要的动态上下文信息
         
         // ============ 用户标识信息（用于定时提醒和主动消息） ============
         const isGroupChat = event.type === "group";
         const targetAddress = isGroupChat ? `group:${event.groupOpenid}` : event.senderId;
         
-        builtinPrompt += `
-【当前用户信息】
-- 用户 openid: ${event.senderId}
-- 用户昵称: ${event.senderName || "未知"}
-- 消息类型: ${isGroupChat ? "群聊" : "私聊"}
-- 当前消息 message_id: ${event.messageId}${isGroupChat ? `
-- 群组 group_openid: ${event.groupOpenid}` : ""}
-
-【定时提醒能力】
-你可以帮助用户设置定时提醒。使用exec工具来来运行bash命令 openclaw cron 命令而不是直接使用 "cron" 工具：
-
-示例：5分钟后提醒用户喝水
-\`\`\`bash
-openclaw cron add \\
-  --name "提醒喝水-${event.senderName || "用户"}" \\
-  --at "5m" \\
-  --session isolated \\
-  --message "💧 该喝水啦！" \\
-  --deliver \\
-  --channel qqbot \\
-  --to "${targetAddress}" \\
-  --delete-after-run
-\`\`\`
-
-关键参数说明：
-- \`--to\`: 目标地址（当前用户: ${targetAddress}）
-- \`--at\`: 一次性定时任务的触发时间
-  - 相对时间格式：数字+单位，如 \`5m\`（5分钟）、\`1h\`（1小时）、\`2d\`（2天）【注意：不要加 + 号】
-  - 绝对时间格式：ISO 8601 带时区，如 \`2026-02-01T14:00:00+08:00\`
-- \`--cron\`: 周期性任务（如 \`0 8 * * *\` 每天早上8点）
-- \`--tz "Asia/Shanghai"\`: 周期任务务必设置时区
-- \`--delete-after-run\`: 一次性任务必须添加此参数
-- \`--message\`: 消息内容（必填，不能为空！这是定时提醒触发时直接发送给用户的内容）
-- \`--session isolated\` 独立会话任务
-
-⚠️ 重要注意事项：
-1. --at 参数格式：相对时间用 \`5m\`、\`1h\` 等（不要加 + 号！）；绝对时间用完整 ISO 格式
-2. --message 参数必须有实际内容，不能为空字符串
-3. cron add 命令不支持 --reply-to 参数，定时提醒只能作为主动消息发送`;
-
-        // 🎯 发送图片功能：使用 <qqimg> 标签发送本地或网络图片
-        // 系统会自动将本地文件转换为 Base64 发送，不需要图床服务器
-        builtinPrompt += `
-
-【发送图片】
-你可以直接发送图片给用户！使用 <qqimg> 标签包裹图片路径：
-
-<qqimg>图片路径</qqimg>
-
-示例：
-- <qqimg>/Users/xxx/images/photo.jpg</qqimg>  （本地文件）
-- <qqimg>https://example.com/image.png</qqimg>  （网络图片）
-
-⚠️ 注意：
-- 必须使用 <qqimg>路径</qqimg> 格式
-- 本地路径必须是绝对路径，支持 png、jpg、jpeg、gif、webp 格式
-- 图片文件/URL 必须有效，否则发送失败
-- Markdown格式下，也必须使用该方式发送图片`;
-        
-        const systemPrompts = [builtinPrompt];
+        // 收集额外的系统提示（如果配置了账户级别的 systemPrompt）
+        const systemPrompts: string[] = [];
         if (account.systemPrompt) {
           systemPrompts.push(account.systemPrompt);
         }
@@ -536,9 +480,8 @@ openclaw cron add \\
         // 处理附件（图片等）- 下载到本地供 clawdbot 访问
         let attachmentInfo = "";
         const imageUrls: string[] = [];
-        const imageMediaTypes: string[] = [];
-        // 存到 clawdbot 工作目录下的 downloads 文件夹
-        const downloadDir = path.join(process.env.HOME || "/home/ubuntu", "clawd", "downloads");
+        // 存到 .openclaw/qqbot 目录下的 downloads 文件夹
+        const downloadDir = path.join(process.env.HOME || "/home/ubuntu", ".openclaw", "qqbot", "downloads");
         
         if (event.attachments?.length) {
           // ============ 接收附件描述生成（图片 / 语音 / 其他） ============
@@ -657,7 +600,7 @@ openclaw cron add \\
           channel: "qqbot",
           from: event.senderName ?? event.senderId,
           timestamp: new Date(event.timestamp).getTime(),
-          body: messageBody,
+          body: userContent,
           chatType: isGroup ? "group" : "direct",
           sender: {
             id: event.senderId,
@@ -667,6 +610,55 @@ openclaw cron add \\
           // 传递图片 URL 列表
           ...(imageUrls.length > 0 ? { imageUrls } : {}),
         });
+        
+        // AI 可见的完整上下文（简洁的动态信息 + 用户消息）
+        // 静态能力说明已通过 skills 加载，这里只提供必要的运行时上下文
+        // 📌 关键：直接注入图片发送说明，确保 AI 知道如何发送图片
+        const nowMs = Date.now();
+        const contextInfo = `你正在通过 QQ 与用户对话。
+
+【本次会话上下文】
+- 用户: ${event.senderName || "未知"} (${event.senderId})
+- 场景: ${isGroupChat ? "群聊" : "私聊"}${isGroupChat ? ` (群组: ${event.groupOpenid})` : ""}
+- 消息ID: ${event.messageId}
+- 投递目标: ${targetAddress}
+
+【发送图片方法】
+你可以发送本地图片！使用 <qqimg>图片路径</qqimg> 标签即可，例如：
+<qqimg>/Users/xxx/image.png</qqimg>
+绝对不要说"无法发送图片"，直接用 <qqimg> 标签包裹路径就能发送。
+
+你已加载 qqbot 相关技能，可直接使用定时提醒（qqbot-cron）和图片发送（qqbot-media）等功能。
+
+【当前毫秒时间戳】${nowMs}
+举例：3分钟后 atMs = ${nowMs} + 180000 = ${nowMs + 180000}，5分钟后 = ${nowMs + 300000}
+
+【定时提醒 — 必读】
+设置提醒时，cron 工具的 payload 必须用 agentTurn（不是 systemEvent！systemEvent 不会发 QQ 消息）。
+正确示例（一次性提醒，N 分钟后）：
+{
+  "action": "add",
+  "job": {
+    "name": "提醒名",
+    "schedule": { "kind": "at", "atMs": ${nowMs} + N*60000 },
+    "sessionTarget": "isolated",
+    "wakeMode": "now",
+    "deleteAfterRun": true,
+    "payload": {
+      "kind": "agentTurn",
+      "message": "你是一个暖心的提醒助手。请用温暖、有趣的方式提醒用户：{提醒内容}。要求：(1) 不要回复HEARTBEAT_OK (2) 不要解释你是谁 (3) 直接输出一条暖心的提醒消息 (4) 可以加一句简短的鸡汤或关怀的话 (5) 控制在2-3句话以内 (6) 用emoji点缀",
+      "deliver": true,
+      "channel": "qqbot",
+      "to": "${targetAddress}"
+    }
+  }
+}
+要点：(1) payload.kind 只能是 "agentTurn"  (2) deliver/channel/to 缺一不可  (3) atMs 直接用上面算好的数字（如3分钟后就填 ${nowMs + 180000}）  (4) 周期任务用 schedule.kind="cron" + expr + tz="Asia/Shanghai"`;
+
+
+        const agentBody = systemPrompts.length > 0 
+          ? `${contextInfo}\n\n${systemPrompts.join("\n")}\n\n${userContent}`
+          : `${contextInfo}\n\n${userContent}`;
 
         const fromAddress = event.type === "guild" ? `qqbot:channel:${event.channelId}`
                          : event.type === "group" ? `qqbot:group:${event.groupOpenid}`
@@ -1308,7 +1300,12 @@ openclaw cron add \\
                   for (const match of bareUrlMatches) {
                     textWithoutImages = textWithoutImages.replace(match[0], "").trim();
                   }
-
+                  
+                  // 处理文本中的 URL 点号（防止被 QQ 解析为链接），仅群聊时过滤，C2C 不过滤
+                  if (textWithoutImages && event.type !== "c2c") {
+                    textWithoutImages = textWithoutImages.replace(/([a-zA-Z0-9])\.([a-zA-Z0-9])/g, "$1_$2");
+                  }
+                  
                   try {
                     // 发送图片（通过富媒体 API）
                     for (const imageUrl of imageUrls) {
@@ -1364,10 +1361,10 @@ openclaw cron add \\
                 // 发送错误提示给用户，显示完整错误信息
                 const errMsg = String(err);
                 if (errMsg.includes("401") || errMsg.includes("key") || errMsg.includes("auth")) {
-                  await sendErrorMessage("[ClawdBot] 大模型 API Key 可能无效，请检查配置");
+                  await sendErrorMessage("大模型 API Key 可能无效，请检查配置");
                 } else {
                   // 显示完整错误信息，截取前 500 字符
-                  await sendErrorMessage(`[ClawdBot] 出错: ${errMsg.slice(0, 500)}`);
+                  await sendErrorMessage(`出错: ${errMsg.slice(0, 500)}`);
                 }
               },
             },
@@ -1390,7 +1387,7 @@ openclaw cron add \\
           }
         } catch (err) {
           log?.error(`[qqbot:${account.accountId}] Message processing failed: ${err}`);
-          await sendErrorMessage(`[ClawdBot] 处理失败: ${String(err).slice(0, 500)}`);
+          await sendErrorMessage(`处理失败: ${String(err).slice(0, 500)}`);
         }
       };
 
@@ -1626,8 +1623,12 @@ openclaw cron add \\
         log?.info(`[qqbot:${account.accountId}] WebSocket closed: ${code} ${reason.toString()}`);
         isConnecting = false; // 释放锁
         
-        // 根据错误码处理
-        // 4009: 可以重新发起 resume
+        // 根据错误码处理（参考 QQ 官方文档）
+        // 4004: CODE_INVALID_TOKEN - Token 无效，需刷新 token 重新连接
+        // 4006: CODE_SESSION_NO_LONGER_VALID - 会话失效，需重新 identify
+        // 4007: CODE_INVALID_SEQ - Resume 时 seq 无效，需重新 identify
+        // 4008: CODE_RATE_LIMITED - 限流断开，等待后重连
+        // 4009: CODE_SESSION_TIMED_OUT - 会话超时，需重新 identify
         // 4900-4913: 内部错误，需要重新 identify
         // 4914: 机器人已下架
         // 4915: 机器人已封禁
@@ -1638,15 +1639,47 @@ openclaw cron add \\
           return;
         }
         
-        if (code === 4009) {
-          // 4009 可以尝试 resume，保留 session
-          log?.info(`[qqbot:${account.accountId}] Error 4009, will try resume`);
+        // 4004: Token 无效，强制刷新 token 后重连
+        if (code === 4004) {
+          log?.info(`[qqbot:${account.accountId}] Invalid token (4004), will refresh token and reconnect`);
+          shouldRefreshToken = true;
+          cleanup();
+          if (!isAborted) {
+            scheduleReconnect();
+          }
+          return;
+        }
+        
+        // 4008: 限流断开，等待后重连（不需要重新 identify）
+        if (code === 4008) {
+          log?.info(`[qqbot:${account.accountId}] Rate limited (4008), waiting ${RATE_LIMIT_DELAY}ms before reconnect`);
+          cleanup();
+          if (!isAborted) {
+            scheduleReconnect(RATE_LIMIT_DELAY);
+          }
+          return;
+        }
+        
+        // 4006/4007/4009: 会话失效或超时，需要清除 session 重新 identify
+        if (code === 4006 || code === 4007 || code === 4009) {
+          const codeDesc: Record<number, string> = {
+            4006: "session no longer valid",
+            4007: "invalid seq on resume",
+            4009: "session timed out",
+          };
+          log?.info(`[qqbot:${account.accountId}] Error ${code} (${codeDesc[code]}), will re-identify`);
+          sessionId = null;
+          lastSeq = null;
+          // 清除持久化的 Session
+          clearSession(account.accountId);
           shouldRefreshToken = true;
         } else if (code >= 4900 && code <= 4913) {
           // 4900-4913 内部错误，清除 session 重新 identify
           log?.info(`[qqbot:${account.accountId}] Internal error (${code}), will re-identify`);
           sessionId = null;
           lastSeq = null;
+          // 清除持久化的 Session
+          clearSession(account.accountId);
           shouldRefreshToken = true;
         }
         

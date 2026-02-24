@@ -172,19 +172,53 @@ export interface OutboundResult {
  *   - 纯数字 -> 频道
  */
 function parseTarget(to: string): { type: "c2c" | "group" | "channel"; id: string } {
+  const timestamp = new Date().toISOString();
+  console.log(`[${timestamp}] [qqbot] parseTarget: input=${to}`);
+  
   // 去掉 qqbot: 前缀
   let id = to.replace(/^qqbot:/i, "");
   
   if (id.startsWith("c2c:")) {
-    return { type: "c2c", id: id.slice(4) };
+    const userId = id.slice(4);
+    if (!userId || userId.length === 0) {
+      const error = `Invalid c2c target format: ${to} - missing user ID`;
+      console.error(`[${timestamp}] [qqbot] parseTarget: ${error}`);
+      throw new Error(error);
+    }
+    console.log(`[${timestamp}] [qqbot] parseTarget: c2c target, user ID=${userId}`);
+    return { type: "c2c", id: userId };
   }
+  
   if (id.startsWith("group:")) {
-    return { type: "group", id: id.slice(6) };
+    const groupId = id.slice(6);
+    if (!groupId || groupId.length === 0) {
+      const error = `Invalid group target format: ${to} - missing group ID`;
+      console.error(`[${timestamp}] [qqbot] parseTarget: ${error}`);
+      throw new Error(error);
+    }
+    console.log(`[${timestamp}] [qqbot] parseTarget: group target, group ID=${groupId}`);
+    return { type: "group", id: groupId };
   }
+  
   if (id.startsWith("channel:")) {
-    return { type: "channel", id: id.slice(8) };
+    const channelId = id.slice(8);
+    if (!channelId || channelId.length === 0) {
+      const error = `Invalid channel target format: ${to} - missing channel ID`;
+      console.error(`[${timestamp}] [qqbot] parseTarget: ${error}`);
+      throw new Error(error);
+    }
+    console.log(`[${timestamp}] [qqbot] parseTarget: channel target, channel ID=${channelId}`);
+    return { type: "channel", id: channelId };
   }
+  
   // 默认当作 c2c（私聊）
+  if (!id || id.length === 0) {
+    const error = `Invalid target format: ${to} - empty ID after removing qqbot: prefix`;
+    console.error(`[${timestamp}] [qqbot] parseTarget: ${error}`);
+    throw new Error(error);
+  }
+  
+  console.log(`[${timestamp}] [qqbot] parseTarget: default c2c target, ID=${id}`);
   return { type: "c2c", id };
 }
 
@@ -196,10 +230,11 @@ function parseTarget(to: string): { type: "c2c" | "group" | "channel"; id: strin
  * 注意：
  * 1. 主动消息（无 replyToId）必须有消息内容，不支持流式发送
  * 2. 当被动回复不可用（超期或超过次数）时，自动降级为主动消息
+ * 3. 支持 <qqimg>路径</qqimg> 或 <qqimg>路径</img> 格式发送图片
  */
 export async function sendText(ctx: OutboundContext): Promise<OutboundResult> {
-  const { to, text, account } = ctx;
-  let { replyToId } = ctx;
+  const { to, account } = ctx;
+  let { text, replyToId } = ctx;
   let fallbackToProactive = false;
 
   console.log("[qqbot] sendText ctx:", JSON.stringify({ to, text: text?.slice(0, 50), replyToId, accountId: account.accountId }, null, 2));
@@ -226,6 +261,141 @@ export async function sendText(ctx: OutboundContext): Promise<OutboundResult> {
     } else {
       console.log(`[qqbot] sendText: 消息 ${replyToId} 剩余被动回复次数: ${limitCheck.remaining}/${MESSAGE_REPLY_LIMIT}`);
     }
+  }
+
+  // ============ <qqimg> 标签检测与处理 ============
+  // 支持 <qqimg>路径</qqimg> 或 <qqimg>路径</img> 格式发送图片
+  const qqimgRegex = /<qqimg>([^<>]+)<\/(?:qqimg|img)>/gi;
+  const qqimgMatches = text.match(qqimgRegex);
+  
+  if (qqimgMatches && qqimgMatches.length > 0) {
+    console.log(`[qqbot] sendText: Detected ${qqimgMatches.length} <qqimg> tag(s), processing...`);
+    
+    // 构建发送队列：根据内容在原文中的实际位置顺序发送
+    const sendQueue: Array<{ type: "text" | "image"; content: string }> = [];
+    
+    let lastIndex = 0;
+    const qqimgRegexWithIndex = /<qqimg>([^<>]+)<\/(?:qqimg|img)>/gi;
+    let match;
+    
+    while ((match = qqimgRegexWithIndex.exec(text)) !== null) {
+      // 添加标签前的文本
+      const textBefore = text.slice(lastIndex, match.index).replace(/\n{3,}/g, "\n\n").trim();
+      if (textBefore) {
+        sendQueue.push({ type: "text", content: textBefore });
+      }
+      
+      // 添加图片
+      const imagePath = match[1]?.trim();
+      if (imagePath) {
+        sendQueue.push({ type: "image", content: imagePath });
+        console.log(`[qqbot] sendText: Found image path in <qqimg>: ${imagePath}`);
+      }
+      
+      lastIndex = match.index + match[0].length;
+    }
+    
+    // 添加最后一个标签后的文本
+    const textAfter = text.slice(lastIndex).replace(/\n{3,}/g, "\n\n").trim();
+    if (textAfter) {
+      sendQueue.push({ type: "text", content: textAfter });
+    }
+    
+    console.log(`[qqbot] sendText: Send queue: ${sendQueue.map(item => item.type).join(" -> ")}`);
+    
+    // 按顺序发送
+    if (!account.appId || !account.clientSecret) {
+      return { channel: "qqbot", error: "QQBot not configured (missing appId or clientSecret)" };
+    }
+    
+    const accessToken = await getAccessToken(account.appId, account.clientSecret);
+    const target = parseTarget(to);
+    let lastResult: OutboundResult = { channel: "qqbot" };
+    
+    for (const item of sendQueue) {
+      try {
+        if (item.type === "text") {
+          // 发送文本
+          if (replyToId) {
+            // 被动回复
+            if (target.type === "c2c") {
+              const result = await sendC2CMessage(accessToken, target.id, item.content, replyToId);
+              recordMessageReply(replyToId);
+              lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
+            } else if (target.type === "group") {
+              const result = await sendGroupMessage(accessToken, target.id, item.content, replyToId);
+              recordMessageReply(replyToId);
+              lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
+            } else {
+              const result = await sendChannelMessage(accessToken, target.id, item.content, replyToId);
+              recordMessageReply(replyToId);
+              lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
+            }
+          } else {
+            // 主动消息
+            if (target.type === "c2c") {
+              const result = await sendProactiveC2CMessage(accessToken, target.id, item.content);
+              lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
+            } else if (target.type === "group") {
+              const result = await sendProactiveGroupMessage(accessToken, target.id, item.content);
+              lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
+            } else {
+              const result = await sendChannelMessage(accessToken, target.id, item.content);
+              lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
+            }
+          }
+          console.log(`[qqbot] sendText: Sent text part: ${item.content.slice(0, 30)}...`);
+        } else if (item.type === "image") {
+          // 发送图片
+          const imagePath = item.content;
+          const isHttpUrl = imagePath.startsWith("http://") || imagePath.startsWith("https://");
+          
+          let imageUrl = imagePath;
+          
+          // 如果是本地文件路径，读取并转换为 Base64
+          if (!isHttpUrl && !imagePath.startsWith("data:")) {
+            if (fs.existsSync(imagePath)) {
+              const fileBuffer = fs.readFileSync(imagePath);
+              const ext = path.extname(imagePath).toLowerCase();
+              const mimeTypes: Record<string, string> = {
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".png": "image/png",
+                ".gif": "image/gif",
+                ".webp": "image/webp",
+                ".bmp": "image/bmp",
+              };
+              const mimeType = mimeTypes[ext] ?? "image/png";
+              imageUrl = `data:${mimeType};base64,${fileBuffer.toString("base64")}`;
+              console.log(`[qqbot] sendText: Converted local image to Base64 (size: ${fileBuffer.length} bytes)`);
+            } else {
+              console.error(`[qqbot] sendText: Image file not found: ${imagePath}`);
+              continue; // 跳过不存在的图片
+            }
+          }
+          
+          // 发送图片
+          if (target.type === "c2c") {
+            const result = await sendC2CImageMessage(accessToken, target.id, imageUrl, replyToId ?? undefined);
+            lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
+          } else if (target.type === "group") {
+            const result = await sendGroupImageMessage(accessToken, target.id, imageUrl, replyToId ?? undefined);
+            lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
+          } else if (isHttpUrl) {
+            // 频道使用 Markdown 格式（仅支持公网 URL）
+            const result = await sendChannelMessage(accessToken, target.id, `![](${imagePath})`, replyToId ?? undefined);
+            lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
+          }
+          console.log(`[qqbot] sendText: Sent image via <qqimg> tag: ${imagePath.slice(0, 60)}...`);
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error(`[qqbot] sendText: Failed to send ${item.type}: ${errMsg}`);
+        // 继续发送队列中的其他内容
+      }
+    }
+    
+    return lastResult;
   }
 
   // ============ 主动消息校验（参考 Telegram 机制） ============
@@ -304,28 +474,46 @@ export async function sendProactiveMessage(
   to: string,
   text: string
 ): Promise<OutboundResult> {
+  const timestamp = new Date().toISOString();
+  
   if (!account.appId || !account.clientSecret) {
-    return { channel: "qqbot", error: "QQBot not configured (missing appId or clientSecret)" };
+    const errorMsg = "QQBot not configured (missing appId or clientSecret)";
+    console.error(`[${timestamp}] [qqbot] sendProactiveMessage: ${errorMsg}`);
+    return { channel: "qqbot", error: errorMsg };
   }
 
+  console.log(`[${timestamp}] [qqbot] sendProactiveMessage: starting, to=${to}, text length=${text.length}, accountId=${account.accountId}`);
+
   try {
+    console.log(`[${timestamp}] [qqbot] sendProactiveMessage: getting access token for appId=${account.appId}`);
     const accessToken = await getAccessToken(account.appId, account.clientSecret);
+    
+    console.log(`[${timestamp}] [qqbot] sendProactiveMessage: parsing target=${to}`);
     const target = parseTarget(to);
+    console.log(`[${timestamp}] [qqbot] sendProactiveMessage: target parsed, type=${target.type}, id=${target.id}`);
 
     if (target.type === "c2c") {
+      console.log(`[${timestamp}] [qqbot] sendProactiveMessage: sending proactive C2C message to user=${target.id}`);
       const result = await sendProactiveC2CMessage(accessToken, target.id, text);
+      console.log(`[${timestamp}] [qqbot] sendProactiveMessage: proactive C2C message sent successfully, messageId=${result.id}`);
       return { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
     } else if (target.type === "group") {
+      console.log(`[${timestamp}] [qqbot] sendProactiveMessage: sending proactive group message to group=${target.id}`);
       const result = await sendProactiveGroupMessage(accessToken, target.id, text);
+      console.log(`[${timestamp}] [qqbot] sendProactiveMessage: proactive group message sent successfully, messageId=${result.id}`);
       return { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
     } else {
       // 频道暂不支持主动消息，使用普通发送
+      console.log(`[${timestamp}] [qqbot] sendProactiveMessage: sending channel message to channel=${target.id}`);
       const result = await sendChannelMessage(accessToken, target.id, text);
+      console.log(`[${timestamp}] [qqbot] sendProactiveMessage: channel message sent successfully, messageId=${result.id}`);
       return { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
     }
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { channel: "qqbot", error: message };
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    console.error(`[${timestamp}] [qqbot] sendProactiveMessage: error: ${errorMessage}`);
+    console.error(`[${timestamp}] [qqbot] sendProactiveMessage: error stack: ${err instanceof Error ? err.stack : 'No stack trace'}`);
+    return { channel: "qqbot", error: errorMessage };
   }
 }
 
@@ -537,14 +725,15 @@ export async function sendCronMessage(
   to: string,
   message: string
 ): Promise<OutboundResult> {
-  console.log(`[qqbot] sendCronMessage: to=${to}, message length=${message.length}`);
+  const timestamp = new Date().toISOString();
+  console.log(`[${timestamp}] [qqbot] sendCronMessage: to=${to}, message length=${message.length}`);
   
   // 检测是否是 QQBOT_CRON: 格式的结构化载荷
   const cronResult = decodeCronPayload(message);
   
   if (cronResult.isCronPayload) {
     if (cronResult.error) {
-      console.error(`[qqbot] sendCronMessage: cron payload decode error: ${cronResult.error}`);
+      console.error(`[${timestamp}] [qqbot] sendCronMessage: cron payload decode error: ${cronResult.error}`);
       return {
         channel: "qqbot",
         error: `Cron 载荷解码失败: ${cronResult.error}`
@@ -553,19 +742,29 @@ export async function sendCronMessage(
     
     if (cronResult.payload) {
       const payload = cronResult.payload;
-      console.log(`[qqbot] sendCronMessage: decoded cron payload, targetType=${payload.targetType}, targetAddress=${payload.targetAddress}`);
+      console.log(`[${timestamp}] [qqbot] sendCronMessage: decoded cron payload, targetType=${payload.targetType}, targetAddress=${payload.targetAddress}, content length=${payload.content.length}`);
       
       // 使用载荷中的目标地址和类型发送消息
       const targetTo = payload.targetType === "group" 
         ? `group:${payload.targetAddress}` 
         : payload.targetAddress;
       
+      console.log(`[${timestamp}] [qqbot] sendCronMessage: sending proactive message to targetTo=${targetTo}`);
+      
       // 发送提醒内容
-      return await sendProactiveMessage(account, targetTo, payload.content);
+      const result = await sendProactiveMessage(account, targetTo, payload.content);
+      
+      if (result.error) {
+        console.error(`[${timestamp}] [qqbot] sendCronMessage: proactive message failed, error=${result.error}`);
+      } else {
+        console.log(`[${timestamp}] [qqbot] sendCronMessage: proactive message sent successfully`);
+      }
+      
+      return result;
     }
   }
   
   // 非结构化载荷，作为普通文本处理
-  console.log(`[qqbot] sendCronMessage: plain text message, sending to ${to}`);
+  console.log(`[${timestamp}] [qqbot] sendCronMessage: plain text message, sending to ${to}`);
   return await sendProactiveMessage(account, to, message);
 }

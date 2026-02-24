@@ -70,9 +70,9 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk";
 
 /**
  * 已知用户存储
- * 使用简单的 JSON 文件存储，保存在 clawd 目录下
+ * 使用简单的 JSON 文件存储，保存在 .openclaw/qqbot 目录下
  */
-const STORAGE_DIR = path.join(process.env.HOME || "/home/ubuntu", "clawd", "qqbot-data");
+const STORAGE_DIR = path.join(process.env.HOME || "/home/ubuntu", ".openclaw", "qqbot", "data");
 const KNOWN_USERS_FILE = path.join(STORAGE_DIR, "known-users.json");
 
 // 内存缓存
