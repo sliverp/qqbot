@@ -1,10 +1,33 @@
 {
-  "name": "@openclaw/qqbot",
-  "version": "2026.1.31",
+  "name": "@sliverp/qqbot",
+  "version": "1.5.0",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "description": "OpenClaw QQ Bot channel plugin with streaming message support",
+  "bin": {
+    "qqbot": "./bin/qqbot-cli.js"
+  },
+  "files": [
+    "dist",
+    "bin",
+    "src",
+    "skills",
+    "index.ts",
+    "tsconfig.json",
+    "openclaw.plugin.json",
+    "clawdbot.plugin.json",
+    "moltbot.plugin.json"
+  ],
+  "clawdbot": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "moltbot": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
   "openclaw": {
     "extensions": [
       "./index.ts"
@@ -16,9 +39,11 @@
     "prepack": "npm install --omit=dev"
   },
   "dependencies": {
+    "silk-wasm": "^3.7.1",
     "ws": "^8.18.0"
   },
   "bundledDependencies": [
+    "silk-wasm",
     "ws"
   ],
   "devDependencies": {
@@ -27,6 +52,13 @@
     "typescript": "^5.9.3"
   },
   "peerDependencies": {
+    "clawdbot": "*",
+    "moltbot": "*",
     "openclaw": "*"
-  }
+  },
+  "homepage": "https://github.com/sliverp/qqbot",
+  "bundleDependencies": [
+    "silk-wasm",
+    "ws"
+  ]
 }

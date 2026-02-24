@@ -2,13 +2,14 @@ import WebSocket from "ws";
 import path from "node:path";
 import * as fs from "node:fs";
 import type { ResolvedQQBotAccount, WSPayload, C2CMessageEvent, GuildMessageEvent, GroupMessageEvent } from "./types.js";
-import { getAccessToken, getGatewayUrl, sendC2CMessage, sendChannelMessage, sendGroupMessage, clearTokenCache, sendC2CImageMessage, sendGroupImageMessage, initApiConfig, startBackgroundTokenRefresh, stopBackgroundTokenRefresh } from "./api.js";
+import { getAccessToken, getGatewayUrl, sendC2CMessage, sendChannelMessage, sendGroupMessage, clearTokenCache, sendC2CImageMessage, sendGroupImageMessage, initApiConfig, startBackgroundTokenRefresh, stopBackgroundTokenRefresh, sendC2CInputNotify } from "./api.js";
 import { loadSession, saveSession, clearSession, type SessionState } from "./session-store.js";
 import { recordKnownUser, flushKnownUsers } from "./known-users.js";
 import { getQQBotRuntime } from "./runtime.js";
 import { startImageServer, isImageServerRunning, downloadFile, type ImageServerConfig } from "./image-server.js";
 import { getImageSize, formatQQBotMarkdownImage, hasQQBotImageSize, DEFAULT_IMAGE_SIZE } from "./utils/image-size.js";
 import { parseQQBotPayload, encodePayloadForCron, isCronReminderPayload, isMediaPayload, type CronReminderPayload, type MediaPayload } from "./utils/payload.js";
+import { convertSilkToWav, isVoiceAttachment, formatDuration } from "./utils/audio-convert.js";
 
 // QQ Bot intents - 按权限级别分组
 const INTENTS = {
@@ -122,6 +123,29 @@ function recordMessageReply(messageId: string): void {
       record.count++;
     }
   }
+}
+
+// ============ QQ 表情标签解析 ============
+
+/**
+ * 解析 QQ 表情标签，将 <faceType=1,faceId="13",ext="base64..."> 格式
+ * 替换为 【表情: 中文名】 格式
+ * ext 字段为 Base64 编码的 JSON，格式如 {"text":"呲牙"}
+ */
+function parseFaceTags(text: string): string {
+  if (!text) return text;
+
+  // 匹配 <faceType=...,faceId="...",ext="..."> 格式的表情标签
+  return text.replace(/<faceType=\d+,faceId="[^"]*",ext="([^"]*)">/g, (_match, ext: string) => {
+    try {
+      const decoded = Buffer.from(ext, "base64").toString("utf-8");
+      const parsed = JSON.parse(decoded);
+      const faceName = parsed.text || "未知表情";
+      return `【表情: ${faceName}】`;
+    } catch {
+      return _match;
+    }
+  });
 }
 
 // ============ 内部标记过滤 ============
@@ -402,6 +426,8 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         groupOpenid?: string;
         attachments?: Array<{ content_type: string; url: string; filename?: string }>;
       }) => {
+
+        log?.debug?.(`[qqbot:${account.accountId}] Received message: ${JSON.stringify(event)}`);
         log?.info(`[qqbot:${account.accountId}] Processing message from ${event.senderId}: ${event.content}`);
         if (event.attachments?.length) {
           log?.info(`[qqbot:${account.accountId}] Attachments: ${event.attachments.length}`);
@@ -412,6 +438,13 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
           accountId: account.accountId,
           direction: "inbound",
         });
+
+        try{
+          await sendC2CInputNotify(accessToken, event.senderId, event.messageId, 60);
+          log?.info(`[qqbot:${account.accountId}] Sent input notify to ${event.senderId}`);
+        }catch(err){
+          log?.error(`[qqbot:${account.accountId}] sendC2CInputNotify error: ${err}`);
+        }
 
         const isGroup = event.type === "guild" || event.type === "group";
         const peerId = event.type === "guild" ? `channel:${event.channelId}` 
@@ -451,9 +484,9 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         const downloadDir = path.join(process.env.HOME || "/home/ubuntu", ".openclaw", "qqbot", "downloads");
         
         if (event.attachments?.length) {
-          // ============ 接收图片的自然语言描述生成 ============
-          // 根据需求 4：将图片信息转换为自然语言描述，便于 AI 理解
+          // ============ 接收附件描述生成（图片 / 语音 / 其他） ============
           const imageDescriptions: string[] = [];
+          const voiceDescriptions: string[] = [];
           const otherAttachments: string[] = [];
           
           for (const att of event.attachments) {
@@ -462,6 +495,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
             if (localPath) {
               if (att.content_type?.startsWith("image/")) {
                 imageUrls.push(localPath);
+                imageMediaTypes.push(att.content_type);
                 
                 // 构建自然语言描述（根据需求 4.2）
                 const format = att.content_type?.split("/")[1] || "未知格式";
@@ -475,6 +509,42 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 - 发送时间：${timestamp}
 
 请根据图片内容进行回复。`);
+              } else if (isVoiceAttachment(att)) {
+                // ============ 语音消息处理：SILK → WAV ============
+                log?.info(`[qqbot:${account.accountId}] Voice attachment detected: ${att.filename}, converting SILK to WAV...`);
+                try {
+                  const result = await convertSilkToWav(localPath, downloadDir);
+                  if (result) {
+                    const durationStr = formatDuration(result.duration);
+                    log?.info(`[qqbot:${account.accountId}] Voice converted: ${result.wavPath} (duration: ${durationStr})`);
+                    
+                    const timestamp = new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
+                    voiceDescriptions.push(`
+用户发送了一条语音消息：
+- 语音文件：${result.wavPath}
+- 语音时长：${durationStr}
+- 发送时间：${timestamp}`);
+                  } else {
+                    // SILK 解码失败，保留原始文件
+                    log?.info(`[qqbot:${account.accountId}] Voice file is not SILK format, keeping original: ${localPath}`);
+                    voiceDescriptions.push(`
+用户发送了一条语音消息（非SILK格式，无法转换）：
+- 语音文件：${localPath}
+- 原始格式：${att.filename || "unknown"}
+- 消息ID：${event.messageId}
+
+请告知用户该语音格式暂不支持解析。`);
+                  }
+                } catch (convertErr) {
+                  log?.error(`[qqbot:${account.accountId}] Voice conversion failed: ${convertErr}`);
+                  voiceDescriptions.push(`
+用户发送了一条语音消息（转换失败）：
+- 原始文件：${localPath}
+- 错误信息：${convertErr}
+- 消息ID：${event.messageId}
+
+请告知用户语音处理出现问题。`);
+                }
               } else {
                 otherAttachments.push(`[附件: ${localPath}]`);
               }
@@ -484,6 +554,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
               log?.error(`[qqbot:${account.accountId}] Failed to download attachment: ${att.url}`);
               if (att.content_type?.startsWith("image/")) {
                 imageUrls.push(att.url);
+                imageMediaTypes.push(att.content_type);
                 
                 // 下载失败时的自然语言描述
                 const format = att.content_type?.split("/")[1] || "未知格式";
@@ -503,24 +574,30 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
             }
           }
           
-          // 组合附件信息：先图片描述，后其他附件
+          // 组合附件信息：先图片描述，后语音描述，后其他附件
           if (imageDescriptions.length > 0) {
             attachmentInfo += "\n" + imageDescriptions.join("\n");
+          }
+          if (voiceDescriptions.length > 0) {
+            attachmentInfo += "\n" + voiceDescriptions.join("\n");
           }
           if (otherAttachments.length > 0) {
             attachmentInfo += "\n" + otherAttachments.join("\n");
           }
         }
         
-        const userContent = event.content + attachmentInfo;
-        
-        // ============ 分离展示内容和 AI 上下文 ============
-        // Body: 展示在 Web 页面的内容（只包含用户原始消息）
-        // BodyForAgent: 传给 AI 的完整上下文（包含系统提示 + 用户消息）
-        
-        // 用户可见的消息体（Web 页面展示）
-        const displayBody = pluginRuntime.channel.reply.formatInboundEnvelope({
-          channel: "QQBot",
+        // 解析 QQ 表情标签，将 <faceType=...,ext="base64"> 替换为 【表情: 中文名】
+        const parsedContent = parseFaceTags(event.content);
+        const userContent = parsedContent + attachmentInfo;
+        let messageBody = `【系统提示】\n${systemPrompts.join("\n")}\n\n【用户输入】\n${userContent}`;
+
+        if(userContent.startsWith("/")){ // 保留Openclaw原始命令
+          messageBody = userContent
+        }
+        log?.info(`[qqbot:${account.accountId}] messageBody: ${messageBody}`);
+
+        const body = pluginRuntime.channel.reply.formatInboundEnvelope({
+          channel: "qqbot",
           from: event.senderName ?? event.senderId,
           timestamp: new Date(event.timestamp).getTime(),
           body: userContent,
@@ -588,9 +665,34 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                          : `qqbot:c2c:${event.senderId}`;
         const toAddress = fromAddress;
 
+        // 计算命令授权状态
+        // allowFrom: ["*"] 表示允许所有人，否则检查 senderId 是否在 allowFrom 列表中
+        const allowFromList = account.config?.allowFrom ?? [];
+        const allowAll = allowFromList.length === 0 || allowFromList.some((entry: string) => entry === "*");
+        const commandAuthorized = allowAll || allowFromList.some((entry: string) => 
+          entry.toUpperCase() === event.senderId.toUpperCase()
+        );
+
+        // 分离 imageUrls 为本地路径和远程 URL，供 openclaw 原生媒体处理
+        const localMediaPaths: string[] = [];
+        const localMediaTypes: string[] = [];
+        const remoteMediaUrls: string[] = [];
+        const remoteMediaTypes: string[] = [];
+        for (let i = 0; i < imageUrls.length; i++) {
+          const u = imageUrls[i];
+          const t = imageMediaTypes[i] ?? "image/png";
+          if (u.startsWith("http://") || u.startsWith("https://")) {
+            remoteMediaUrls.push(u);
+            remoteMediaTypes.push(t);
+          } else {
+            localMediaPaths.push(u);
+            localMediaTypes.push(t);
+          }
+        }
+
         const ctxPayload = pluginRuntime.channel.reply.finalizeInboundContext({
-          Body: displayBody,
-          BodyForAgent: agentBody,  // AI 专用上下文，包含系统提示但不展示给用户
+          Body: body,
+          BodyForAgent: messageBody,
           RawBody: event.content,
           CommandBody: event.content,
           From: fromAddress,
@@ -609,6 +711,18 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
           QQChannelId: event.channelId,
           QQGuildId: event.guildId,
           QQGroupOpenid: event.groupOpenid,
+          CommandAuthorized: commandAuthorized,
+          // 传递媒体路径和 URL，使 openclaw 原生媒体处理（视觉等）能正常工作
+          ...(localMediaPaths.length > 0 ? {
+            MediaPaths: localMediaPaths,
+            MediaPath: localMediaPaths[0],
+            MediaTypes: localMediaTypes,
+            MediaType: localMediaTypes[0],
+          } : {}),
+          ...(remoteMediaUrls.length > 0 ? {
+            MediaUrls: remoteMediaUrls,
+            MediaUrl: remoteMediaUrls[0],
+          } : {}),
         });
 
         // 发送消息的辅助函数，带 token 过期重试
@@ -809,7 +923,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                         log?.info(`[qqbot:${account.accountId}] Sent image via <qqimg> tag: ${imagePath.slice(0, 60)}...`);
                       } catch (err) {
                         log?.error(`[qqbot:${account.accountId}] Failed to send image from <qqimg>: ${err}`);
-                        await sendErrorMessage(`发送图片失败: ${err}`);
+                        await sendErrorMessage(`图片发送失败，图片似乎不存在哦，图片路径：${imagePath}`);
                       }
                     }
                   }
@@ -1254,7 +1368,9 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                 }
               },
             },
-            replyOptions: {},
+            replyOptions: {
+              disableBlockStreaming: false,
+            },
           });
 
           // 等待分发完成或超时
@@ -1266,6 +1382,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
             }
             if (!hasResponse) {
               log?.error(`[qqbot:${account.accountId}] No response within timeout`);
+              await sendErrorMessage("QQ已经收到了你的请求并转交给了Openclaw，任务可能比较复杂，正在处理中...");
             }
           }
         } catch (err) {

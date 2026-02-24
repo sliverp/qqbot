@@ -6,8 +6,8 @@ import { setQQBotRuntime } from "./src/runtime.js";
 
 const plugin = {
   id: "qqbot",
-  name: "QQ Bot (Stream)",
-  description: "QQ Bot channel plugin with streaming message support",
+  name: "QQ Bot",
+  description: "QQ Bot channel plugin",
   configSchema: emptyPluginConfigSchema(),
   register(api: OpenClawPluginApi) {
     setQQBotRuntime(api.runtime);

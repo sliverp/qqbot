@@ -76,7 +76,7 @@ export function resolveQQBotAccount(
       allowFrom: qqbot?.allowFrom,
       systemPrompt: qqbot?.systemPrompt,
       imageServerBaseUrl: qqbot?.imageServerBaseUrl,
-      markdownSupport: qqbot?.markdownSupport,
+      markdownSupport: qqbot?.markdownSupport ?? true,
     };
     appId = qqbot?.appId ?? "";
   } else {
@@ -128,11 +128,16 @@ export function applyQQBotAccountConfig(
   const next = { ...cfg };
 
   if (accountId === DEFAULT_ACCOUNT_ID) {
+    // 如果没有设置过 allowFrom，默认设置为 ["*"]
+    const existingConfig = (next.channels?.qqbot as QQBotChannelConfig) || {};
+    const allowFrom = existingConfig.allowFrom ?? ["*"];
+    
     next.channels = {
       ...next.channels,
       qqbot: {
         ...(next.channels?.qqbot as Record<string, unknown> || {}),
         enabled: true,
+        allowFrom,
         ...(input.appId ? { appId: input.appId } : {}),
         ...(input.clientSecret
           ? { clientSecret: input.clientSecret }
@@ -144,6 +149,10 @@ export function applyQQBotAccountConfig(
       },
     };
   } else {
+    // 如果没有设置过 allowFrom，默认设置为 ["*"]
+    const existingAccountConfig = (next.channels?.qqbot as QQBotChannelConfig)?.accounts?.[accountId] || {};
+    const allowFrom = existingAccountConfig.allowFrom ?? ["*"];
+    
     next.channels = {
       ...next.channels,
       qqbot: {
@@ -154,6 +163,7 @@ export function applyQQBotAccountConfig(
           [accountId]: {
             ...((next.channels?.qqbot as QQBotChannelConfig)?.accounts?.[accountId] || {}),
             enabled: true,
+            allowFrom,
             ...(input.appId ? { appId: input.appId } : {}),
             ...(input.clientSecret
               ? { clientSecret: input.clientSecret }
