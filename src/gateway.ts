@@ -594,7 +594,6 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         if(userContent.startsWith("/")){ // 保留Openclaw原始命令
           messageBody = userContent
         }
-        log?.info(`[qqbot:${account.accountId}] messageBody: ${messageBody}`);
 
         const body = pluginRuntime.channel.reply.formatInboundEnvelope({
           channel: "qqbot",
@@ -689,6 +688,9 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
             localMediaTypes.push(t);
           }
         }
+
+        log?.info(`[qqbot:${account.accountId}] Body: ${body}`);
+        log?.info(`[qqbot:${account.accountId}] BodyForAgent: ${agentBody}`);
 
         const ctxPayload = pluginRuntime.channel.reply.finalizeInboundContext({
           Body: body,
