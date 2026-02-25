@@ -2,11 +2,61 @@
  * QQ Bot API 鉴权和请求封装
  */
 
-import { getProxyAgent } from "./utils/proxy.js";
-import type { Agent } from "https";
+import { getProxyAgent, getUndiciDispatcher } from "./utils/proxy.js";
+import https from "node:https";
+import http from "node:http";
+import type { Agent as HttpsAgent } from "node:https";
 
 const API_BASE = "https://api.sgroup.qq.com";
 const TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken";
+
+/**
+ * 使用 https 模块 + SocksProxyAgent 发送请求
+ */
+async function httpsRequest(
+  url: string,
+  options: {
+    method: string;
+    headers: Record<string, string>;
+    body?: string;
+    agent?: HttpsAgent;
+  }
+): Promise<Response> {
+  const { method, headers, body, agent } = options;
+  const urlObj = new URL(url);
+
+  return new Promise<Response>((resolve, reject) => {
+    const reqOptions = {
+      hostname: urlObj.hostname,
+      port: urlObj.port || 443,
+      path: urlObj.pathname + urlObj.search,
+      method,
+      headers,
+      agent,
+    };
+
+    const req = (urlObj.protocol === "https:" ? https : http).request(reqOptions, (res) => {
+      const chunks: Buffer[] = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("end", () => {
+        const responseBody = Buffer.concat(chunks);
+        const response = new Response(responseBody, {
+          status: res.statusCode || 200,
+          headers: res.headers as Record<string, string>,
+        });
+        resolve(response);
+      });
+    });
+
+    req.on("error", reject);
+
+    if (body) {
+      req.write(body);
+    }
+
+    req.end();
+  });
+}
 
 // 运行时配置
 let currentMarkdownSupport = false;
@@ -72,8 +122,11 @@ async function doFetchToken(appId: string, clientSecret: string): Promise<string
   const requestBody = { appId, clientSecret };
   const requestHeaders = { "Content-Type": "application/json" };
 
+  console.log(`[qqbot-api-doFetchToken] >>> About to get token, proxyUrl=${proxyUrl || '(empty)'}`);
+
   // 获取代理 Agent
   const proxyAgent = getProxyAgent(proxyUrl);
+  console.log(`[qqbot-api-doFetchToken] >>> getProxyAgent returned: ${proxyAgent ? 'agent instance' : 'null'}`);
 
   // 打印请求信息（隐藏敏感信息）
   console.log(`[qqbot-api] >>> POST ${TOKEN_URL}`);
@@ -85,23 +138,23 @@ async function doFetchToken(appId: string, clientSecret: string): Promise<string
 
   let response: Response;
   try {
-    const fetchOptions: RequestInit = {
-      method: "POST",
-      headers: requestHeaders,
-      body: JSON.stringify(requestBody),
-    };
-
-    // 如果有代理，使用 undici 的 Agent
+    // 如果有代理，使用 https 模块 + SocksProxyAgent
     if (proxyAgent) {
-      const { setGlobalDispatcher, Agent } = await import("undici");
-      setGlobalDispatcher(new Agent({
-        connect: {
-          [Symbol.for("undici.customDispatcher")]: proxyAgent as unknown as never,
-        },
-      }));
+      console.log(`[qqbot-api-doFetchToken] >>> Sending token request via https+proxy`);
+      response = await httpsRequest(TOKEN_URL, {
+        method: "POST",
+        headers: requestHeaders,
+        body: JSON.stringify(requestBody),
+        agent: proxyAgent,
+      });
+    } else {
+      console.log(`[qqbot-api-doFetchToken] >>> No proxyAgent, using regular fetch`);
+      response = await fetch(TOKEN_URL, {
+        method: "POST",
+        headers: requestHeaders,
+        body: JSON.stringify(requestBody),
+      });
     }
-
-    response = await fetch(TOKEN_URL, fetchOptions);
   } catch (err) {
     console.error(`[qqbot-api] <<< Network error:`, err);
     throw new Error(`Network error getting access_token: ${err instanceof Error ? err.message : String(err)}`);
@@ -219,6 +272,8 @@ export async function apiRequest<T = unknown>(
     "Content-Type": "application/json",
   };
 
+  console.log(`[qqbot-apiRequest] >>> ${method} ${path}, proxyUrl=${proxyUrl || '(empty)'}`);
+
   // 根据请求类型自动选择超时时间
   // 文件上传接口 (/files) 使用更长的超时时间
   const isFileUpload = path.includes("/files");
@@ -252,20 +307,23 @@ export async function apiRequest<T = unknown>(
 
   let res: Response;
   try {
-    // 如果有代理，设置 undici dispatcher
+    // 如果有代理，使用 https 模块 + SocksProxyAgent
     if (proxyUrl) {
       const proxyAgent = getProxyAgent(proxyUrl);
       if (proxyAgent) {
-        const { setGlobalDispatcher, Agent } = await import("undici");
-        setGlobalDispatcher(new Agent({
-          connect: {
-            [Symbol.for("undici.customDispatcher")]: proxyAgent as unknown as never,
-          },
-        }));
+        console.log(`[qqbot-api] >>> Sending request via https+proxy to ${url}`);
+        res = await httpsRequest(url, {
+          method,
+          headers,
+          body: body ? JSON.stringify(body) : undefined,
+          agent: proxyAgent,
+        });
+      } else {
+        res = await fetch(url, options);
       }
+    } else {
+      res = await fetch(url, options);
     }
-
-    res = await fetch(url, options);
   } catch (err) {
     clearTimeout(timeoutId);
     if (err instanceof Error && err.name === "AbortError") {

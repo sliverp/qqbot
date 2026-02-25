@@ -235,12 +235,18 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
   }
 
   // 初始化 API 配置（markdown 支持 + 代理）
-  const proxyUrl = (cfg as { proxyUrl?: string })?.proxyUrl;
+  const proxyUrl = account.config?.proxyUrl;
+  console.log(`[qqbot-gateway] Before initApiConfig: account.config.proxyUrl=${proxyUrl || '(empty)'}`);
   initApiConfig({
     markdownSupport: account.markdownSupport,
     proxyUrl,
   });
   log?.info(`[qqbot:${account.accountId}] API config: markdownSupport=${account.markdownSupport === true}${proxyUrl ? `, proxyUrl=${proxyUrl}` : ''}`);
+  if (!proxyUrl) {
+    log?.info(`[qqbot:${account.accountId}] ⚠️  WARNING: proxyUrl is NOT set! API requests will NOT go through proxy.`);
+  } else {
+    log?.info(`[qqbot:${account.accountId}] ✅ proxyUrl configured: ${proxyUrl}`);
+  }
 
   // 如果配置了公网 URL，启动图床服务器
   let imageServerBaseUrl: string | null = null;

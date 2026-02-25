@@ -77,6 +77,7 @@ export function resolveQQBotAccount(
       systemPrompt: qqbot?.systemPrompt,
       imageServerBaseUrl: qqbot?.imageServerBaseUrl,
       markdownSupport: qqbot?.markdownSupport ?? true,
+      proxyUrl: qqbot?.proxyUrl,
     };
     appId = qqbot?.appId ?? "";
   } else {
@@ -103,6 +104,17 @@ export function resolveQQBotAccount(
     appId = process.env.QQBOT_APP_ID;
   }
 
+  // proxyUrl 从 channels.qqbot.proxyUrl 读取
+  // 使用 Record<string, unknown> 类型转换确保能正确读取配置字段
+  const qqbotRaw = qqbot as Record<string, unknown> | undefined;
+  const qqbotProxyUrl = qqbotRaw?.proxyUrl as string | undefined;
+  const effectiveProxyUrl = accountConfig.proxyUrl ?? qqbotProxyUrl;
+
+  console.log(`[qqbot-config] resolveQQBotAccount: accountId=${resolvedAccountId}`);
+  console.log(`[qqbot-config]   accountConfig.proxyUrl=${accountConfig.proxyUrl || '(empty)'}`);
+  console.log(`[qqbot-config]   qqbotRaw.proxyUrl=${qqbotProxyUrl || '(empty)'}`);
+  console.log(`[qqbot-config]   => effectiveProxyUrl=${effectiveProxyUrl || '(empty)'}`);
+
   return {
     accountId: resolvedAccountId,
     name: accountConfig.name,
@@ -113,10 +125,9 @@ export function resolveQQBotAccount(
     systemPrompt: accountConfig.systemPrompt,
     imageServerBaseUrl: accountConfig.imageServerBaseUrl || process.env.QQBOT_IMAGE_SERVER_BASE_URL,
     markdownSupport: accountConfig.markdownSupport !== false,
-    // proxyUrl 从 openclaw.json 全局配置读取
     config: {
       ...accountConfig,
-      proxyUrl: cfg?.proxyUrl as string | undefined,
+      proxyUrl: effectiveProxyUrl,
     },
   };
 }
