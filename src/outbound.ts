@@ -5,6 +5,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import type { ResolvedQQBotAccount } from "./types.js";
+import { decodeCronPayload } from "./utils/payload.js";
 
 import {
   getAccessToken, 
@@ -594,5 +595,52 @@ export async function sendMedia(ctx: MediaOutboundContext): Promise<OutboundResu
   }
 }
 
-
+export async function sendCronMessage(
+  account: ResolvedQQBotAccount,
+  to: string,
+  message: string
+): Promise<OutboundResult> {
+  const timestamp = new Date().toISOString();
+  console.log(`[${timestamp}] [qqbot] sendCronMessage: to=${to}, message length=${message.length}`);
+  
+  // 检测是否是 QQBOT_CRON: 格式的结构化载荷
+  const cronResult = decodeCronPayload(message);
+  
+  if (cronResult.isCronPayload) {
+    if (cronResult.error) {
+      console.error(`[${timestamp}] [qqbot] sendCronMessage: cron payload decode error: ${cronResult.error}`);
+      return {
+        channel: "qqbot",
+        error: `Cron 载荷解码失败: ${cronResult.error}`
+      };
+    }
+    
+    if (cronResult.payload) {
+      const payload = cronResult.payload;
+      console.log(`[${timestamp}] [qqbot] sendCronMessage: decoded cron payload, targetType=${payload.targetType}, targetAddress=${payload.targetAddress}, content length=${payload.content.length}`);
+      
+      // 使用载荷中的目标地址和类型发送消息
+      const targetTo = payload.targetType === "group" 
+        ? `group:${payload.targetAddress}` 
+        : payload.targetAddress;
+      
+      console.log(`[${timestamp}] [qqbot] sendCronMessage: sending proactive message to targetTo=${targetTo}`);
+      
+      // 发送提醒内容
+      const result = await sendProactiveMessage(account, targetTo, payload.content);
+      
+      if (result.error) {
+        console.error(`[${timestamp}] [qqbot] sendCronMessage: proactive message failed, error=${result.error}`);
+      } else {
+        console.log(`[${timestamp}] [qqbot] sendCronMessage: proactive message sent successfully`);
+      }
+      
+      return result;
+    }
+  }
+  
+  // 非结构化载荷，作为普通文本处理
+  console.log(`[${timestamp}] [qqbot] sendCronMessage: plain text message, sending to ${to}`);
+  return await sendProactiveMessage(account, to, message);
+}
 
