@@ -390,3 +390,61 @@ git push origin feature/proxy-support
 2. **测试**：同步后务必重新测试代理功能
 
 3. **依赖**：确保 `package.json` 中的 `socks-proxy-agent` 依赖被保留
+
+---
+
+## Git 分支策略
+
+### 当前状态
+
+```
+上游仓库：https://github.com/sliverp/qqbot (upstream)
+你的仓库：https://github.com/corrinehu/qqbot (origin)
+功能分支：feature/proxy-support
+```
+
+### 分支历史
+
+```
+upstream/main (原始作者的主分支)
+     │
+     └─────────────────────────────────┐
+                                       │
+corrinehu/main (你的 fork 主分支) ──────┘
+     │
+     └── feature/proxy-support (当前修复分支)
+```
+
+### 快速命令参考
+
+```bash
+# 查看远程仓库
+git remote -v
+# origin    https://github.com/corrinehu/qqbot.git
+# upstream  https://github.com/sliverp/qqbot.git
+
+# 查看分支
+git branch -a
+
+# 推送当前分支到你的 fork
+git push origin feature/proxy-support
+
+# 拉取上游最新代码
+git fetch upstream
+git checkout main
+git merge upstream/main
+git push origin main
+
+# 同步功能分支
+git checkout feature/proxy-support
+git merge main
+git push origin feature/proxy-support
+```
+
+### 如果上游接受了 PR
+
+如果上游作者合并了你的修复：
+
+1. 删除功能分支：`git branch -d feature/proxy-support`
+2. 更新主分支：`git fetch upstream && git merge upstream/main`
+3. 正常使用即可，不再需要 fork
