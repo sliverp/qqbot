@@ -341,3 +341,52 @@ openclaw gateway
 - 问题发现：2026-02-25
 - 问题解决：2026-02-26
 - 修复版本：v1.5.0
+
+---
+
+## 上游同步
+
+### 背景
+
+此修复是在 `corrinehu/qqbot` fork 中开发的，上游仓库是 `sliverp/qqbot`。
+
+由于这是新增功能（而非 bug 修复），上游作者可能会拒绝合并。因此需要保持与上游的同步。
+
+### 同步上游更新
+
+```bash
+# 1. 获取上游最新代码
+git fetch upstream
+
+# 2. 切换到主分支
+git checkout main
+
+# 3. 合并上游主分支
+git merge upstream/main
+
+# 4. 切换到功能分支
+git checkout feature/proxy-support
+
+# 5. 合并主分支的更新
+git merge main
+
+# 6. 解决可能的冲突（如果有）
+# ...
+
+# 7. 推送到你的 fork
+git push origin feature/proxy-support
+```
+
+### 版本关系
+
+| 版本 | 上游版本 | 说明 |
+|------|---------|------|
+| v1.5.0+proxy | v1.5.0 | 添加 SOCKS5 代理支持 |
+
+### 注意事项
+
+1. **冲突解决**：如果上游修改了 `src/api.ts`、`src/config.ts` 或 `src/utils/proxy.ts`，可能需要手动解决冲突
+
+2. **测试**：同步后务必重新测试代理功能
+
+3. **依赖**：确保 `package.json` 中的 `socks-proxy-agent` 依赖被保留

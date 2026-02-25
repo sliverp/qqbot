@@ -51,6 +51,29 @@ openclaw config set channels.qqbot.appId "your-app-id"
 openclaw config set channels.qqbot.clientSecret "your-secret"
 ```
 
+### SOCKS5 Proxy (Fork Feature)
+
+This fork (`corrinehu/qqbot`) adds SOCKS5 proxy support for API requests.
+
+To use:
+
+```json
+{
+  "channels": {
+    "qqbot": {
+      "enabled": true,
+      "appId": "your-app-id",
+      "clientSecret": "your-secret",
+      "proxyUrl": "socks5h://100.67.244.78:1080"
+    }
+  }
+}
+```
+
+- Use `socks5h://` for DNS resolution through proxy (recommended)
+- Use `socks5://` for local DNS resolution
+- See `docs/SOCKS_PROXY_FIX.md` for details
+
 ## Architecture
 
 ### Entry Point
