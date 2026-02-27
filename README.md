@@ -47,6 +47,7 @@ The Openclaw channel plugin of the Bot API of the QQ Open Platform supports C2C 
 [![Star History Chart](https://api.star-history.com/svg?repos=sliverp/qqbot&type=date&legend=top-left)](https://www.star-history.com/#sliverp/qqbot&type=date&legend=top-left)
 
 </div>
+
 # QQ
 
 QQ is a widely-used instant messaging platform that provides various communication capabilities such as text, voice, images, and files. It supports collaborative scenarios like group chats and channels, making it suitable for both personal communication and team collaboration.
