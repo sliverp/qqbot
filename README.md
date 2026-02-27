@@ -3,6 +3,7 @@
 # QQ Bot Channel Plugin for Openclaw(Clawdbot/Moltbot)
 
 QQ 开放平台 Bot API 的 Openclaw 渠道插件，支持 C2C 私聊、群聊 @消息、频道消息。
+
 The Openclaw channel plugin of the Bot API of the QQ Open Platform supports C2C private chats, group chat @ messages, and channel messages.
 
 [![npm version](https://img.shields.io/badge/npm-v1.4.1-blue)](https://www.npmjs.com/package/@sliverp/qqbot)
