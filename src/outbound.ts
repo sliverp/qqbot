@@ -7,21 +7,23 @@ import * as path from "path";
 import type { ResolvedQQBotAccount } from "./types.js";
 import { decodeCronPayload } from "./utils/payload.js";
 import {
-  getAccessToken, 
-  sendC2CMessage, 
-  sendChannelMessage, 
+  getAccessToken,
+  sendC2CMessage,
+  sendChannelMessage,
   sendGroupMessage,
   sendProactiveC2CMessage,
   sendProactiveGroupMessage,
   sendC2CImageMessage,
   sendGroupImageMessage,
+  sendC2CVoiceMessage,
+  sendGroupVoiceMessage,
 } from "./api.js";
+import { convertWavToSilk } from "./utils/audio-convert.js";
 
-// ============ 消息回复限流器 ============
-// 同一 message_id 1小时内最多回复 4 次，超过 1 小时无法被动回复（需改为主动消息）
 const MESSAGE_REPLY_LIMIT = 4;
 const MESSAGE_REPLY_TTL = 60 * 60 * 1000; // 1小时
 
+// ============ 消息回复限流器 ============
 interface MessageReplyRecord {
   count: number;
   firstReplyAt: number;
@@ -687,6 +689,177 @@ export async function sendMedia(ctx: MediaOutboundContext): Promise<OutboundResu
   return { channel: "qqbot", messageId: imageResult.id, timestamp: imageResult.timestamp };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    return { channel: "qqbot", error: message };
+  }
+}
+
+/**
+ * 发送语音消息
+ * 
+ * 支持以下 mediaUrl 格式：
+ * - 公网 URL: https://example.com/voice.silk
+ * - Base64 Data URL: data:audio/silk;base64,xxxxx
+ * - 本地 WAV 文件路径: /path/to/voice.wav（自动转换为 SILK 格式）
+ * - 本地 SILK 文件路径: /path/to/voice.silk（直接发送）
+ * 
+ * @param ctx - 发送上下文，包含 mediaUrl（语音文件路径或 URL）
+ * @returns 发送结果
+ * 
+ * @example
+ * ```typescript
+ * // 发送网络语音
+ * const result = await sendVoice({
+ *   to: "group:xxx",
+ *   text: "这是语音说明",
+ *   mediaUrl: "https://example.com/voice.silk",
+ *   account,
+ *   replyToId: msgId,
+ * });
+ * 
+ * // 发送本地 WAV 文件（自动转换为 SILK）
+ * const result = await sendVoice({
+ *   to: "group:xxx",
+ *   text: "这是语音说明",
+ *   mediaUrl: "/tmp/voice.wav",
+ *   account,
+ *   replyToId: msgId,
+ * });
+ * ```
+ */
+export async function sendVoice(ctx: MediaOutboundContext): Promise<OutboundResult> {
+  const { to, text, replyToId, account } = ctx;
+  const { mediaUrl } = ctx;
+
+  if (!account.appId || !account.clientSecret) {
+    return { channel: "qqbot", error: "QQBot not configured (missing appId or clientSecret)" };
+  }
+
+  if (!mediaUrl) {
+    return { channel: "qqbot", error: "mediaUrl is required for sendVoice" };
+  }
+
+  // 验证 mediaUrl 格式：支持公网 URL、Base64 Data URL 或本地文件路径
+  const isHttpUrl = mediaUrl.startsWith("http://") || mediaUrl.startsWith("https://");
+  const isDataUrl = mediaUrl.startsWith("data:");
+  const isLocalPath = mediaUrl.startsWith("/") || 
+                      /^[a-zA-Z]:[\\/]/.test(mediaUrl) ||
+                      mediaUrl.startsWith("./") ||
+                      mediaUrl.startsWith("../");
+  
+  // 处理本地文件路径
+  let processedMediaUrl = mediaUrl;
+  let voiceDuration: number | undefined;
+  
+  if (isLocalPath) {
+    console.log(`[qqbot] sendVoice: local file path detected: ${mediaUrl}`);
+    
+    try {
+      // 检查文件是否存在
+      if (!fs.existsSync(mediaUrl)) {
+        return { 
+          channel: "qqbot", 
+          error: `本地文件不存在: ${mediaUrl}` 
+        };
+      }
+      
+      // 判断文件类型
+      const ext = path.extname(mediaUrl).toLowerCase();
+      
+      if (ext === ".wav") {
+        // WAV 文件需要转换为 SILK
+        console.log(`[qqbot] sendVoice: converting WAV to SILK: ${mediaUrl}`);
+        const convertResult = await convertWavToSilk(mediaUrl);
+        
+        if (!convertResult) {
+          return { 
+            channel: "qqbot", 
+            error: `WAV 转换为 SILK 失败: ${mediaUrl}` 
+          };
+        }
+        
+        voiceDuration = convertResult.duration;
+        
+        // 读取转换后的 SILK 文件
+        const silkBuffer = fs.readFileSync(convertResult.silkPath);
+        const base64Data = silkBuffer.toString("base64");
+        processedMediaUrl = `data:audio/silk;base64,${base64Data}`;
+        
+        console.log(`[qqbot] sendVoice: WAV converted to SILK (duration: ${voiceDuration}ms, size: ${silkBuffer.length} bytes)`);
+        
+        // 清理临时 SILK 文件
+        try {
+          fs.unlinkSync(convertResult.silkPath);
+        } catch {
+          // 忽略删除失败
+        }
+      } else if (ext === ".silk" || ext === ".slk") {
+        // SILK 文件直接读取
+        const silkBuffer = fs.readFileSync(mediaUrl);
+        const base64Data = silkBuffer.toString("base64");
+        processedMediaUrl = `data:audio/silk;base64,${base64Data}`;
+        console.log(`[qqbot] sendVoice: SILK file read (size: ${silkBuffer.length} bytes)`);
+      } else {
+        return { 
+          channel: "qqbot", 
+          error: `不支持的语音格式: ${ext}。支持的格式: .wav (自动转换), .silk, .slk` 
+        };
+      }
+      
+    } catch (readErr) {
+      const errMsg = readErr instanceof Error ? readErr.message : String(readErr);
+      console.error(`[qqbot] sendVoice: failed to process local file: ${errMsg}`);
+      return { 
+        channel: "qqbot", 
+        error: `处理本地文件失败: ${errMsg}` 
+      };
+    }
+  } else if (!isHttpUrl && !isDataUrl) {
+    console.log(`[qqbot] sendVoice: unsupported media format: ${mediaUrl.slice(0, 50)}`);
+    return { 
+      channel: "qqbot", 
+      error: `不支持的语音格式: ${mediaUrl.slice(0, 50)}...。支持的格式: 公网 URL (http/https)、Base64 Data URL (data:audio/...) 或本地文件路径 (.wav/.silk/.slk)。` 
+    };
+  } else if (isDataUrl) {
+    console.log(`[qqbot] sendVoice: sending Base64 voice (length: ${mediaUrl.length})`);
+  } else {
+    console.log(`[qqbot] sendVoice: sending voice URL: ${mediaUrl.slice(0, 80)}...`);
+  }
+
+  try {
+    const accessToken = await getAccessToken(account.appId, account.clientSecret);
+    const target = parseTarget(to);
+
+    // 发送语音消息
+    let voiceResult: { id: string; timestamp: number | string };
+    if (target.type === "c2c") {
+      voiceResult = await sendC2CVoiceMessage(
+        accessToken,
+        target.id,
+        processedMediaUrl,
+        replyToId ?? undefined,
+        text // 语音消息可以附带文本说明
+      );
+    } else if (target.type === "group") {
+      voiceResult = await sendGroupVoiceMessage(
+        accessToken,
+        target.id,
+        processedMediaUrl,
+        replyToId ?? undefined,
+        text
+      );
+    } else {
+      // 频道暂不支持语音消息
+      return { 
+        channel: "qqbot", 
+        error: "频道暂不支持语音消息" 
+      };
+    }
+
+    console.log(`[qqbot] sendVoice: voice sent successfully, messageId=${voiceResult.id}`);
+    return { channel: "qqbot", messageId: voiceResult.id, timestamp: voiceResult.timestamp };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[qqbot] sendVoice: error: ${message}`);
     return { channel: "qqbot", error: message };
   }
 }

@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { decode, isSilk } from "silk-wasm";
+import { decode, encode, isSilk } from "silk-wasm";
 
 /**
  * 检查文件是否为 SILK 格式（QQ/微信语音常用格式）
@@ -50,6 +50,65 @@ function pcmToWav(pcmData: Uint8Array, sampleRate: number, channels: number = 1,
   Buffer.from(pcmData.buffer, pcmData.byteOffset, pcmData.byteLength).copy(buffer, headerSize);
 
   return buffer;
+}
+
+/**
+ * 从 WAV 文件中提取 PCM 数据
+ * WAV = 44 字节 RIFF 头 + PCM 原始数据
+ */
+function wavToPcm(wavBuffer: Buffer): { pcmData: Uint8Array; sampleRate: number } | null {
+  try {
+    // 验证 WAV 格式
+    if (wavBuffer.length < 44) {
+      return null;
+    }
+
+    // 检查 RIFF 头
+    if (wavBuffer.toString("ascii", 0, 4) !== "RIFF" || wavBuffer.toString("ascii", 8, 12) !== "WAVE") {
+      return null;
+    }
+
+    // 查找 fmt 块
+    let offset = 12;
+    let fmtFound = false;
+    let sampleRate = 24000; // 默认采样率
+    let channels = 1;
+    let bitsPerSample = 16;
+
+    while (offset < wavBuffer.length - 8) {
+      const chunkId = wavBuffer.toString("ascii", offset, offset + 4);
+      const chunkSize = wavBuffer.readUInt32LE(offset + 4);
+
+      if (chunkId === "fmt ") {
+        fmtFound = true;
+        const audioFormat = wavBuffer.readUInt16LE(offset + 8);
+        if (audioFormat !== 1) {
+          // 非 PCM 格式
+          return null;
+        }
+        channels = wavBuffer.readUInt16LE(offset + 10);
+        sampleRate = wavBuffer.readUInt32LE(offset + 12);
+        bitsPerSample = wavBuffer.readUInt16LE(offset + 22);
+        offset += 8 + chunkSize;
+      } else if (chunkId === "data") {
+        if (!fmtFound) {
+          return null;
+        }
+        // 提取 PCM 数据
+        const pcmData = wavBuffer.subarray(offset + 8, offset + 8 + chunkSize);
+        return {
+          pcmData: new Uint8Array(pcmData.buffer, pcmData.byteOffset, pcmData.byteLength),
+          sampleRate,
+        };
+      } else {
+        offset += 8 + chunkSize;
+      }
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -114,6 +173,64 @@ export async function convertSilkToWav(
 }
 
 /**
+ * 将 WAV 语音文件转换为 SILK 格式（用于发送语音消息）
+ *
+ * @param inputPath 输入文件路径（.wav）
+ * @param outputDir 输出目录（默认与输入文件同目录）
+ * @returns 转换后的 SILK 文件路径和时长，失败返回 null
+ */
+export async function convertWavToSilk(
+  inputPath: string,
+  outputDir?: string,
+): Promise<{ silkPath: string; duration: number } | null> {
+  if (!fs.existsSync(inputPath)) {
+    console.error(`[audio-convert] WAV file not found: ${inputPath}`);
+    return null;
+  }
+
+  try {
+    // 读取 WAV 文件
+    const wavBuffer = fs.readFileSync(inputPath);
+
+    // 从 WAV 中提取 PCM 数据
+    const pcmResult = wavToPcm(wavBuffer);
+    if (!pcmResult) {
+      console.error(`[audio-convert] Failed to extract PCM from WAV: ${inputPath}`);
+      return null;
+    }
+
+    const { pcmData, sampleRate } = pcmResult;
+
+    // QQ 语音要求采样率为 24000Hz
+    // 如果输入采样率不是 24000，需要重采样（TODO: 待实现）
+    const targetSampleRate = 24000;
+    if (sampleRate !== targetSampleRate) {
+      console.warn(`[audio-convert] WAV sample rate is ${sampleRate}Hz, expected ${targetSampleRate}Hz. Quality may be affected.`);
+      // 暂时不做重采样，直接使用原采样率编码
+    }
+
+    // PCM → SILK 编码
+    const silkData = await encode(pcmData, sampleRate);
+
+    // 写入 SILK 文件
+    const dir = outputDir || path.dirname(inputPath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    const baseName = path.basename(inputPath, path.extname(inputPath));
+    const silkPath = path.join(dir, `${baseName}.silk`);
+    fs.writeFileSync(silkPath, Buffer.from(silkData.data.buffer, silkData.data.byteOffset, silkData.data.byteLength));
+
+    console.log(`[audio-convert] WAV → SILK conversion complete: ${silkPath} (duration: ${silkData.duration}ms)`);
+
+    return { silkPath, duration: silkData.duration };
+  } catch (err) {
+    console.error(`[audio-convert] WAV to SILK conversion failed:`, err);
+    return null;
+  }
+}
+
+/**
  * 判断是否为语音附件（根据 content_type 或文件扩展名）
  */
 export function isVoiceAttachment(att: { content_type?: string; filename?: string }): boolean {
@@ -121,7 +238,7 @@ export function isVoiceAttachment(att: { content_type?: string; filename?: strin
     return true;
   }
   const ext = att.filename ? path.extname(att.filename).toLowerCase() : "";
-  return [".amr", ".silk", ".slk"].includes(ext);
+  return [".amr", ".silk", ".slk", ".wav"].includes(ext);
 }
 
 /**

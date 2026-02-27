@@ -634,6 +634,74 @@ export async function sendGroupImageMessage(
   return sendGroupMediaMessage(accessToken, groupOpenid, uploadResult.file_info, msgId, content);
 }
 
+
+/**
+ * 发送带语音的 C2C 单聊消息（封装上传+发送）
+ * @param voiceUrl - 语音来源，支持：
+ *   - 公网 URL: https://example.com/voice.silk
+ *   - Base64 Data URL: data:audio/silk;base64,xxxxx
+ */
+export async function sendC2CVoiceMessage(
+  accessToken: string,
+  openid: string,
+  voiceUrl: string,
+  msgId?: string,
+  content?: string
+): Promise<{ id: string; timestamp: number }> {
+  let uploadResult: UploadMediaResponse;
+  
+  // 检查是否是 Base64 Data URL
+  if (voiceUrl.startsWith("data:")) {
+    // 解析 Base64 Data URL: data:audio/silk;base64,xxxxx
+    const matches = voiceUrl.match(/^data:([^;]+);base64,(.+)$/);
+    if (!matches) {
+      throw new Error("Invalid Base64 Data URL format");
+    }
+    const base64Data = matches[2];
+    // 使用 file_data 上传
+    uploadResult = await uploadC2CMedia(accessToken, openid, MediaFileType.VOICE, undefined, base64Data, false);
+  } else {
+    // 公网 URL，使用 url 参数上传
+    uploadResult = await uploadC2CMedia(accessToken, openid, MediaFileType.VOICE, voiceUrl, undefined, false);
+  }
+  
+  // 发送富媒体消息
+  return sendC2CMediaMessage(accessToken, openid, uploadResult.file_info, msgId, content);
+}
+
+/**
+ * 发送带语音的群聊消息（封装上传+发送）
+ * @param voiceUrl - 语音来源，支持：
+ *   - 公网 URL: https://example.com/voice.silk
+ *   - Base64 Data URL: data:audio/silk;base64,xxxxx
+ */
+export async function sendGroupVoiceMessage(
+  accessToken: string,
+  groupOpenid: string,
+  voiceUrl: string,
+  msgId?: string,
+  content?: string
+): Promise<{ id: string; timestamp: string }> {
+  let uploadResult: UploadMediaResponse;
+  
+  // 检查是否是 Base64 Data URL
+  if (voiceUrl.startsWith("data:")) {
+    // 解析 Base64 Data URL: data:audio/silk;base64,xxxxx
+    const matches = voiceUrl.match(/^data:([^;]+);base64,(.+)$/);
+    if (!matches) {
+      throw new Error("Invalid Base64 Data URL format");
+    }
+    const base64Data = matches[2];
+    // 使用 file_data 上传
+    uploadResult = await uploadGroupMedia(accessToken, groupOpenid, MediaFileType.VOICE, undefined, base64Data, false);
+  } else {
+    // 公网 URL，使用 url 参数上传
+    uploadResult = await uploadGroupMedia(accessToken, groupOpenid, MediaFileType.VOICE, voiceUrl, undefined, false);
+  }
+  
+  // 发送富媒体消息
+  return sendGroupMediaMessage(accessToken, groupOpenid, uploadResult.file_info, msgId, content);
+}
 // ============ 后台 Token 刷新 (P1-1) ============
 
 /**
