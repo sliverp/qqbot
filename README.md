@@ -1,3 +1,51 @@
+<div align="center">
+
+# QQ Bot Channel Plugin for Openclaw(Clawdbot/Moltbot)
+
+QQ 开放平台 Bot API 的 Openclaw 渠道插件，支持 C2C 私聊、群聊 @消息、频道消息。
+The Openclaw channel plugin of the Bot API of the QQ Open Platform supports C2C private chats, group chat @ messages, and channel messages.
+
+[![npm version](https://img.shields.io/badge/npm-v1.4.1-blue)](https://www.npmjs.com/package/@sliverp/qqbot)
+[![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
+[![QQ Bot](https://img.shields.io/badge/QQ_Bot-API_v2-red)](https://bot.q.qq.com/wiki/)
+[![Platform](https://img.shields.io/badge/platform-Openclaw-orange)](https://github.com/sliverp/openclaw)
+[![Node.js](https://img.shields.io/badge/Node.js->=18-339933)](https://nodejs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6)](https://www.typescriptlang.org/)
+
+</div>
+
+
+---
+
+## 📸 使用示例
+<div align="center">
+<img width="400" alt="使用示例" src="https://github.com/user-attachments/assets/6f1704ab-584b-497e-8937-96f84ce2958f" />
+<img width="670" height="396" alt="Clipboard_Screenshot_1770366319" src="https://github.com/user-attachments/assets/e21e9292-fb93-41a7-81fe-39eeefe3b01d" />
+
+</div>
+
+---
+
+## ✨ 功能特性
+
+- 🔒 **多场景支持** - C2C 私聊、群聊 @消息、频道消息、频道私信
+- 🖼️ **富媒体消息** - 支持图片收发、文件发送
+- ⏰ **定时推送** - 支持定时任务到时后主动推送
+- 🔗 **URL 无限制** - 私聊可直接发送 URL
+- ⌨️ **输入状态** - Bot 正在输入中状态提示
+- 🔄 **热更新** - 支持 npm 方式安装和热更新
+- 📝 **Markdown** - 支持 Markdown 格式
+- 📝 **Command** - 支持Openclaw原生命令
+
+  
+---
+
+## ⭐ Star History
+<div align="center">
+  
+[![Star History Chart](https://api.star-history.com/svg?repos=sliverp/qqbot&type=date&legend=top-left)](https://www.star-history.com/#sliverp/qqbot&type=date&legend=top-left)
+
+</div>
 # QQ
 
 QQ is a widely-used instant messaging platform that provides various communication capabilities such as text, voice, images, and files. It supports collaborative scenarios like group chats and channels, making it suitable for both personal communication and team collaboration.
