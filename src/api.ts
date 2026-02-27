@@ -23,9 +23,10 @@ export function isMarkdownSupport(): boolean {
   return currentMarkdownSupport;
 }
 
-let cachedToken: { token: string; expiresAt: number } | null = null;
-// Singleflight: 防止并发获取 Token 的 Promise 缓存
-let tokenFetchPromise: Promise<string> | null = null;
+// 多账号 Token 缓存：按 appId 分别存储
+const tokenCache = new Map<string, { token: string; expiresAt: number }>();
+// Singleflight: 防止并发获取 Token 的 Promise 缓存（按 appId 分别管理）
+const tokenFetchPromises = new Map<string, Promise<string>>();
 
 /**
  * 获取 AccessToken（带缓存 + singleflight 并发安全）
@@ -35,27 +36,28 @@ let tokenFetchPromise: Promise<string> | null = null;
  */
 export async function getAccessToken(appId: string, clientSecret: string): Promise<string> {
   // 检查缓存，提前 5 分钟刷新
-  if (cachedToken && Date.now() < cachedToken.expiresAt - 5 * 60 * 1000) {
-    return cachedToken.token;
+  const cached = tokenCache.get(appId);
+  if (cached && Date.now() < cached.expiresAt - 5 * 60 * 1000) {
+    return cached.token;
   }
-
   // Singleflight: 如果已有进行中的 Token 获取请求，复用它
-  if (tokenFetchPromise) {
-    console.log(`[qqbot-api] Token fetch in progress, waiting for existing request...`);
-    return tokenFetchPromise;
+  const existingPromise = tokenFetchPromises.get(appId);
+  if (existingPromise) {
+    console.log(`[qqbot-api] Token fetch in progress for appId ${appId}, waiting for existing request...`);
+    return existingPromise;
   }
-
   // 创建新的 Token 获取 Promise（singleflight 入口）
-  tokenFetchPromise = (async () => {
+  const fetchPromise = (async () => {
     try {
       return await doFetchToken(appId, clientSecret);
     } finally {
       // 无论成功失败，都清除 Promise 缓存
-      tokenFetchPromise = null;
+      tokenFetchPromises.delete(appId);
     }
   })();
 
-  return tokenFetchPromise;
+  tokenFetchPromises.set(appId, fetchPromise);
+  return fetchPromise;
 }
 
 /**
@@ -108,36 +110,43 @@ async function doFetchToken(appId: string, clientSecret: string): Promise<string
     throw new Error(`Failed to get access_token: ${JSON.stringify(data)}`);
   }
 
-  cachedToken = {
+  const cached = {
     token: data.access_token,
     expiresAt: Date.now() + (data.expires_in ?? 7200) * 1000,
   };
+  tokenCache.set(appId, cached);
+  console.log(`[qqbot-api] Token cached for appId ${appId}, expires at: ${new Date(cached.expiresAt).toISOString()}`);
+  return cached.token;
 
-  console.log(`[qqbot-api] Token cached, expires at: ${new Date(cachedToken.expiresAt).toISOString()}`);
-  return cachedToken.token;
 }
-
 /**
  * 清除 Token 缓存
  */
-export function clearTokenCache(): void {
-  cachedToken = null;
-  // 注意：不清除 tokenFetchPromise，让进行中的请求完成
+export function clearTokenCache(appId?: string): void {
+  if (appId) {
+    tokenCache.delete(appId);
+  } else {
+    tokenCache.clear();
+  }
+  // 注意：不清除 tokenFetchPromises，让进行中的请求完成
   // 下次调用 getAccessToken 时会自动获取新 Token
-}
 
+}
 /**
  * 获取 Token 缓存状态（用于监控）
  */
-export function getTokenStatus(): { status: "valid" | "expired" | "refreshing" | "none"; expiresAt: number | null } {
-  if (tokenFetchPromise) {
-    return { status: "refreshing", expiresAt: cachedToken?.expiresAt ?? null };
+export function getTokenStatus(appId: string): { status: "valid" | "expired" | "refreshing" | "none"; expiresAt: number | null } {
+  const fetchPromise = tokenFetchPromises.get(appId);
+  if (fetchPromise) {
+    const cached = tokenCache.get(appId);
+    return { status: "refreshing", expiresAt: cached?.expiresAt ?? null };
   }
-  if (!cachedToken) {
+  const cached = tokenCache.get(appId);
+  if (!cached) {
     return { status: "none", expiresAt: null };
   }
-  const isValid = Date.now() < cachedToken.expiresAt - 5 * 60 * 1000;
-  return { status: isValid ? "valid" : "expired", expiresAt: cachedToken.expiresAt };
+  const isValid = Date.now() < cached.expiresAt - 5 * 60 * 1000;
+  return { status: isValid ? "valid" : "expired", expiresAt: cached.expiresAt };
 }
 
 /**
@@ -699,19 +708,18 @@ export function startBackgroundTokenRefresh(
         await getAccessToken(appId, clientSecret);
 
         // 计算下次刷新时间
-        if (cachedToken) {
-          const expiresIn = cachedToken.expiresAt - Date.now();
+        const cached = tokenCache.get(appId);
+        if (cached) {
+          const expiresIn = cached.expiresAt - Date.now();
           // 提前刷新时间 + 随机偏移（避免集群同时刷新）
           const randomOffset = Math.random() * randomOffsetMs;
           const refreshIn = Math.max(
             expiresIn - refreshAheadMs - randomOffset,
             minRefreshIntervalMs
           );
-
           log?.debug?.(
-            `[qqbot-api] Token valid, next refresh in ${Math.round(refreshIn / 1000)}s`
+            `[qqbot-api] Token valid for appId ${appId}, next refresh in ${Math.round(refreshIn / 1000)}s`
           );
-
           // 等待到刷新时间
           await sleep(refreshIn, signal);
         } else {
