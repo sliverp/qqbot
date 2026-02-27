@@ -23,9 +23,10 @@ export function isMarkdownSupport(): boolean {
   return currentMarkdownSupport;
 }
 
-let cachedToken: { token: string; expiresAt: number } | null = null;
-// Singleflight: 防止并发获取 Token 的 Promise 缓存
-let tokenFetchPromise: Promise<string> | null = null;
+// 按 appId 隔离的 token 缓存
+const cachedTokens = new Map<string, { token: string; expiresAt: number }>();
+// Singleflight: 防止并发获取 Token 的 Promise 缓存（按 appId 隔离）
+const tokenFetchPromises = new Map<string, Promise<string>>();
 
 /**
  * 获取 AccessToken（带缓存 + singleflight 并发安全）
@@ -35,27 +36,30 @@ let tokenFetchPromise: Promise<string> | null = null;
  */
 export async function getAccessToken(appId: string, clientSecret: string): Promise<string> {
   // 检查缓存，提前 5 分钟刷新
-  if (cachedToken && Date.now() < cachedToken.expiresAt - 5 * 60 * 1000) {
-    return cachedToken.token;
+  const cached = cachedTokens.get(appId);
+  if (cached && Date.now() < cached.expiresAt - 5 * 60 * 1000) {
+    return cached.token;
   }
 
   // Singleflight: 如果已有进行中的 Token 获取请求，复用它
-  if (tokenFetchPromise) {
-    console.log(`[qqbot-api] Token fetch in progress, waiting for existing request...`);
-    return tokenFetchPromise;
+  const inProgress = tokenFetchPromises.get(appId);
+  if (inProgress) {
+    console.log(`[qqbot-api] Token fetch in progress for appId=${appId}, waiting for existing request...`);
+    return inProgress;
   }
 
   // 创建新的 Token 获取 Promise（singleflight 入口）
-  tokenFetchPromise = (async () => {
+  const fetchPromise = (async () => {
     try {
       return await doFetchToken(appId, clientSecret);
     } finally {
       // 无论成功失败，都清除 Promise 缓存
-      tokenFetchPromise = null;
+      tokenFetchPromises.delete(appId);
     }
   })();
 
-  return tokenFetchPromise;
+  tokenFetchPromises.set(appId, fetchPromise);
+  return fetchPromise;
 }
 
 /**
@@ -108,36 +112,42 @@ async function doFetchToken(appId: string, clientSecret: string): Promise<string
     throw new Error(`Failed to get access_token: ${JSON.stringify(data)}`);
   }
 
-  cachedToken = {
+  const entry = {
     token: data.access_token,
     expiresAt: Date.now() + (data.expires_in ?? 7200) * 1000,
   };
+  cachedTokens.set(appId, entry);
 
-  console.log(`[qqbot-api] Token cached, expires at: ${new Date(cachedToken.expiresAt).toISOString()}`);
-  return cachedToken.token;
+  console.log(`[qqbot-api] Token cached for appId=${appId}, expires at: ${new Date(entry.expiresAt).toISOString()}`);
+  return entry.token;
 }
 
 /**
  * 清除 Token 缓存
  */
-export function clearTokenCache(): void {
-  cachedToken = null;
-  // 注意：不清除 tokenFetchPromise，让进行中的请求完成
+export function clearTokenCache(appId?: string): void {
+  if (appId) {
+    cachedTokens.delete(appId);
+  } else {
+    cachedTokens.clear();
+  }
+  // 注意：不清除 tokenFetchPromises，让进行中的请求完成
   // 下次调用 getAccessToken 时会自动获取新 Token
 }
 
 /**
  * 获取 Token 缓存状态（用于监控）
  */
-export function getTokenStatus(): { status: "valid" | "expired" | "refreshing" | "none"; expiresAt: number | null } {
-  if (tokenFetchPromise) {
-    return { status: "refreshing", expiresAt: cachedToken?.expiresAt ?? null };
+export function getTokenStatus(appId: string): { status: "valid" | "expired" | "refreshing" | "none"; expiresAt: number | null } {
+  if (tokenFetchPromises.has(appId)) {
+    return { status: "refreshing", expiresAt: cachedTokens.get(appId)?.expiresAt ?? null };
   }
-  if (!cachedToken) {
+  const cached = cachedTokens.get(appId);
+  if (!cached) {
     return { status: "none", expiresAt: null };
   }
-  const isValid = Date.now() < cachedToken.expiresAt - 5 * 60 * 1000;
-  return { status: isValid ? "valid" : "expired", expiresAt: cachedToken.expiresAt };
+  const isValid = Date.now() < cached.expiresAt - 5 * 60 * 1000;
+  return { status: isValid ? "valid" : "expired", expiresAt: cached.expiresAt };
 }
 
 /**
@@ -170,46 +180,23 @@ export function getNextMsgSeq(msgId: string): number {
   return seqBaseTime + next;
 }
 
-// API 请求超时配置（毫秒）
-const DEFAULT_API_TIMEOUT = 30000; // 默认 30 秒
-const FILE_UPLOAD_TIMEOUT = 120000; // 文件上传 120 秒（2 分钟）
-
 /**
  * API 请求封装
- * @param accessToken 访问令牌
- * @param method 请求方法
- * @param path 请求路径
- * @param body 请求体
- * @param timeoutMs 超时时间（毫秒），不传则根据请求类型自动选择
  */
 export async function apiRequest<T = unknown>(
   accessToken: string,
   method: string,
   path: string,
-  body?: unknown,
-  timeoutMs?: number
+  body?: unknown
 ): Promise<T> {
   const url = `${API_BASE}${path}`;
   const headers: Record<string, string> = {
     Authorization: `QQBot ${accessToken}`,
     "Content-Type": "application/json",
   };
-  
-  // 根据请求类型自动选择超时时间
-  // 文件上传接口 (/files) 使用更长的超时时间
-  const isFileUpload = path.includes("/files");
-  const timeout = timeoutMs ?? (isFileUpload ? FILE_UPLOAD_TIMEOUT : DEFAULT_API_TIMEOUT);
-  
-  // 创建 AbortController 用于超时控制
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => {
-    controller.abort();
-  }, timeout);
-  
   const options: RequestInit = {
     method,
     headers,
-    signal: controller.signal,
   };
 
   if (body) {
@@ -217,7 +204,7 @@ export async function apiRequest<T = unknown>(
   }
 
   // 打印请求信息
-  console.log(`[qqbot-api] >>> ${method} ${url} (timeout: ${timeout}ms)`);
+  console.log(`[qqbot-api] >>> ${method} ${url}`);
   console.log(`[qqbot-api] >>> Headers:`, JSON.stringify(headers, null, 2));
   if (body) {
     console.log(`[qqbot-api] >>> Body:`, JSON.stringify(body, null, 2));
@@ -227,15 +214,8 @@ export async function apiRequest<T = unknown>(
   try {
     res = await fetch(url, options);
   } catch (err) {
-    clearTimeout(timeoutId);
-    if (err instanceof Error && err.name === "AbortError") {
-      console.error(`[qqbot-api] <<< Request timeout after ${timeout}ms`);
-      throw new Error(`Request timeout [${path}]: exceeded ${timeout}ms`);
-    }
     console.error(`[qqbot-api] <<< Network error:`, err);
     throw new Error(`Network error [${path}]: ${err instanceof Error ? err.message : String(err)}`);
-  } finally {
-    clearTimeout(timeoutId);
   }
 
   // 打印响应头
@@ -699,8 +679,9 @@ export function startBackgroundTokenRefresh(
         await getAccessToken(appId, clientSecret);
 
         // 计算下次刷新时间
-        if (cachedToken) {
-          const expiresIn = cachedToken.expiresAt - Date.now();
+        const cached = cachedTokens.get(appId);
+        if (cached) {
+          const expiresIn = cached.expiresAt - Date.now();
           // 提前刷新时间 + 随机偏移（避免集群同时刷新）
           const randomOffset = Math.random() * randomOffsetMs;
           const refreshIn = Math.max(
