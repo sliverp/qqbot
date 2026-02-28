@@ -1084,7 +1084,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                               const convertResult = await convertWavToSilk(voiceUrl);
                               
                               if (!convertResult) {
-                                await sendErrorMessage(`[QQBot] WAV 转换为 SILK 失败: ${voiceUrl}`);
+                                await sendErrorMessage(`语音文件格式不支持，请使用 24kHz 采样率的 WAV 文件`);
                                 return;
                               }
                               

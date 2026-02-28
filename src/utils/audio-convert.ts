@@ -205,8 +205,8 @@ export async function convertWavToSilk(
     // 如果输入采样率不是 24000，需要重采样（TODO: 待实现）
     const targetSampleRate = 24000;
     if (sampleRate !== targetSampleRate) {
-      console.warn(`[audio-convert] WAV sample rate is ${sampleRate}Hz, expected ${targetSampleRate}Hz. Quality may be affected.`);
-      // 暂时不做重采样，直接使用原采样率编码
+      console.error(`[audio-convert] WAV sample rate must be 24000Hz, got ${sampleRate}Hz`);
+      return null;
     }
 
     // PCM → SILK 编码

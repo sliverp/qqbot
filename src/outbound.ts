@@ -779,6 +779,15 @@ export async function sendVoice(ctx: MediaOutboundContext): Promise<OutboundResu
         
         voiceDuration = convertResult.duration;
         
+        // QQ 语音时长限制：60秒
+        const MAX_VOICE_DURATION_MS = 60 * 1000;
+        if (voiceDuration !== undefined && voiceDuration > MAX_VOICE_DURATION_MS) {
+          return { 
+            channel: "qqbot", 
+            error: `语音时长超过限制（最大60秒，实际${Math.round(voiceDuration / 1000)}秒）` 
+          };
+        }
+        
         // 读取转换后的 SILK 文件
         const silkBuffer = fs.readFileSync(convertResult.silkPath);
         const base64Data = silkBuffer.toString("base64");
@@ -789,8 +798,9 @@ export async function sendVoice(ctx: MediaOutboundContext): Promise<OutboundResu
         // 清理临时 SILK 文件
         try {
           fs.unlinkSync(convertResult.silkPath);
-        } catch {
-          // 忽略删除失败
+          console.log(`[qqbot] Cleaned up temp file: ${convertResult.silkPath}`);
+        } catch (err) {
+          console.error(`[qqbot] Failed to cleanup temp file: ${convertResult.silkPath}`, err);
         }
       } else if (ext === ".silk" || ext === ".slk") {
         // SILK 文件直接读取

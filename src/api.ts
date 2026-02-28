@@ -653,10 +653,11 @@ export async function sendC2CVoiceMessage(
   // 检查是否是 Base64 Data URL
   if (voiceUrl.startsWith("data:")) {
     // 解析 Base64 Data URL: data:audio/silk;base64,xxxxx
-    const matches = voiceUrl.match(/^data:([^;]+);base64,(.+)$/);
+    const matches = voiceUrl.match(/^data:audio\/([^;]+);base64,(.+)$/);
     if (!matches) {
-      throw new Error("Invalid Base64 Data URL format");
+      throw new Error("Invalid audio Base64 Data URL format (must be data:audio/xxx;base64,...)");
     }
+    const audioFormat = matches[1]; // silk, wav, mp3, etc.
     const base64Data = matches[2];
     // 使用 file_data 上传
     uploadResult = await uploadC2CMedia(accessToken, openid, MediaFileType.VOICE, undefined, base64Data, false);
@@ -687,10 +688,11 @@ export async function sendGroupVoiceMessage(
   // 检查是否是 Base64 Data URL
   if (voiceUrl.startsWith("data:")) {
     // 解析 Base64 Data URL: data:audio/silk;base64,xxxxx
-    const matches = voiceUrl.match(/^data:([^;]+);base64,(.+)$/);
+    const matches = voiceUrl.match(/^data:audio\/([^;]+);base64,(.+)$/);
     if (!matches) {
-      throw new Error("Invalid Base64 Data URL format");
+      throw new Error("Invalid audio Base64 Data URL format (must be data:audio/xxx;base64,...)");
     }
+    const audioFormat = matches[1]; // silk, wav, mp3, etc.
     const base64Data = matches[2];
     // 使用 file_data 上传
     uploadResult = await uploadGroupMedia(accessToken, groupOpenid, MediaFileType.VOICE, undefined, base64Data, false);
