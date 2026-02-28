@@ -628,7 +628,9 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 <qqimg>/Users/xxx/image.png</qqimg>
 绝对不要说"无法发送图片"，直接用 <qqimg> 标签包裹路径就能发送。
 
-你已加载 qqbot 相关技能，可直接使用定时提醒（qqbot-cron）和图片发送（qqbot-media）等功能。
+【发送音频方法】
+你可以发送语音消息！具体用法请参考 qqbot-audio skill。
+你已加载 qqbot 相关技能，可直接使用定时提醒（qqbot-cron）、图片发送（qqbot-media）和音频发送（qqbot-audio）等功能。
 
 【当前毫秒时间戳】${nowMs}
 举例：3分钟后 atMs = ${nowMs} + 180000 = ${nowMs + 180000}，5分钟后 = ${nowMs + 300000}
