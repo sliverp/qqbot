@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { decode, encode, isSilk } from "silk-wasm";
+import { decode, encode, getWavFileInfo, isSilk, isWav } from "silk-wasm";
 
 /**
  * 检查文件是否为 SILK 格式（QQ/微信语音常用格式）
@@ -11,6 +11,19 @@ function isSilkFile(filePath: string): boolean {
   try {
     const buf = fs.readFileSync(filePath);
     return isSilk(new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 检查文件是否为 WAV 格式
+ * 使用 silk-wasm 提供的 isWav 工具函数
+ */
+function isWavFile(filePath: string): boolean {
+  try {
+    const buf = fs.readFileSync(filePath);
+    return isWav(new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength));
   } catch {
     return false;
   }
@@ -54,58 +67,39 @@ function pcmToWav(pcmData: Uint8Array, sampleRate: number, channels: number = 1,
 
 /**
  * 从 WAV 文件中提取 PCM 数据
- * WAV = 44 字节 RIFF 头 + PCM 原始数据
+ * 使用 silk-wasm 提供的 getWavFileInfo 工具函数解析 WAV 头部
  */
 function wavToPcm(wavBuffer: Buffer): { pcmData: Uint8Array; sampleRate: number } | null {
   try {
-    // 验证 WAV 格式
-    if (wavBuffer.length < 44) {
+    // 转为 Uint8Array 以兼容 silk-wasm 类型要求
+    const wavData = new Uint8Array(wavBuffer.buffer, wavBuffer.byteOffset, wavBuffer.byteLength);
+
+    // 使用 silk-wasm 的 isWav 验证 WAV 格式
+    if (!isWav(wavData)) {
       return null;
     }
 
-    // 检查 RIFF 头
-    if (wavBuffer.toString("ascii", 0, 4) !== "RIFF" || wavBuffer.toString("ascii", 8, 12) !== "WAVE") {
+    // 使用 silk-wasm 的 getWavFileInfo 获取 WAV 元数据
+    const info = getWavFileInfo(wavData);
+
+    // 检查是否为 PCM 格式 (formatCode = 1)
+    if (info.fmt.formatCode !== 1) {
       return null;
     }
 
-    // 查找 fmt 块
-    let offset = 12;
-    let fmtFound = false;
-    let sampleRate = 24000; // 默认采样率
-    let channels = 1;
-    let bitsPerSample = 16;
-
-    while (offset < wavBuffer.length - 8) {
-      const chunkId = wavBuffer.toString("ascii", offset, offset + 4);
-      const chunkSize = wavBuffer.readUInt32LE(offset + 4);
-
-      if (chunkId === "fmt ") {
-        fmtFound = true;
-        const audioFormat = wavBuffer.readUInt16LE(offset + 8);
-        if (audioFormat !== 1) {
-          // 非 PCM 格式
-          return null;
-        }
-        channels = wavBuffer.readUInt16LE(offset + 10);
-        sampleRate = wavBuffer.readUInt32LE(offset + 12);
-        bitsPerSample = wavBuffer.readUInt16LE(offset + 22);
-        offset += 8 + chunkSize;
-      } else if (chunkId === "data") {
-        if (!fmtFound) {
-          return null;
-        }
-        // 提取 PCM 数据
-        const pcmData = wavBuffer.subarray(offset + 8, offset + 8 + chunkSize);
-        return {
-          pcmData: new Uint8Array(pcmData.buffer, pcmData.byteOffset, pcmData.byteLength),
-          sampleRate,
-        };
-      } else {
-        offset += 8 + chunkSize;
-      }
+    // 查找 data chunk（添加防御性检查）
+    const dataChunk = info.chunkInfo?.find((chunk) => chunk.chunkId === "data");
+    if (!dataChunk) {
+      return null;
     }
 
-    return null;
+    // 提取 PCM 数据
+    const pcmData = wavBuffer.subarray(dataChunk.dataOffset, dataChunk.dataOffset + dataChunk.dataLength);
+
+    return {
+      pcmData: new Uint8Array(pcmData.buffer, pcmData.byteOffset, pcmData.length),
+      sampleRate: info.fmt.sampleRate,
+    };
   } catch {
     return null;
   }
@@ -188,11 +182,17 @@ export async function convertWavToSilk(
     return null;
   }
 
+  // 使用 isWavFile 进行早期验证，避免无效文件进入后续处理
+  if (!isWavFile(inputPath)) {
+    console.error(`[audio-convert] Invalid WAV format: ${inputPath}`);
+    return null;
+  }
+
   try {
     // 读取 WAV 文件
     const wavBuffer = fs.readFileSync(inputPath);
 
-    // 从 WAV 中提取 PCM 数据
+    // 从 WAV 中提取 PCM 数据（使用 silk-wasm 工具函数）
     const pcmResult = wavToPcm(wavBuffer);
     if (!pcmResult) {
       console.error(`[audio-convert] Failed to extract PCM from WAV: ${inputPath}`);
