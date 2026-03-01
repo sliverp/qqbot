@@ -11,6 +11,7 @@ import { getImageSize, formatQQBotMarkdownImage, hasQQBotImageSize, DEFAULT_IMAG
 import { parseQQBotPayload, encodePayloadForCron, isCronReminderPayload, isMediaPayload, type CronReminderPayload, type MediaPayload } from "./utils/payload.js";
 import { convertSilkToWav, convertWavToSilk, isVoiceAttachment, formatDuration } from "./utils/audio-convert.js";
 
+import { handleVoiceMarker, type VoiceHandlerOptions } from "./utils/voice-handler.js";
 // QQ Bot intents - 按权限级别分组
 const INTENTS = {
   // 基础权限（默认有）
@@ -632,6 +633,22 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 你可以发送语音消息！具体用法请参考 qqbot-audio skill。
 你已加载 qqbot 相关技能，可直接使用定时提醒（qqbot-cron）、图片发送（qqbot-media）和音频发送（qqbot-audio）等功能。
 
+【语音回复功能】
+当用户有以下意图时，请在回复中使用语音标记：
+- "读给我听"、"朗读"
+- "用语音告诉我"
+- "发语音"、"语音回复"
+- "念一下"、"播报"
+
+语音回复格式：
+[VOICE:text="要合成的文本内容"]
+
+注意事项：
+1. 只有用户明确要求语音时才使用此标记
+2. 标记中的文本应该简洁自然，适合朗读（建议不超过200字）
+3. 不要滥用语音，长文本优先用文本回复
+4. 可以在语音标记前后添加文字说明，会一并发送给用户
+
 【当前毫秒时间戳】${nowMs}
 举例：3分钟后 atMs = ${nowMs} + 180000 = ${nowMs + 180000}，5分钟后 = ${nowMs + 300000}
 
@@ -806,11 +823,69 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                 log?.info(`[qqbot:${account.accountId}] deliver called, kind: ${info.kind}, payload keys: ${Object.keys(payload).join(", ")}`);
 
                 let replyText = payload.text ?? "";
-                
+
+
+                // ============ [VOICE:text="..."] 语音标记检测与处理 ============
+                const voiceResult = await handleVoiceMarker({
+                  text: replyText,
+                  log: {
+                    info: (msg) => log?.info(`[qqbot:${account.accountId}] ${msg}`),
+                    error: (msg) => log?.error(`[qqbot:${account.accountId}] ${msg}`),
+                  },
+                  needsSilkConversion: true,
+                  convertToSilk: convertWavToSilk,
+                  sendVoice: async (voiceData, duration) => {
+                    await sendWithTokenRetry(async (token) => {
+                      if (event.type === "c2c") {
+                        await sendC2CVoiceMessage(token, event.senderId, voiceData, event.messageId);
+                      } else if (event.type === "group" && event.groupOpenid) {
+                        await sendGroupVoiceMessage(token, event.groupOpenid, voiceData, event.messageId);
+                      } else if (event.channelId) {
+                        // 频道暂不支持语音消息，发送文本提示
+                        const voiceText = replyText.match(/\[VOICE:text="(.+?)"\]/)?.[1] || "语音消息";
+                        await sendChannelMessage(token, event.channelId, `[语音消息] ${voiceText}`, event.messageId);
+                      }
+                    });
+                  },
+                });
+
+                if (voiceResult.voiceSent) {
+                  // 语音发送成功，发送剩余文本
+                  replyText = voiceResult.textWithoutVoice;
+                  if (replyText) {
+                    try {
+                      await sendWithTokenRetry(async (token) => {
+                        if (event.type === "c2c") {
+                          await sendC2CMessage(token, event.senderId, replyText, event.messageId);
+                        } else if (event.type === "group" && event.groupOpenid) {
+                          await sendGroupMessage(token, event.groupOpenid, replyText, event.messageId);
+                        } else if (event.channelId) {
+                          await sendChannelMessage(token, event.channelId, replyText, event.messageId);
+                        }
+                      });
+                      log?.info(`[qqbot:${account.accountId}] Sent remaining text after voice`);
+                    } catch (err) {
+                      log?.error(`[qqbot:${account.accountId}] Failed to send remaining text: ${err}`);
+                    }
+                  }
+                  // 记录活动并返回
+                  pluginRuntime.channel.activity.record({
+                    channel: "qqbot",
+                    accountId: account.accountId,
+                    direction: "outbound",
+                  });
+                  return;
+                } else if (voiceResult.error) {
+                  // TTS 失败，使用去掉 VOICE 标记后的文本继续
+                  replyText = voiceResult.textWithoutVoice;
+                  if (!replyText) {
+                    await sendErrorMessage(`语音生成失败: ${voiceResult.error}`);
+                    return;
+                  }
+                  // 继续执行后续文本发送逻辑
+                }
+
                 // ============ 简单图片标签解析 ============
-                // 支持 <qqimg>路径</qqimg> 或 <qqimg>路径</img> 格式发送图片
-                // 这是比 QQBOT_PAYLOAD JSON 更简单的方式，适合大模型能力较弱的情况
-                // 注意：正则限制内容不能包含 < 和 >，避免误匹配 `<qqimg>` 这种反引号内的说明文字
                 // 🔧 支持两种闭合方式：</qqimg> 和 </img>（AI 可能输出不同格式）
                 const qqimgRegex = /<qqimg>([^<>]+)<\/(?:qqimg|img)>/gi;
                 const qqimgMatches = [...replyText.matchAll(qqimgRegex)];

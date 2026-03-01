@@ -3,7 +3,7 @@
   "name": "QQ Bot Channel",
   "description": "QQ Bot channel plugin with message support, cron jobs, and proactive messaging",
   "channels": ["qqbot"],
-  "skills": ["skills/qqbot-cron", "skills/qqbot-media", "skills/qqbot-audio"],
+  "skills": ["skills/qqbot-cron", "skills/qqbot-media", "skills/qqbot-audio", "skills/tencent-tts"],
   "capabilities": {
     "proactiveMessaging": true,
     "cronJobs": true

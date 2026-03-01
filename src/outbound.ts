@@ -4,6 +4,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import { execFileSync } from "child_process";
 import type { ResolvedQQBotAccount } from "./types.js";
 import { decodeCronPayload } from "./utils/payload.js";
 import {
@@ -265,6 +266,96 @@ export async function sendText(ctx: OutboundContext): Promise<OutboundResult> {
     }
   }
 
+  // ============ [VOICE:text="..."] 标记检测与处理 ============
+  // 当 AI 回复包含语音标记时，自动调用 TTS 生成语音并发送
+  const voiceRegex = /\[VOICE:text="(.+?)"\]/;
+  const voiceMatch = text.match(voiceRegex);
+  
+  if (voiceMatch) {
+    const voiceText = voiceMatch[1];
+    console.log(`[qqbot] sendText: Detected [VOICE] marker, text: "${voiceText}"`);
+    
+    try {
+      // 1. 调用 TTS 生成音频
+      const ttsScriptPath = path.join(__dirname, "..", "skills/tencent-tts/scripts/tts.py");
+      const wavPath = `/tmp/tts_${Date.now()}_${Math.random().toString(36).slice(2)}.wav`;
+      
+      console.log(`[qqbot] sendText: Calling TTS script: ${ttsScriptPath}`);
+      console.log(`[qqbot] sendText: Output path: ${wavPath}`);
+      
+      
+      // 前置检查：TTS 脚本是否存在
+      if (!fs.existsSync(ttsScriptPath)) {
+        throw new Error(`TTS script not found: ${ttsScriptPath}`);
+      }
+      
+      // 使用 execFileSync 安全地传递参数（避免命令注入）
+      console.log(`[qqbot] sendText: Executing TTS with voiceText length: ${voiceText.length}`);
+      execFileSync("python3", [ttsScriptPath, voiceText, wavPath], {
+        cwd: process.cwd(),
+        env: process.env,
+        stdio: "pipe",
+        timeout: 30000, // 30秒超时
+      });
+      
+      // 检查生成的音频文件是否存在
+      if (!fs.existsSync(wavPath)) {
+        throw new Error(`TTS output file not created: ${wavPath}`);
+      }
+      
+      // 2. 发送语音消息
+      console.log(`[qqbot] sendText: Sending voice message to ${to}`);
+      const voiceResult = await sendVoice({
+        to,
+        text: "", // 语音消息不带额外文本
+        mediaUrl: wavPath,
+        account,
+        replyToId,
+      });
+      
+      // 3. 清理临时文件
+      try {
+        if (fs.existsSync(wavPath)) {
+          fs.unlinkSync(wavPath);
+          console.log(`[qqbot] sendText: Cleaned up temp file: ${wavPath}`);
+        }
+      } catch (cleanupErr) {
+        console.error(`[qqbot] sendText: Failed to cleanup temp file: ${cleanupErr}`);
+      }
+      
+      // 4. 发送剩余的文本内容（去掉 VOICE 标记后的内容）
+      const textWithoutVoice = text.replace(voiceRegex, "").trim();
+      if (textWithoutVoice) {
+        console.log(`[qqbot] sendText: Sending remaining text: "${textWithoutVoice.slice(0, 50)}..."`);
+        // 递归调用 sendText 发送剩余文本（不会再匹配 VOICE 标记）
+        const textResult = await sendText({
+          to,
+          text: textWithoutVoice,
+          account,
+          replyToId: voiceResult.messageId, // 使用语音消息的 ID 作为回复目标
+        });
+        return textResult;
+      }
+      
+      return voiceResult;
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.error(`[qqbot] sendText: TTS or voice send failed: ${errMsg}`);
+      
+      // TTS 失败时回退到文本回复
+      const fallbackText = text.replace(voiceRegex, "").trim();
+      if (fallbackText) {
+        console.log(`[qqbot] sendText: Fallback to text reply: "${fallbackText.slice(0, 50)}..."`);
+        // 继续执行后续的文本发送逻辑
+        text = fallbackText;
+      } else {
+        return {
+          channel: "qqbot",
+          error: `语音生成失败: ${errMsg}`,
+        };
+      }
+    }
+  }
   // ============ <qqimg> 标签检测与处理 ============
   // 支持 <qqimg>路径</qqimg> 或 <qqimg>路径</img> 格式发送图片
   const qqimgRegex = /<qqimg>([^<>]+)<\/(?:qqimg|img)>/gi;
