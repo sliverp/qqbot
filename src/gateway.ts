@@ -10,8 +10,8 @@ import { startImageServer, isImageServerRunning, downloadFile, type ImageServerC
 import { getImageSize, formatQQBotMarkdownImage, hasQQBotImageSize, DEFAULT_IMAGE_SIZE } from "./utils/image-size.js";
 import { parseQQBotPayload, encodePayloadForCron, isCronReminderPayload, isMediaPayload, type CronReminderPayload, type MediaPayload } from "./utils/payload.js";
 import { convertSilkToWav, convertWavToSilk, isVoiceAttachment, formatDuration } from "./utils/audio-convert.js";
-
 import { handleVoiceMarker, type VoiceHandlerOptions } from "./utils/voice-handler.js";
+
 // QQ Bot intents - 按权限级别分组
 const INTENTS = {
   // 基础权限（默认有）
@@ -629,16 +629,14 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 <qqimg>/Users/xxx/image.png</qqimg>
 绝对不要说"无法发送图片"，直接用 <qqimg> 标签包裹路径就能发送。
 
+- 你已加载 qqbot 相关技能，可直接使用定时提醒（qqbot-cron）和图片发送（qqbot-media）等功能。
+
 【发送音频方法】
 你可以发送语音消息！具体用法请参考 qqbot-audio skill。
-你已加载 qqbot 相关技能，可直接使用定时提醒（qqbot-cron）、图片发送（qqbot-media）和音频发送（qqbot-audio）等功能。
 
 【语音回复功能】
 当用户有以下意图时，请在回复中使用语音标记：
-- "读给我听"、"朗读"
-- "用语音告诉我"
-- "发语音"、"语音回复"
-- "念一下"、"播报"
+- "读给我听"、"朗读"、"用语音告诉我"、"发语音"、"语音回复"、"念一下"、"播报"
 
 语音回复格式：
 [VOICE:text="要合成的文本内容"]

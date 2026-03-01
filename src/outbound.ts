@@ -21,10 +21,11 @@ import {
 } from "./api.js";
 import { convertWavToSilk } from "./utils/audio-convert.js";
 
+// ============ 消息回复限流器 ============
+// 同一 message_id 1小时内最多回复 4 次，超过 1 小时无法被动回复（需改为主动消息）
 const MESSAGE_REPLY_LIMIT = 4;
 const MESSAGE_REPLY_TTL = 60 * 60 * 1000; // 1小时
 
-// ============ 消息回复限流器 ============
 interface MessageReplyRecord {
   count: number;
   firstReplyAt: number;
