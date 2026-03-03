@@ -76,7 +76,7 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
     normalizeTarget: (target) => {
       // 支持格式: qqbot:c2c:xxx, qqbot:group:xxx, c2c:xxx, group:xxx, openid
       const normalized = target.replace(/^qqbot:/i, "");
-      return { ok: true, to: normalized };
+      return normalized || undefined;
     },
     targetResolver: {
       looksLikeId: (id) => {
