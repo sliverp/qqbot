@@ -69,28 +69,7 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
     blockStreaming: false,
   },
   reload: { configPrefixes: ["channels.qqbot"] },
-  // CLI onboarding wizard
   onboarding: qqbotOnboardingAdapter,
-  // 消息目标解析
-  messaging: {
-    normalizeTarget: (target) => {
-      // 支持格式: qqbot:c2c:xxx, qqbot:group:xxx, c2c:xxx, group:xxx, openid
-      const normalized = target.replace(/^qqbot:/i, "");
-      return { ok: true, to: normalized };
-    },
-    targetResolver: {
-      looksLikeId: (id) => {
-        // 先去掉 qqbot: 前缀
-        const normalized = id.replace(/^qqbot:/i, "");
-        // 支持 c2c:xxx, group:xxx, channel:xxx 格式
-        if (normalized.startsWith("c2c:") || normalized.startsWith("group:") || normalized.startsWith("channel:")) return true;
-        // 支持纯 openid（32位十六进制）
-        if (/^[A-F0-9]{32}$/i.test(normalized)) return true;
-        return false;
-      },
-      hint: "c2c:<openid> or group:<groupOpenid>",
-    },
-  },
   config: {
     listAccountIds: (cfg) => listQQBotAccountIds(cfg),
     resolveAccount: (cfg, accountId) => resolveQQBotAccount(cfg, accountId),
@@ -186,30 +165,24 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
      * - channel:channelid -> 频道
      * - 纯 openid（32位十六进制）-> 私聊
      */
-    normalizeTarget: (target: string): string | undefined => {
-      // 去掉 qqbot: 前缀（如果有）
+    normalizeTarget: (target: string): { ok: true; to: string } | { ok: false; error: string } => {
       const id = target.replace(/^qqbot:/i, "");
       
-      // 检查是否是已知格式
       if (id.startsWith("c2c:") || id.startsWith("group:") || id.startsWith("channel:")) {
-        return `qqbot:${id}`;
+        return { ok: true, to: `qqbot:${id}` };
       }
       
-      // 检查是否是纯 openid（32位十六进制，不带连字符）
-      // QQ Bot OpenID 格式类似: 207A5B8339D01F6582911C014668B77B
       const openIdHexPattern = /^[0-9a-fA-F]{32}$/;
       if (openIdHexPattern.test(id)) {
-        return `qqbot:c2c:${id}`;
+        return { ok: true, to: `qqbot:c2c:${id}` };
       }
 
-      // 检查是否是 UUID 格式的 openid（带连字符）
       const openIdUuidPattern = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
       if (openIdUuidPattern.test(id)) {
-        return `qqbot:c2c:${id}`;
+        return { ok: true, to: `qqbot:c2c:${id}` };
       }
       
-      // 不认识的格式，返回 undefined
-      return undefined;
+      return { ok: false, error: "Invalid QQ Bot target format" };
     },
     /**
      * 目标解析器配置
