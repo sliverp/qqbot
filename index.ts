@@ -3,6 +3,7 @@ import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
 
 import { qqbotPlugin } from "./src/channel.js";
 import { setQQBotRuntime } from "./src/runtime.js";
+import { handleFileRequest } from "./src/file-server.js";
 
 const plugin = {
   id: "qqbot",
@@ -12,6 +13,18 @@ const plugin = {
   register(api: OpenClawPluginApi) {
     setQQBotRuntime(api.runtime);
     api.registerChannel({ plugin: qqbotPlugin });
+
+    // 注册文件服务 HTTP handler，挂载在 /qqbot/static 路径
+    const registerHttpHandler = (api as Record<string, unknown>).registerHttpHandler as
+      ((handler: (req: unknown, res: unknown) => Promise<boolean>) => void) | undefined;
+    if (registerHttpHandler) {
+      registerHttpHandler(async (req, res) => {
+        return handleFileRequest(
+          req as import("node:http").IncomingMessage,
+          res as import("node:http").ServerResponse,
+        );
+      });
+    }
   },
 };
 

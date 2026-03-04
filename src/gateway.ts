@@ -10,6 +10,7 @@ import { startImageServer, isImageServerRunning, downloadFile, type ImageServerC
 import { getImageSize, formatQQBotMarkdownImage, hasQQBotImageSize, DEFAULT_IMAGE_SIZE } from "./utils/image-size.js";
 import { parseQQBotPayload, encodePayloadForCron, isCronReminderPayload, isMediaPayload, type CronReminderPayload, type MediaPayload } from "./utils/payload.js";
 import { convertSilkToWav, isVoiceAttachment, formatDuration } from "./utils/audio-convert.js";
+import { getPublicIp, generateFileUrl, isImageFile } from "./file-server.js";
 
 // QQ Bot intents - 按权限级别分组
 const INTENTS = {
@@ -628,6 +629,12 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 <qqimg>/Users/xxx/image.png</qqimg>
 绝对不要说"无法发送图片"，直接用 <qqimg> 标签包裹路径就能发送。
 
+【发送文件方法】
+你可以发送本地文件！使用 <qqfile>文件路径</qqfile> 标签即可，例如：
+<qqfile>/root/1.txt</qqfile>
+文件会自动生成安全的下载链接。请使用 Markdown 格式输出，系统会自动把 <qqfile> 标签转为 [文件名](下载链接) 的格式发给用户。
+绝对不要说"无法发送文件"，直接用 <qqfile> 标签包裹文件的绝对路径就能发送。
+
 你已加载 qqbot 相关技能，可直接使用定时提醒（qqbot-cron）和图片发送（qqbot-media）等功能。
 
 【当前毫秒时间戳】${nowMs}
@@ -804,7 +811,114 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                 log?.info(`[qqbot:${account.accountId}] deliver called, kind: ${info.kind}, payload keys: ${Object.keys(payload).join(", ")}`);
 
                 let replyText = payload.text ?? "";
-                
+
+                // ============ <qqfile> 文件标签解析 ============
+                // 支持 <qqfile>/path/to/file</qqfile> 格式发送文件
+                // 文件会通过 OpenClaw 的 HTTP 端口以 token 保护的方式提供下载
+                // 如果文件是图片（png/jpg/jpeg/gif/webp 等），自动转为 <qqimg> 标签走图片发送流程
+                const qqfileRegex = /<qqfile>([^<>]+)<\/(?:qqfile|file)>/gi;
+                let qqfilePreprocessed = replyText;
+                const qqfilePreMatches = [...replyText.matchAll(qqfileRegex)];
+                for (const match of qqfilePreMatches) {
+                  const filePath = match[1]?.trim();
+                  if (filePath && isImageFile(filePath)) {
+                    // 图片文件：替换为 <qqimg> 标签，交给后续图片处理流程
+                    qqfilePreprocessed = qqfilePreprocessed.replace(match[0], `<qqimg>${filePath}</qqimg>`);
+                    log?.info(`[qqbot:${account.accountId}] <qqfile> contains image, converted to <qqimg>: ${filePath}`);
+                  }
+                }
+                replyText = qqfilePreprocessed;
+
+                // 重新匹配剩余的非图片 <qqfile> 标签
+                const qqfileRegex2 = /<qqfile>([^<>]+)<\/(?:qqfile|file)>/gi;
+                const qqfileMatches = [...replyText.matchAll(qqfileRegex2)];
+
+                if (qqfileMatches.length > 0) {
+                  log?.info(`[qqbot:${account.accountId}] Detected ${qqfileMatches.length} <qqfile> tag(s)`);
+
+                  // 获取公网 IP
+                  const publicIp = await getPublicIp();
+
+                  if (!publicIp) {
+                    // 无法获取公网 IP，通知用户
+                    log?.error(`[qqbot:${account.accountId}] Cannot detect public IP, file sending unavailable`);
+                    const errorMsg = "抱歉，当前无法发送文件：无法获取服务器的公网 IP 地址。可能当前网络环境处于 NAT 内网中，无法直接提供文件下载服务。";
+                    try {
+                      await sendWithTokenRetry(async (token) => {
+                        if (event.type === "c2c") {
+                          await sendC2CMessage(token, event.senderId, errorMsg, event.messageId);
+                        } else if (event.type === "group" && event.groupOpenid) {
+                          await sendGroupMessage(token, event.groupOpenid, errorMsg, event.messageId);
+                        } else if (event.channelId) {
+                          await sendChannelMessage(token, event.channelId, errorMsg, event.messageId);
+                        }
+                      });
+                    } catch (err) {
+                      log?.error(`[qqbot:${account.accountId}] Failed to send file error message: ${err}`);
+                    }
+                    pluginRuntime.channel.activity.record({
+                      channel: "qqbot",
+                      accountId: account.accountId,
+                      direction: "outbound",
+                    });
+                    return;
+                  }
+
+                  // 替换 <qqfile> 标签为 Markdown 链接
+                  let processedText = replyText;
+                  for (const match of qqfileMatches) {
+                    const filePath = match[1]?.trim();
+                    if (!filePath) continue;
+
+                    if (!fs.existsSync(filePath)) {
+                      log?.error(`[qqbot:${account.accountId}] File not found for <qqfile>: ${filePath}`);
+                      // 替换标签为错误提示
+                      processedText = processedText.replace(match[0], `[文件不存在: ${path.basename(filePath)}]`);
+                      continue;
+                    }
+
+                    const fileResult = generateFileUrl(filePath, publicIp);
+                    if (!fileResult) {
+                      log?.error(`[qqbot:${account.accountId}] Failed to generate file URL for: ${filePath}`);
+                      processedText = processedText.replace(match[0], `[文件处理失败: ${path.basename(filePath)}]`);
+                      continue;
+                    }
+
+                    // 替换标签为 Markdown 链接
+                    const mdLink = `[${fileResult.fileName}](${fileResult.url})`;
+                    processedText = processedText.replace(match[0], mdLink);
+                    log?.info(`[qqbot:${account.accountId}] File URL generated: ${fileResult.url}`);
+                  }
+
+                  // 清理多余空行
+                  processedText = filterInternalMarkers(processedText.replace(/\n{3,}/g, "\n\n").trim());
+
+                  // 发送处理后的文本
+                  if (processedText) {
+                    try {
+                      await sendWithTokenRetry(async (token) => {
+                        if (event.type === "c2c") {
+                          await sendC2CMessage(token, event.senderId, processedText, event.messageId);
+                        } else if (event.type === "group" && event.groupOpenid) {
+                          await sendGroupMessage(token, event.groupOpenid, processedText, event.messageId);
+                        } else if (event.channelId) {
+                          await sendChannelMessage(token, event.channelId, processedText, event.messageId);
+                        }
+                      });
+                      log?.info(`[qqbot:${account.accountId}] Sent file message with ${qqfileMatches.length} file link(s)`);
+                    } catch (err) {
+                      log?.error(`[qqbot:${account.accountId}] Failed to send file message: ${err}`);
+                    }
+                  }
+
+                  pluginRuntime.channel.activity.record({
+                    channel: "qqbot",
+                    accountId: account.accountId,
+                    direction: "outbound",
+                  });
+                  return;
+                }
+
                 // ============ 简单图片标签解析 ============
                 // 支持 <qqimg>路径</qqimg> 或 <qqimg>路径</img> 格式发送图片
                 // 这是比 QQBOT_PAYLOAD JSON 更简单的方式，适合大模型能力较弱的情况

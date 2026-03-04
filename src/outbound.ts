@@ -16,6 +16,7 @@ import {
   sendC2CImageMessage,
   sendGroupImageMessage,
 } from "./api.js";
+import { getPublicIp, generateFileUrl, isImageFile } from "./file-server.js";
 
 // ============ 消息回复限流器 ============
 // 同一 message_id 1小时内最多回复 4 次，超过 1 小时无法被动回复（需改为主动消息）
@@ -261,6 +262,66 @@ export async function sendText(ctx: OutboundContext): Promise<OutboundResult> {
     } else {
       console.log(`[qqbot] sendText: 消息 ${replyToId} 剩余被动回复次数: ${limitCheck.remaining}/${MESSAGE_REPLY_LIMIT}`);
     }
+  }
+
+  // ============ <qqfile> 文件标签检测与处理 ============
+  // 支持 <qqfile>文件路径</qqfile> 或 <qqfile>文件路径</file> 格式发送文件
+  // 如果文件是图片，自动转为 <qqimg> 标签走图片发送流程
+  const qqfilePreRegex = /<qqfile>([^<>]+)<\/(?:qqfile|file)>/gi;
+  const qqfilePreMatches = [...text.matchAll(qqfilePreRegex)];
+  for (const match of qqfilePreMatches) {
+    const filePath = match[1]?.trim();
+    if (filePath && isImageFile(filePath)) {
+      text = text.replace(match[0], `<qqimg>${filePath}</qqimg>`);
+      console.log(`[qqbot] sendText: <qqfile> contains image, converted to <qqimg>: ${filePath}`);
+    }
+  }
+
+  const qqfileRegex = /<qqfile>([^<>]+)<\/(?:qqfile|file)>/gi;
+  const qqfileMatches = text.match(qqfileRegex);
+
+  if (qqfileMatches && qqfileMatches.length > 0) {
+    console.log(`[qqbot] sendText: Detected ${qqfileMatches.length} <qqfile> tag(s), processing...`);
+
+    // 获取公网 IP
+    const publicIp = await getPublicIp();
+
+    if (!publicIp) {
+      console.error("[qqbot] sendText: Cannot detect public IP, file sending unavailable");
+      return {
+        channel: "qqbot",
+        error: "无法发送文件：无法获取服务器公网 IP 地址，可能处于 NAT 内网环境中",
+      };
+    }
+
+    // 替换 <qqfile> 标签为 Markdown 链接
+    let processedText = text;
+    const qqfileRegexReplace = /<qqfile>([^<>]+)<\/(?:qqfile|file)>/gi;
+    let fileMatch;
+    while ((fileMatch = qqfileRegexReplace.exec(text)) !== null) {
+      const filePath = fileMatch[1]?.trim();
+      if (!filePath) continue;
+
+      if (!fs.existsSync(filePath)) {
+        console.error(`[qqbot] sendText: File not found for <qqfile>: ${filePath}`);
+        processedText = processedText.replace(fileMatch[0], `[文件不存在: ${path.basename(filePath)}]`);
+        continue;
+      }
+
+      const fileResult = generateFileUrl(filePath, publicIp);
+      if (!fileResult) {
+        console.error(`[qqbot] sendText: Failed to generate file URL for: ${filePath}`);
+        processedText = processedText.replace(fileMatch[0], `[文件处理失败: ${path.basename(filePath)}]`);
+        continue;
+      }
+
+      const mdLink = `[${fileResult.fileName}](${fileResult.url})`;
+      processedText = processedText.replace(fileMatch[0], mdLink);
+      console.log(`[qqbot] sendText: File URL generated: ${fileResult.url}`);
+    }
+
+    // 使用处理后的文本继续走正常发送流程
+    text = processedText.replace(/\n{3,}/g, "\n\n").trim();
   }
 
   // ============ <qqimg> 标签检测与处理 ============
