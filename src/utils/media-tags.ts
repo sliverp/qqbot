@@ -92,6 +92,23 @@ function resolveTagName(raw: string): typeof VALID_TAGS[number] {
 }
 
 /**
+ * 预清理：将富媒体标签内部的换行/回车/制表符压缩为单个空格。
+ *
+ * 部分模型会在标签内部插入 \n \r \t 等空白字符，例如：
+ *   <qqimg>\n  /path/to/file.png\n</qqimg>
+ *   <qqimg>/path/to/\nfile.png</qqimg>
+ *
+ * 此正则匹配从开标签到闭标签之间的内容（允许跨行），
+ * 将内部所有 [\r\n\t] 替换为空格，然后压缩连续空格。
+ */
+const MULTILINE_TAG_CLEANUP = new RegExp(
+  "([<＜<]\\s*(?:" + TAG_NAME_PATTERN + ")\\s*[>＞>])" +
+  "([\\s\\S]*?)" +
+  "([<＜<]\\s*/?\\s*(?:" + TAG_NAME_PATTERN + ")\\s*[>＞>])",
+  "gi"
+);
+
+/**
  * 预处理 LLM 输出文本，将各种畸形/错误的富媒体标签修正为标准格式。
  *
  * 标准格式：<qqimg>/path/to/file</qqimg>
@@ -100,7 +117,13 @@ function resolveTagName(raw: string): typeof VALID_TAGS[number] {
  * @returns 修正后的文本（如果没有匹配到任何标签则原样返回）
  */
 export function normalizeMediaTags(text: string): string {
-  return text.replace(FUZZY_MEDIA_TAG_REGEX, (_match, rawTag: string, content: string) => {
+  // 先将标签内部的换行/回车/制表符压缩为空格
+  let cleaned = text.replace(MULTILINE_TAG_CLEANUP, (_m, open: string, body: string, close: string) => {
+    const flat = body.replace(/[\r\n\t]+/g, " ").replace(/ {2,}/g, " ");
+    return open + flat + close;
+  });
+
+  return cleaned.replace(FUZZY_MEDIA_TAG_REGEX, (_match, rawTag: string, content: string) => {
     const tag = resolveTagName(rawTag);
     const trimmed = content.trim();
     if (!trimmed) return _match; // 空内容不处理

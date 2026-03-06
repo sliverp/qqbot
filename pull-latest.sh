@@ -149,7 +149,16 @@ else
 fi
 
 if [ -z "$REMOTE_VER" ]; then
-    fail "无法查询 $PKG_NAME 的版本，请检查网络\n   npm 源: $(npm config get registry 2>/dev/null)"
+    echo ""
+    echo "❌ 无法查询 $PKG_NAME 的版本"
+    echo ""
+    echo "当前 npm 源: $(npm config get registry 2>/dev/null || echo '未知')"
+    echo ""
+    echo "请排查:"
+    echo "  1. 检查网络连接: curl -I https://registry.npmjs.org/"
+    echo "  2. 切换国内镜像: npm config set registry https://registry.npmmirror.com/"
+    echo "  3. 确认包名正确: npm view $PKG_NAME version"
+    exit 1
 fi
 echo "  目标版本: ${REMOTE_VER}"
 
@@ -211,14 +220,45 @@ rm -rf "$TMP_DIR"
 mkdir -p "$TMP_DIR"
 
 echo "  下载中..."
-TARBALL=$(cd "$TMP_DIR" && npm pack "$PKG_SPEC" 2>/dev/null)
-[ -z "$TARBALL" ] || [ ! -f "$TMP_DIR/$TARBALL" ] && fail "下载失败，请检查网络: npm pack $PKG_SPEC"
+TARBALL=$(cd "$TMP_DIR" && npm pack "$PKG_SPEC" 2>&1) || true
+if [ -z "$TARBALL" ] || [ ! -f "$TMP_DIR/$TARBALL" ]; then
+    echo ""
+    echo "❌ 下载 npm 包失败: $PKG_SPEC"
+    echo ""
+    echo "npm pack 输出: ${TARBALL:-无}"
+    echo ""
+    echo "请排查:"
+    echo "  1. 检查网络: curl -I https://registry.npmjs.org/"
+    echo "  2. 手动测试: npm pack $PKG_SPEC"
+    echo "  3. 切换镜像: npm config set registry https://registry.npmmirror.com/"
+    echo "  4. 清理缓存: npm cache clean --force"
+    exit 1
+fi
 
 echo "  解压中..."
-tar xzf "$TMP_DIR/$TARBALL" -C "$TMP_DIR"
+if ! tar xzf "$TMP_DIR/$TARBALL" -C "$TMP_DIR"; then
+    echo ""
+    echo "❌ 解压 npm 包失败"
+    echo ""
+    echo "文件: $TMP_DIR/$TARBALL"
+    echo "文件大小: $(ls -lh "$TMP_DIR/$TARBALL" 2>/dev/null | awk '{print $5}' || echo '未知')"
+    echo ""
+    echo "请排查:"
+    echo "  1. 下载可能不完整，重新运行此脚本"
+    echo "  2. 手动解压测试: tar xzf $TMP_DIR/$TARBALL"
+    exit 1
+fi
 
 PACK_DIR="$TMP_DIR/package"
-[ ! -d "$PACK_DIR" ] && fail "解压后未找到 package 目录"
+if [ ! -d "$PACK_DIR" ]; then
+    echo ""
+    echo "❌ 解压后未找到 package 目录"
+    echo ""
+    echo "解压内容: $(ls "$TMP_DIR" 2>/dev/null)"
+    echo ""
+    echo "npm 包格式可能不正确，请联系包维护者"
+    exit 1
+fi
 
 NEW_VER=$(json_get "$PACK_DIR/package.json" "c => c.version")
 NEW_VER="${NEW_VER:-$REMOTE_VER}"
@@ -245,7 +285,17 @@ cleanup
 
 echo "  安装依赖..."
 cd "$PROJ_DIR"
-npm install --omit=dev 2>&1 | tail -3
+if ! npm install --omit=dev 2>&1 | tail -5; then
+    echo ""
+    echo "❌ npm 依赖安装失败"
+    echo ""
+    echo "请排查:"
+    echo "  1. 手动重试: cd $PROJ_DIR && npm install --omit=dev"
+    echo "  2. 查看详细日志: cd $PROJ_DIR && npm install --omit=dev --verbose"
+    echo "  3. 清理后重试: rm -rf $PROJ_DIR/node_modules && npm install --omit=dev"
+    echo "  4. 切换镜像: npm config set registry https://registry.npmmirror.com/"
+    exit 1
+fi
 
 # ============================================================
 # [5/5] 卸载旧插件 → 临时移除 channel 配置 → 安装新插件 → 恢复配置 → 重启
@@ -299,22 +349,41 @@ if ! $CMD plugins install "$PROJ_DIR" 2>&1; then
             cfg.channels = cfg.channels || {};
             cfg.channels.qqbot = $SAVED_CHANNELS_JSON;
             fs.writeFileSync('$APP_CONFIG', JSON.stringify(cfg, null, 4) + '\n');
-        " 2>/dev/null
+        " 2>/dev/null && echo "  (已恢复通道配置)"
     fi
-    fail "插件安装失败，请检查上方错误信息"
+    echo ""
+    echo "❌ 插件安装失败"
+    echo ""
+    echo "请排查:"
+    echo "  1. 检查上方的错误输出"
+    echo "  2. 手动重试: cd $PROJ_DIR && $CMD plugins install ."
+    echo "  3. 检查插件目录是否完整: ls -la $PROJ_DIR/"
+    echo "  4. 检查 package.json 是否存在: cat $PROJ_DIR/package.json"
+    echo "  5. 确认 $CMD 版本兼容: $CMD --version"
+    exit 1
 fi
 ok "插件安装成功"
 
 # --- 5d. 恢复 channels.qqbot 配置 ---
 if [ -n "$SAVED_CHANNELS_JSON" ]; then
     echo "  恢复 qqbot 通道配置..."
-    node -e "
+    if node -e "
         const fs = require('fs');
         const cfg = JSON.parse(fs.readFileSync('$APP_CONFIG', 'utf8'));
         cfg.channels = cfg.channels || {};
         cfg.channels.qqbot = $SAVED_CHANNELS_JSON;
         fs.writeFileSync('$APP_CONFIG', JSON.stringify(cfg, null, 4) + '\n');
-    " 2>/dev/null && ok "通道配置已恢复" || warn "通道配置恢复失败，需手动配置"
+    " 2>/dev/null; then
+        ok "通道配置已恢复"
+    else
+        echo ""
+        echo "⚠️  通道配置恢复失败"
+        echo ""
+        echo "请手动恢复:"
+        echo "  $CMD channels add --channel qqbot --token 'YOUR_APPID:YOUR_SECRET'"
+        echo ""
+        echo "或直接编辑配置文件: $APP_CONFIG"
+    fi
 fi
 
 # --- 5e. 停止旧 gateway ---
@@ -341,7 +410,13 @@ echo "  启动网关..."
 if $CMD gateway 2>&1; then
     ok "网关已启动"
 else
-    warn "网关启动失败，请手动执行: $CMD gateway install && $CMD gateway"
+    echo ""
+    echo "⚠️  网关启动失败（不影响已安装的插件）"
+    echo ""
+    echo "请手动启动:"
+    echo "  1. 安装服务: $CMD gateway install"
+    echo "  2. 启动网关: $CMD gateway"
+    echo "  3. 查看日志: $CMD logs --follow"
 fi
 
 # ============================================================
@@ -353,7 +428,7 @@ echo "  ✅ QQBot 已从 ${LOCAL_VER:-未知} 更新到 ${NEW_VER}"
 echo "========================================="
 echo ""
 echo "常用命令:"
-echo "  $CMD gateway log          # 查看日志"
+echo "  $CMD logs --follow        # 跟踪日志"
 echo "  $CMD gateway restart      # 重启服务"
 echo "  $CMD plugins list         # 查看插件列表"
 echo "========================================="
