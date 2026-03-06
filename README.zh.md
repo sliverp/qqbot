@@ -99,6 +99,106 @@ openclaw channels add --channel qqbot --token "AppID:AppSecret"
 }
 ```
 
+## 语音能力配置（可选）
+
+STT 和 TTS 各支持两级配置，插件会按优先级依次查找，找到有效配置即停止。每一级的 `baseUrl` / `apiKey` 均可从 `models.providers` 自动继承。
+
+### 配置优先级总览
+
+| 能力 | 优先级 1（插件专属） | 优先级 2（框架级回退） |
+|------|---------------------|----------------------|
+| STT | `channels.qqbot.stt` | `tools.media.audio.models[0]` |
+| TTS | `channels.qqbot.tts` | `messages.tts` |
+
+每一级中，`baseUrl` 和 `apiKey` 的解析顺序：**本级直接配置 → `models.providers.<provider>` 继承**。两者必须同时有值，该级配置才生效。
+
+### STT（语音转文字）— 自动转录用户发来的语音消息
+
+**方式一**（插件专属，优先级最高）：在 `channels.qqbot.stt` 下配置：
+
+``` json
+{
+  "channels": {
+    "qqbot": {
+      "stt": {
+        "provider": "openai",
+        "model": "FunAudioLLM/SenseVoiceSmall"
+      }
+    }
+  }
+}
+```
+
+**方式二**（框架级回退）：在 `tools.media.audio.models` 中添加音频模型条目。当 `channels.qqbot.stt` 未配置时，插件会自动读取这里的第一个条目：
+
+``` json
+{
+  "tools": {
+    "media": {
+      "audio": {
+        "models": [
+          {
+            "provider": "openai",
+            "model": "FunAudioLLM/SenseVoiceSmall",
+            "baseUrl": "https://api.siliconflow.cn/v1"
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+- `provider` — 引用 `models.providers` 中的 key，继承 `baseUrl` 和 `apiKey`（默认：`"openai"`）
+- `model` — STT 模型名称（默认：`"whisper-1"`）
+- `baseUrl` / `apiKey` — 可选，写在本级则覆盖 provider 默认值
+- `enabled` — 设为 `false` 可禁用
+- 配置后，用户发来的语音消息会自动转换（SILK→WAV）并转录为文字
+
+### TTS（文字转语音）— 机器人发送语音消息
+
+**方式一**（插件专属，优先级最高）：在 `channels.qqbot.tts` 下配置：
+
+``` json
+{
+  "channels": {
+    "qqbot": {
+      "tts": {
+        "provider": "openai",
+        "model": "FunAudioLLM/CosyVoice2-0.5B",
+        "voice": "FunAudioLLM/CosyVoice2-0.5B:claire"
+      }
+    }
+  }
+}
+```
+
+**方式二**（框架级回退）：在 `messages.tts` 下配置。当 `channels.qqbot.tts` 未配置时，插件会自动读取这里的配置：
+
+``` json
+{
+  "messages": {
+    "tts": {
+      "provider": "openai",
+      "openai": {
+        "apiKey": "sk-xxx",
+        "model": "FunAudioLLM/CosyVoice2-0.5B",
+        "voice": "FunAudioLLM/CosyVoice2-0.5B:claire"
+      }
+    }
+  }
+}
+```
+
+> 注意：`messages.tts` 的 provider 子配置放在 `messages.tts.<provider>` 下（如 `messages.tts.openai`），结构与方式一略有不同。
+
+- `provider` — 引用 `models.providers` 中的 key，继承 `baseUrl` 和 `apiKey`（默认：`"openai"`）
+- `model` — TTS 模型名称（默认：`"tts-1"`）
+- `voice` — 语音音色（默认：`"alloy"`）
+- `baseUrl` / `apiKey` — 可选，写在本级则覆盖 provider 默认值
+- `enabled` — 设为 `false` 可禁用（默认：`true`）；`messages.tts` 中对应字段为 `auto: "disabled"`
+- 配置后，AI 可使用 `<qqvoice>` 标签通过 OpenAI 兼容 TTS API 生成并发送语音消息
+
 # 步骤4：启动与测试
 
 ## 1.启动gateway

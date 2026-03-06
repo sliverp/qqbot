@@ -2,6 +2,8 @@
  * QQ Bot API 鉴权和请求封装
  */
 
+import { computeFileHash, getCachedFileInfo, setCachedFileInfo } from "./utils/upload-cache.js";
+
 const API_BASE = "https://api.sgroup.qq.com";
 const TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken";
 
@@ -220,7 +222,12 @@ export async function apiRequest<T = unknown>(
   console.log(`[qqbot-api] >>> ${method} ${url} (timeout: ${timeout}ms)`);
   console.log(`[qqbot-api] >>> Headers:`, JSON.stringify(headers, null, 2));
   if (body) {
-    console.log(`[qqbot-api] >>> Body:`, JSON.stringify(body, null, 2));
+    // 过滤 file_data 等大二进制字段，避免刷屏
+    const logBody = { ...body } as Record<string, unknown>;
+    if (typeof logBody.file_data === "string") {
+      logBody.file_data = `<base64 ${(logBody.file_data as string).length} chars>`;
+    }
+    console.log(`[qqbot-api] >>> Body:`, JSON.stringify(logBody, null, 2));
   }
 
   let res: Response;
@@ -263,6 +270,48 @@ export async function apiRequest<T = unknown>(
   }
 
   return data;
+}
+
+// ============ 上传重试（指数退避） ============
+
+/** 上传重试配置 */
+const UPLOAD_MAX_RETRIES = 2;
+const UPLOAD_BASE_DELAY_MS = 1000; // 首次重试等待 1 秒
+
+/**
+ * 带指数退避重试的 API 请求
+ * 仅用于上传类请求（/files），普通请求不重试
+ */
+async function apiRequestWithRetry<T = unknown>(
+  accessToken: string,
+  method: string,
+  path: string,
+  body?: unknown,
+  maxRetries = UPLOAD_MAX_RETRIES,
+): Promise<T> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await apiRequest<T>(accessToken, method, path, body);
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      
+      // 不对以下错误重试：参数错误(400)、鉴权错误(401)、格式错误
+      const errMsg = lastError.message;
+      if (errMsg.includes("400") || errMsg.includes("401") || errMsg.includes("Invalid")) {
+        throw lastError;
+      }
+
+      if (attempt < maxRetries) {
+        const delay = UPLOAD_BASE_DELAY_MS * Math.pow(2, attempt); // 1s, 2s
+        console.log(`[qqbot-api] Upload attempt ${attempt + 1} failed, retrying in ${delay}ms: ${errMsg.slice(0, 100)}`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+
+  throw lastError!;
 }
 
 /**
@@ -466,8 +515,14 @@ export interface UploadMediaResponse {
 
 /**
  * 上传富媒体文件到 C2C 单聊
+ * 
+ * 改进：
+ * 1. file_info 缓存 — 相同文件不重复上传（借鉴 Telegram file_id）
+ * 2. 指数退避重试 — 网络波动时自动重试最多 2 次
+ * 
  * @param url - 公网可访问的图片 URL（与 fileData 二选一）
  * @param fileData - Base64 编码的文件内容（与 url 二选一）
+ * @param fileName - 文件名（file_type=FILE 时必传，例如 "readme.md"）
  */
 export async function uploadC2CMedia(
   accessToken: string,
@@ -475,10 +530,21 @@ export async function uploadC2CMedia(
   fileType: MediaFileType,
   url?: string,
   fileData?: string,
-  srvSendMsg = false
+  srvSendMsg = false,
+  fileName?: string,
 ): Promise<UploadMediaResponse> {
   if (!url && !fileData) {
     throw new Error("uploadC2CMedia: url or fileData is required");
+  }
+  
+  // 缓存查询：如果有 fileData，用内容 hash 查缓存
+  if (fileData) {
+    const contentHash = computeFileHash(fileData);
+    const cachedInfo = getCachedFileInfo(contentHash, "c2c", openid, fileType);
+    if (cachedInfo) {
+      console.log(`[qqbot-api] uploadC2CMedia: using cached file_info (skip upload)`);
+      return { file_uuid: "", file_info: cachedInfo, ttl: 0 };
+    }
   }
   
   const body: Record<string, unknown> = {
@@ -491,14 +557,33 @@ export async function uploadC2CMedia(
   } else if (fileData) {
     body.file_data = fileData;
   }
+
+  if (fileType === MediaFileType.FILE && fileName) {
+    body.file_name = fileName;
+  }
   
-  return apiRequest(accessToken, "POST", `/v2/users/${openid}/files`, body);
+  // 使用带重试的请求
+  const result = await apiRequestWithRetry<UploadMediaResponse>(
+    accessToken, "POST", `/v2/users/${openid}/files`, body
+  );
+  
+  // 写入缓存
+  if (fileData && result.file_info && result.ttl > 0) {
+    const contentHash = computeFileHash(fileData);
+    setCachedFileInfo(contentHash, "c2c", openid, fileType, result.file_info, result.file_uuid, result.ttl);
+  }
+  
+  return result;
 }
 
 /**
  * 上传富媒体文件到群聊
+ * 
+ * 改进：同 uploadC2CMedia
+ * 
  * @param url - 公网可访问的图片 URL（与 fileData 二选一）
  * @param fileData - Base64 编码的文件内容（与 url 二选一）
+ * @param fileName - 文件名（file_type=FILE 时必传，例如 "readme.md"）
  */
 export async function uploadGroupMedia(
   accessToken: string,
@@ -506,10 +591,21 @@ export async function uploadGroupMedia(
   fileType: MediaFileType,
   url?: string,
   fileData?: string,
-  srvSendMsg = false
+  srvSendMsg = false,
+  fileName?: string,
 ): Promise<UploadMediaResponse> {
   if (!url && !fileData) {
     throw new Error("uploadGroupMedia: url or fileData is required");
+  }
+  
+  // 缓存查询
+  if (fileData) {
+    const contentHash = computeFileHash(fileData);
+    const cachedInfo = getCachedFileInfo(contentHash, "group", groupOpenid, fileType);
+    if (cachedInfo) {
+      console.log(`[qqbot-api] uploadGroupMedia: using cached file_info (skip upload)`);
+      return { file_uuid: "", file_info: cachedInfo, ttl: 0 };
+    }
   }
   
   const body: Record<string, unknown> = {
@@ -522,8 +618,23 @@ export async function uploadGroupMedia(
   } else if (fileData) {
     body.file_data = fileData;
   }
+
+  if (fileType === MediaFileType.FILE && fileName) {
+    body.file_name = fileName;
+  }
   
-  return apiRequest(accessToken, "POST", `/v2/groups/${groupOpenid}/files`, body);
+  // 使用带重试的请求
+  const result = await apiRequestWithRetry<UploadMediaResponse>(
+    accessToken, "POST", `/v2/groups/${groupOpenid}/files`, body
+  );
+  
+  // 写入缓存
+  if (fileData && result.file_info && result.ttl > 0) {
+    const contentHash = computeFileHash(fileData);
+    setCachedFileInfo(contentHash, "group", groupOpenid, fileType, result.file_info, result.file_uuid, result.ttl);
+  }
+  
+  return result;
 }
 
 /**
@@ -631,6 +742,104 @@ export async function sendGroupImageMessage(
   }
   
   // 发送富媒体消息
+  return sendGroupMediaMessage(accessToken, groupOpenid, uploadResult.file_info, msgId, content);
+}
+
+/**
+ * 发送 C2C 单聊语音消息（封装上传+发送）
+ * @param voiceBase64 - SILK 格式语音的 Base64 编码
+ */
+export async function sendC2CVoiceMessage(
+  accessToken: string,
+  openid: string,
+  voiceBase64: string,
+  msgId?: string,
+): Promise<{ id: string; timestamp: number }> {
+  const uploadResult = await uploadC2CMedia(accessToken, openid, MediaFileType.VOICE, undefined, voiceBase64, false);
+  return sendC2CMediaMessage(accessToken, openid, uploadResult.file_info, msgId);
+}
+
+/**
+ * 发送群聊语音消息（封装上传+发送）
+ * @param voiceBase64 - SILK 格式语音的 Base64 编码
+ */
+export async function sendGroupVoiceMessage(
+  accessToken: string,
+  groupOpenid: string,
+  voiceBase64: string,
+  msgId?: string,
+): Promise<{ id: string; timestamp: string }> {
+  const uploadResult = await uploadGroupMedia(accessToken, groupOpenid, MediaFileType.VOICE, undefined, voiceBase64, false);
+  return sendGroupMediaMessage(accessToken, groupOpenid, uploadResult.file_info, msgId);
+}
+
+/**
+ * 发送 C2C 单聊文件消息（封装上传+发送）
+ * @param fileBase64 - Base64 编码的文件内容
+ * @param fileUrl - 公网可访问的文件 URL（与 fileBase64 二选一）
+ * @param fileName - 文件名（例如 "readme.md"），从本地路径自动提取
+ */
+export async function sendC2CFileMessage(
+  accessToken: string,
+  openid: string,
+  fileBase64?: string,
+  fileUrl?: string,
+  msgId?: string,
+  fileName?: string,
+): Promise<{ id: string; timestamp: number }> {
+  const uploadResult = await uploadC2CMedia(accessToken, openid, MediaFileType.FILE, fileUrl, fileBase64, false, fileName);
+  return sendC2CMediaMessage(accessToken, openid, uploadResult.file_info, msgId);
+}
+
+/**
+ * 发送群聊文件消息（封装上传+发送）
+ * @param fileBase64 - Base64 编码的文件内容
+ * @param fileUrl - 公网可访问的文件 URL（与 fileBase64 二选一）
+ * @param fileName - 文件名（例如 "readme.md"），从本地路径自动提取
+ */
+export async function sendGroupFileMessage(
+  accessToken: string,
+  groupOpenid: string,
+  fileBase64?: string,
+  fileUrl?: string,
+  msgId?: string,
+  fileName?: string,
+): Promise<{ id: string; timestamp: string }> {
+  const uploadResult = await uploadGroupMedia(accessToken, groupOpenid, MediaFileType.FILE, fileUrl, fileBase64, false, fileName);
+  return sendGroupMediaMessage(accessToken, groupOpenid, uploadResult.file_info, msgId);
+}
+
+/**
+ * 发送 C2C 单聊视频消息（封装上传+发送）
+ * @param videoUrl - 公网可访问的视频 URL（与 videoBase64 二选一）
+ * @param videoBase64 - Base64 编码的视频内容（与 videoUrl 二选一）
+ */
+export async function sendC2CVideoMessage(
+  accessToken: string,
+  openid: string,
+  videoUrl?: string,
+  videoBase64?: string,
+  msgId?: string,
+  content?: string
+): Promise<{ id: string; timestamp: number }> {
+  const uploadResult = await uploadC2CMedia(accessToken, openid, MediaFileType.VIDEO, videoUrl, videoBase64, false);
+  return sendC2CMediaMessage(accessToken, openid, uploadResult.file_info, msgId, content);
+}
+
+/**
+ * 发送群聊视频消息（封装上传+发送）
+ * @param videoUrl - 公网可访问的视频 URL（与 videoBase64 二选一）
+ * @param videoBase64 - Base64 编码的视频内容（与 videoUrl 二选一）
+ */
+export async function sendGroupVideoMessage(
+  accessToken: string,
+  groupOpenid: string,
+  videoUrl?: string,
+  videoBase64?: string,
+  msgId?: string,
+  content?: string
+): Promise<{ id: string; timestamp: string }> {
+  const uploadResult = await uploadGroupMedia(accessToken, groupOpenid, MediaFileType.VIDEO, videoUrl, videoBase64, false);
   return sendGroupMediaMessage(accessToken, groupOpenid, uploadResult.file_info, msgId, content);
 }
 

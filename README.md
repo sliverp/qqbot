@@ -164,6 +164,67 @@ Edit ~/.openclaw/openclaw.json:
 }
 ```
 
+## Voice Capabilities (Optional)
+
+### STT (Speech-to-Text) — Transcribe incoming voice messages
+
+STT reuses your existing model provider configuration. Add an audio model entry in `tools.media.audio.models`:
+
+``` json
+{
+  "tools": {
+    "media": {
+      "audio": {
+        "models": [
+          {
+            "provider": "openai",
+            "model": "whisper-1"
+          }
+        ]
+      }
+    }
+  },
+  "models": {
+    "providers": {
+      "openai": {
+        "baseUrl": "https://api.openai.com/v1",
+        "apiKey": "sk-xxx"
+      }
+    }
+  }
+}
+```
+
+- `provider` — references a key in `models.providers` to inherit `baseUrl` and `apiKey` (default: `"openai"`)
+- `model` — STT model name (default: `"whisper-1"`)
+- You can also set `baseUrl` / `apiKey` directly in the audio model entry to override the provider defaults
+- When configured, incoming voice messages are automatically converted (SILK→WAV) and transcribed
+
+### TTS (Text-to-Speech) — Send voice messages
+
+Configure TTS under `channels.qqbot.tts`:
+
+``` json
+{
+  "channels": {
+    "qqbot": {
+      "tts": {
+        "provider": "openai",
+        "model": "tts-1",
+        "voice": "alloy"
+      }
+    }
+  }
+}
+```
+
+- `provider` — references a key in `models.providers` to inherit `baseUrl` and `apiKey` (default: `"openai"`)
+- `model` — TTS model name (default: `"tts-1"`)
+- `voice` — voice variant (default: `"alloy"`)
+- `baseUrl` / `apiKey` — optional overrides for the provider defaults
+- `enabled` — set to `false` to disable (default: `true`)
+- When configured, the AI can use `<qqvoice>` tags to generate and send voice messages via OpenAI-compatible TTS API
+
 # Step 4: Start and Test
 
 ## 1. Start the gateway
