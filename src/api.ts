@@ -154,33 +154,14 @@ export function getTokenStatus(): { status: "valid" | "expired" | "refreshing" |
 }
 
 /**
- * msg_seq 追踪器 - 用于对同一条消息的多次回复
- * key: msg_id, value: 当前 seq 值
- * 使用时间戳作为基础值，确保进程重启后不会重复
+ * 获取全局唯一的消息序号（范围 0 ~ 65535）
+ * 使用毫秒级时间戳低位 + 随机数异或混合，无状态，避免碰撞
+ * @param _msgId - 保留参数，不再用于分桶计数
  */
-const msgSeqTracker = new Map<string, number>();
-const seqBaseTime = Math.floor(Date.now() / 1000) % 100000000; // 取秒级时间戳的后8位作为基础
-
-/**
- * 获取并递增消息序号
- * 返回的 seq 会基于时间戳，避免进程重启后重复
- */
-export function getNextMsgSeq(msgId: string): number {
-  const current = msgSeqTracker.get(msgId) ?? 0;
-  const next = current + 1;
-  msgSeqTracker.set(msgId, next);
-  
-  // 清理过期的序号
-  // 简单策略：保留最近 1000 条
-  if (msgSeqTracker.size > 1000) {
-    const keys = Array.from(msgSeqTracker.keys());
-    for (let i = 0; i < 500; i++) {
-      msgSeqTracker.delete(keys[i]);
-    }
-  }
-  
-  // 结合时间戳基础值，确保唯一性
-  return seqBaseTime + next;
+export function getNextMsgSeq(_msgId: string): number {
+  const timePart = Date.now() % 100000000; // 毫秒时间戳后8位
+  const random = Math.floor(Math.random() * 65536); // 0~65535
+  return (timePart ^ random) % 65536; // 异或混合后限制在 0~65535
 }
 
 // API 请求超时配置（毫秒）
