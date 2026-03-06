@@ -25,49 +25,89 @@ export function isMarkdownSupport(): boolean {
   return currentMarkdownSupport;
 }
 
-let cachedToken: { token: string; expiresAt: number } | null = null;
-// Singleflight: 防止并发获取 Token 的 Promise 缓存
-let tokenFetchPromise: Promise<string> | null = null;
+/**
+ * Token 缓存条目
+ */
+interface TokenCacheEntry {
+  token: string;
+  expiresAt: number;
+  fetchPromise: Promise<string> | null;
+}
+
+/**
+ * Token 缓存 Map，按账户隔离
+ * key: `${appId}:${clientSecret}`
+ */
+const tokenCache = new Map<string, TokenCacheEntry>();
+
+/**
+ * 生成缓存键
+ */
+function getTokenCacheKey(appId: string, clientSecret: string): string {
+  return `${appId}:${clientSecret}`;
+}
 
 /**
  * 获取 AccessToken（带缓存 + singleflight 并发安全）
- * 
+ *
  * 使用 singleflight 模式：当多个请求同时发现 Token 过期时，
  * 只有第一个请求会真正去获取新 Token，其他请求复用同一个 Promise。
+ *
+ * 支持多账户：每个账户有独立的 Token 缓存和 singleflight 机制
  */
 export async function getAccessToken(appId: string, clientSecret: string): Promise<string> {
+  const cacheKey = getTokenCacheKey(appId, clientSecret);
+
+  // 获取或初始化缓存条目
+  let entry = tokenCache.get(cacheKey);
+  if (!entry) {
+    entry = { token: "", expiresAt: 0, fetchPromise: null };
+    tokenCache.set(cacheKey, entry);
+  }
+
   // 检查缓存，提前 5 分钟刷新
-  if (cachedToken && Date.now() < cachedToken.expiresAt - 5 * 60 * 1000) {
-    return cachedToken.token;
+  if (entry.token && Date.now() < entry.expiresAt - 5 * 60 * 1000) {
+    return entry.token;
   }
 
   // Singleflight: 如果已有进行中的 Token 获取请求，复用它
-  if (tokenFetchPromise) {
-    console.log(`[qqbot-api] Token fetch in progress, waiting for existing request...`);
-    return tokenFetchPromise;
+  if (entry.fetchPromise) {
+    console.log(`[qqbot-api] Token fetch in progress for ${appId}, waiting for existing request...`);
+    return entry.fetchPromise;
   }
 
   // 创建新的 Token 获取 Promise（singleflight 入口）
-  tokenFetchPromise = (async () => {
+  entry.fetchPromise = (async () => {
     try {
-      return await doFetchToken(appId, clientSecret);
+      const result = await doFetchToken(appId, clientSecret);
+      // 更新缓存
+      const currentEntry = tokenCache.get(cacheKey);
+      if (currentEntry) {
+        currentEntry.token = result.token;
+        currentEntry.expiresAt = result.expiresAt;
+      }
+      return result.token;
     } finally {
       // 无论成功失败，都清除 Promise 缓存
-      tokenFetchPromise = null;
+      const currentEntry = tokenCache.get(cacheKey);
+      if (currentEntry) {
+        currentEntry.fetchPromise = null;
+      }
     }
   })();
 
-  return tokenFetchPromise;
+  return entry.fetchPromise;
 }
 
 /**
  * 实际执行 Token 获取的内部函数
+ * @returns 包含 token 和过期时间的对象
  */
-async function doFetchToken(appId: string, clientSecret: string): Promise<string> {
+async function doFetchToken(appId: string, clientSecret: string): Promise<{ token: string; expiresAt: number }> {
 
   const requestBody = { appId, clientSecret };
   const requestHeaders = { "Content-Type": "application/json" };
-  
+
   // 打印请求信息（隐藏敏感信息）
   console.log(`[qqbot-api] >>> POST ${TOKEN_URL}`);
   console.log(`[qqbot-api] >>> Headers:`, JSON.stringify(requestHeaders, null, 2));
@@ -110,36 +150,72 @@ async function doFetchToken(appId: string, clientSecret: string): Promise<string
     throw new Error(`Failed to get access_token: ${JSON.stringify(data)}`);
   }
 
-  cachedToken = {
-    token: data.access_token,
-    expiresAt: Date.now() + (data.expires_in ?? 7200) * 1000,
-  };
+  const expiresAt = Date.now() + (data.expires_in ?? 7200) * 1000;
 
-  console.log(`[qqbot-api] Token cached, expires at: ${new Date(cachedToken.expiresAt).toISOString()}`);
-  return cachedToken.token;
+  console.log(`[qqbot-api] Token fetched for ${appId}, expires at: ${new Date(expiresAt).toISOString()}`);
+  return { token: data.access_token, expiresAt };
 }
 
 /**
  * 清除 Token 缓存
+ * @param appId 可选，指定要清除的账户 appId
+ * @param clientSecret 可选，指定要清除的账户 clientSecret
+ *
+ * 如果不提供参数，清除所有账户的 Token 缓存（向后兼容）
+ * 如果提供参数，只清除指定账户的 Token 缓存
  */
-export function clearTokenCache(): void {
-  cachedToken = null;
-  // 注意：不清除 tokenFetchPromise，让进行中的请求完成
-  // 下次调用 getAccessToken 时会自动获取新 Token
+export function clearTokenCache(appId?: string, clientSecret?: string): void {
+  if (appId && clientSecret) {
+    // 清除特定账户的缓存
+    const cacheKey = getTokenCacheKey(appId, clientSecret);
+    const entry = tokenCache.get(cacheKey);
+    if (entry) {
+      entry.token = "";
+      entry.expiresAt = 0;
+      // 注意：不清除 fetchPromise，让进行中的请求完成
+    }
+    console.log(`[qqbot-api] Token cache cleared for ${appId}`);
+  } else {
+    // 清除所有账户的缓存
+    tokenCache.clear();
+    console.log(`[qqbot-api] All token caches cleared`);
+  }
 }
 
 /**
  * 获取 Token 缓存状态（用于监控）
+ * @param appId 可选，指定要查询的账户 appId
+ * @param clientSecret 可选，指定要查询的账户 clientSecret
+ *
+ * 如果不提供参数，返回任意一个账户的状态（向后兼容）
+ * 如果提供参数，返回指定账户的状态
  */
-export function getTokenStatus(): { status: "valid" | "expired" | "refreshing" | "none"; expiresAt: number | null } {
-  if (tokenFetchPromise) {
-    return { status: "refreshing", expiresAt: cachedToken?.expiresAt ?? null };
+export function getTokenStatus(
+  appId?: string,
+  clientSecret?: string
+): { status: "valid" | "expired" | "refreshing" | "none"; expiresAt: number | null } {
+  let entry: TokenCacheEntry | undefined;
+
+  if (appId && clientSecret) {
+    // 查询特定账户的状态
+    const cacheKey = getTokenCacheKey(appId, clientSecret);
+    entry = tokenCache.get(cacheKey);
+  } else {
+    // 返回第一个缓存条目的状态（向后兼容）
+    const firstEntry = tokenCache.values().next().value;
+    entry = firstEntry;
   }
-  if (!cachedToken) {
+
+  if (!entry || !entry.token) {
     return { status: "none", expiresAt: null };
   }
-  const isValid = Date.now() < cachedToken.expiresAt - 5 * 60 * 1000;
-  return { status: isValid ? "valid" : "expired", expiresAt: cachedToken.expiresAt };
+
+  if (entry.fetchPromise) {
+    return { status: "refreshing", expiresAt: entry.expiresAt };
+  }
+
+  const isValid = Date.now() < entry.expiresAt - 5 * 60 * 1000;
+  return { status: isValid ? "valid" : "expired", expiresAt: entry.expiresAt };
 }
 
 /**
@@ -223,11 +299,15 @@ export async function apiRequest<T = unknown>(
   console.log(`[qqbot-api] >>> Headers:`, JSON.stringify(headers, null, 2));
   if (body) {
     // 过滤 file_data 等大二进制字段，避免刷屏
-    const logBody = { ...body } as Record<string, unknown>;
-    if (typeof logBody.file_data === "string") {
-      logBody.file_data = `<base64 ${(logBody.file_data as string).length} chars>`;
+    const logBody = body as Record<string, unknown>;
+    const sanitizedBody: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(logBody)) {
+      sanitizedBody[key] = value;
     }
-    console.log(`[qqbot-api] >>> Body:`, JSON.stringify(logBody, null, 2));
+    if (typeof sanitizedBody.file_data === "string") {
+      sanitizedBody.file_data = `<base64 ${(sanitizedBody.file_data as string).length} chars>`;
+    }
+    console.log(`[qqbot-api] >>> Body:`, JSON.stringify(sanitizedBody, null, 2));
   }
 
   let res: Response;
@@ -865,14 +945,26 @@ interface BackgroundTokenRefreshOptions {
   };
 }
 
-// 后台刷新状态
-let backgroundRefreshRunning = false;
-let backgroundRefreshAbortController: AbortController | null = null;
+/**
+ * 后台刷新状态条目
+ */
+interface BackgroundRefreshEntry {
+  running: boolean;
+  abortController: AbortController;
+}
+
+/**
+ * 后台刷新状态 Map，按账户隔离
+ * key: `${appId}:${clientSecret}`
+ */
+const backgroundRefreshState = new Map<string, BackgroundRefreshEntry>();
 
 /**
  * 启动后台 Token 刷新
  * 在后台定时刷新 Token，避免请求时才发现过期
- * 
+ *
+ * 支持多账户：每个账户有独立的后台刷新任务
+ *
  * @param appId 应用 ID
  * @param clientSecret 应用密钥
  * @param options 配置选项
@@ -882,8 +974,12 @@ export function startBackgroundTokenRefresh(
   clientSecret: string,
   options?: BackgroundTokenRefreshOptions
 ): void {
-  if (backgroundRefreshRunning) {
-    console.log("[qqbot-api] Background token refresh already running");
+  const cacheKey = getTokenCacheKey(appId, clientSecret);
+
+  // 检查是否已经在运行
+  const existingEntry = backgroundRefreshState.get(cacheKey);
+  if (existingEntry?.running) {
+    console.log(`[qqbot-api] Background token refresh already running for ${appId}`);
     return;
   }
 
@@ -895,21 +991,27 @@ export function startBackgroundTokenRefresh(
     log,
   } = options ?? {};
 
-  backgroundRefreshRunning = true;
-  backgroundRefreshAbortController = new AbortController();
-  const signal = backgroundRefreshAbortController.signal;
+  const abortController = new AbortController();
+  const signal = abortController.signal;
+
+  // 初始化状态
+  backgroundRefreshState.set(cacheKey, {
+    running: true,
+    abortController,
+  });
 
   const refreshLoop = async () => {
-    log?.info?.("[qqbot-api] Background token refresh started");
+    log?.info?.(`[qqbot-api] Background token refresh started for ${appId}`);
 
     while (!signal.aborted) {
       try {
         // 先确保有一个有效 Token
         await getAccessToken(appId, clientSecret);
 
-        // 计算下次刷新时间
-        if (cachedToken) {
-          const expiresIn = cachedToken.expiresAt - Date.now();
+        // 获取当前账户的缓存条目
+        const entry = tokenCache.get(cacheKey);
+        if (entry && entry.expiresAt > 0) {
+          const expiresIn = entry.expiresAt - Date.now();
           // 提前刷新时间 + 随机偏移（避免集群同时刷新）
           const randomOffset = Math.random() * randomOffsetMs;
           const refreshIn = Math.max(
@@ -918,52 +1020,94 @@ export function startBackgroundTokenRefresh(
           );
 
           log?.debug?.(
-            `[qqbot-api] Token valid, next refresh in ${Math.round(refreshIn / 1000)}s`
+            `[qqbot-api] Token valid for ${appId}, next refresh in ${Math.round(refreshIn / 1000)}s`
           );
 
           // 等待到刷新时间
           await sleep(refreshIn, signal);
         } else {
           // 没有缓存的 Token，等待一段时间后重试
-          log?.debug?.("[qqbot-api] No cached token, retrying soon");
+          log?.debug?.(`[qqbot-api] No cached token for ${appId}, retrying soon`);
           await sleep(minRefreshIntervalMs, signal);
         }
       } catch (err) {
         if (signal.aborted) break;
-        
+
         // 刷新失败，等待后重试
-        log?.error?.(`[qqbot-api] Background token refresh failed: ${err}`);
+        log?.error?.(`[qqbot-api] Background token refresh failed for ${appId}: ${err}`);
         await sleep(retryDelayMs, signal);
       }
     }
 
-    backgroundRefreshRunning = false;
-    log?.info?.("[qqbot-api] Background token refresh stopped");
+    // 清理状态
+    const stateEntry = backgroundRefreshState.get(cacheKey);
+    if (stateEntry) {
+      stateEntry.running = false;
+    }
+    log?.info?.(`[qqbot-api] Background token refresh stopped for ${appId}`);
   };
 
   // 异步启动，不阻塞调用者
   refreshLoop().catch((err) => {
-    backgroundRefreshRunning = false;
-    log?.error?.(`[qqbot-api] Background token refresh crashed: ${err}`);
+    const stateEntry = backgroundRefreshState.get(cacheKey);
+    if (stateEntry) {
+      stateEntry.running = false;
+    }
+    log?.error?.(`[qqbot-api] Background token refresh crashed for ${appId}: ${err}`);
   });
 }
 
 /**
  * 停止后台 Token 刷新
+ * @param appId 可选，指定要停止的账户 appId
+ * @param clientSecret 可选，指定要停止的账户 clientSecret
+ *
+ * 如果不提供参数，停止所有账户的后台刷新（向后兼容）
+ * 如果提供参数，只停止指定账户的后台刷新
  */
-export function stopBackgroundTokenRefresh(): void {
-  if (backgroundRefreshAbortController) {
-    backgroundRefreshAbortController.abort();
-    backgroundRefreshAbortController = null;
+export function stopBackgroundTokenRefresh(appId?: string, clientSecret?: string): void {
+  if (appId && clientSecret) {
+    // 停止特定账户的后台刷新
+    const cacheKey = getTokenCacheKey(appId, clientSecret);
+    const entry = backgroundRefreshState.get(cacheKey);
+    if (entry) {
+      entry.abortController.abort();
+      backgroundRefreshState.delete(cacheKey);
+      console.log(`[qqbot-api] Background token refresh stopped for ${appId}`);
+    }
+  } else {
+    // 停止所有账户的后台刷新
+    for (const entry of Array.from(backgroundRefreshState.values())) {
+      entry.abortController.abort();
+    }
+    backgroundRefreshState.clear();
+    console.log(`[qqbot-api] All background token refresh stopped`);
   }
-  backgroundRefreshRunning = false;
 }
 
 /**
  * 检查后台 Token 刷新是否正在运行
+ * @param appId 可选，指定要查询的账户 appId
+ * @param clientSecret 可选，指定要查询的账户 clientSecret
+ *
+ * 如果不提供参数，检查是否有任何账户正在运行（向后兼容）
+ * 如果提供参数，只检查指定账户是否正在运行
  */
-export function isBackgroundTokenRefreshRunning(): boolean {
-  return backgroundRefreshRunning;
+export function isBackgroundTokenRefreshRunning(appId?: string, clientSecret?: string): boolean {
+  if (appId && clientSecret) {
+    // 检查特定账户
+    const cacheKey = getTokenCacheKey(appId, clientSecret);
+    const entry = backgroundRefreshState.get(cacheKey);
+    return entry?.running ?? false;
+  } else {
+    // 检查是否有任何账户在运行
+    for (const entry of Array.from(backgroundRefreshState.values())) {
+      if (entry.running) {
+        return true;
+      }
+    }
+    return false;
+  }
 }
 
 /**
