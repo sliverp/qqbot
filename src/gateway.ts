@@ -500,7 +500,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
     }
     cleanup();
     // P1-1: 停止后台 Token 刷新
-    stopBackgroundTokenRefresh();
+    stopBackgroundTokenRefresh(account.appId);
     // P1-3: 保存已知用户数据
     flushKnownUsers();
   });
@@ -559,7 +559,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
       // 如果标记了需要刷新 token，则清除缓存
       if (shouldRefreshToken) {
         log?.info(`[qqbot:${account.accountId}] Refreshing token...`);
-        clearTokenCache();
+        clearTokenCache(account.appId);
         shouldRefreshToken = false;
       }
       
@@ -609,7 +609,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
             const errMsg = String(notifyErr);
             if (errMsg.includes("token") || errMsg.includes("401") || errMsg.includes("11244")) {
               log?.info(`[qqbot:${account.accountId}] InputNotify token expired, refreshing...`);
-              clearTokenCache();
+              clearTokenCache(account.appId);
               token = await getAccessToken(account.appId, account.clientSecret);
               await sendC2CInputNotify(token, event.senderId, event.messageId, 60);
             } else {
@@ -935,7 +935,7 @@ ${ttsHint}${sttHint}`;
             // 如果是 token 相关错误，清除缓存重试一次
             if (errMsg.includes("401") || errMsg.includes("token") || errMsg.includes("access_token")) {
               log?.info(`[qqbot:${account.accountId}] Token may be expired, refreshing...`);
-              clearTokenCache();
+              clearTokenCache(account.appId);
               const newToken = await getAccessToken(account.appId, account.clientSecret);
               await sendFn(newToken);
             } else {
