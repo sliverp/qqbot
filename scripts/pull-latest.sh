@@ -1,14 +1,14 @@
 #!/bin/bash
 
 # QQBot 拉取最新 npm 包并更新脚本
-# 从 npm 下载 @sliverp/qqbot@latest，解压覆盖本地源码，重新安装插件并重启
+# 从 npm 下载 @tencent-connect/openclaw-qq@latest，解压覆盖本地源码，重新安装插件并重启
 # 兼容 clawdbot / openclaw / moltbot，macOS 开箱即用
 #
 # 用法:
 #   ./scripts/pull-latest.sh                  # 更新到最新版
-#   ./scripts/pull-latest.sh @sliverp/qqbot@1.5.2   # 更新到指定版本
+#   ./scripts/pull-latest.sh @tencent-connect/openclaw-qq@1.5.2   # 更新到指定版本
 #   ./scripts/pull-latest.sh --force          # 跳过交互，强制重新安装
-#   ./scripts/pull-latest.sh --force @sliverp/qqbot@1.5.3
+#   ./scripts/pull-latest.sh --force @tencent-connect/openclaw-qq@1.5.3
 
 set -e
 
@@ -16,7 +16,7 @@ set -e
 # 参数解析
 # ============================================================
 FORCE=false
-PKG_NAME="@sliverp/qqbot"
+PKG_NAME="@tencent-connect/openclaw-qq"
 PKG_SPEC=""
 
 for arg in "$@"; do

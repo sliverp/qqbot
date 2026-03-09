@@ -8,10 +8,9 @@
 
 **Connect your AI assistant to QQ — private chat, group chat, and rich media, all in one plugin.**
 
-[![npm version](https://img.shields.io/npm/v/@sliverp/qqbot?color=blue&label=npm)](https://www.npmjs.com/package/@sliverp/qqbot)
 [![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![QQ Bot](https://img.shields.io/badge/QQ_Bot-API_v2-red)](https://bot.q.qq.com/wiki/)
-[![Platform](https://img.shields.io/badge/platform-OpenClaw-orange)](https://github.com/sliverp/openclaw)
+[![Platform](https://img.shields.io/badge/platform-OpenClaw-orange)](https://github.com/tencent-connect/openclaw-qq)
 [![Node.js](https://img.shields.io/badge/Node.js->=18-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 
@@ -133,7 +132,7 @@ Scan to join the QQ group chat
 
 <div align="center">
 
-[![Star History Chart](https://api.star-history.com/svg?repos=sliverp/qqbot&type=date&legend=top-left)](https://www.star-history.com/#sliverp/qqbot&type=date&legend=top-left)
+[![Star History Chart](https://api.star-history.com/svg?repos=tencent-connect/openclaw-qq&type=date&legend=top-left)](https://www.star-history.com/#tencent-connect/openclaw-qq&type=date&legend=top-left)
 
 </div>
 
@@ -164,11 +163,9 @@ Scan to join the QQ group chat
 ### Step 2 — Install the Plugin
 
 ```bash
-# Via OpenClaw CLI (recommended)
-openclaw plugins install @sliverp/qqbot@latest
-
-# Or from source
-git clone https://github.com/sliverp/qqbot.git && cd qqbot
+# From source (npm package coming soon)
+git clone https://github.com/tencent-connect/openclaw-qq.git && cd openclaw-qq
+npm install --omit=dev
 openclaw plugins install .
 ```
 
@@ -349,19 +346,14 @@ STT supports two-level configuration with priority fallback:
 
 ## 🔄 Upgrade
 
-### Via OpenClaw / npm (Recommended)
+### Via OpenClaw / npm
 
-> For installations via `openclaw plugins install`
-
-```bash
-openclaw plugins upgrade @sliverp/qqbot@latest
-```
-
-### Via npx
-
-```bash
-npx -y @sliverp/qqbot@latest upgrade
-```
+> npm package coming soon. Once published, you can install and upgrade via:
+>
+> ```bash
+> openclaw plugins install @tencent-connect/openclaw-qq@latest
+> openclaw plugins upgrade @tencent-connect/openclaw-qq@latest
+> ```
 
 ### Via upgrade-and-run.sh (One-Click)
 
@@ -407,10 +399,11 @@ bash ./pull-latest.sh --repo <git-url>          # use a different repo
 
 </details>
 
-### From Source (Manual)
+### From Source
 
 ```bash
-git clone https://github.com/sliverp/qqbot.git && cd qqbot
+git clone https://github.com/tencent-connect/openclaw-qq.git && cd openclaw-qq
+npm install --omit=dev
 bash ./scripts/upgrade.sh
 openclaw plugins install .
 openclaw channels add --channel qqbot --token "AppID:AppSecret"

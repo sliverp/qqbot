@@ -15,7 +15,7 @@ set -euo pipefail
 ##############################################################################
 # 常量 & 参数
 ##############################################################################
-readonly DEFAULT_REPO="https://github.com/sliverp/qqbot.git"
+readonly DEFAULT_REPO="https://github.com/tencent-connect/openclaw-qq.git"
 readonly GATEWAY_PORT=18789
 readonly SUPPORTED_CLIS=(openclaw clawdbot moltbot)
 

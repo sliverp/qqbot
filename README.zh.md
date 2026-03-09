@@ -8,10 +8,9 @@
 
 **让你的 AI 助手接入 QQ — 私聊、群聊、富媒体，一个插件全搞定。**
 
-[![npm version](https://img.shields.io/npm/v/@sliverp/qqbot?color=blue&label=npm)](https://www.npmjs.com/package/@sliverp/qqbot)
 [![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![QQ Bot](https://img.shields.io/badge/QQ_Bot-API_v2-red)](https://bot.q.qq.com/wiki/)
-[![Platform](https://img.shields.io/badge/platform-OpenClaw-orange)](https://github.com/sliverp/openclaw)
+[![Platform](https://img.shields.io/badge/platform-OpenClaw-orange)](https://github.com/tencent-connect/openclaw-qq)
 [![Node.js](https://img.shields.io/badge/Node.js->=18-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 
@@ -130,7 +129,7 @@
 
 <div align="center">
 
-[![Star History Chart](https://api.star-history.com/svg?repos=sliverp/qqbot&type=date&legend=top-left)](https://www.star-history.com/#sliverp/qqbot&type=date&legend=top-left)
+[![Star History Chart](https://api.star-history.com/svg?repos=tencent-connect/openclaw-qq&type=date&legend=top-left)](https://www.star-history.com/#tencent-connect/openclaw-qq&type=date&legend=top-left)
 
 </div>
 
@@ -160,11 +159,9 @@
 ### 第二步 — 安装插件
 
 ```bash
-# 通过 OpenClaw CLI 安装（推荐）
-openclaw plugins install @sliverp/qqbot@latest
-
-# 或从源码安装
-git clone https://github.com/sliverp/qqbot.git && cd qqbot
+# 从源码安装（npm 包即将发布）
+git clone https://github.com/tencent-connect/openclaw-qq.git && cd openclaw-qq
+npm install --omit=dev
 openclaw plugins install .
 ```
 
@@ -345,19 +342,14 @@ STT 支持两级配置，按优先级查找：
 
 ## 🔄 升级
 
-### 通过 OpenClaw / npm 升级（推荐）
+### 通过 OpenClaw / npm 升级
 
-> 仅适用于通过 `openclaw plugins install` 安装的场景
-
-```bash
-openclaw plugins upgrade @sliverp/qqbot@latest
-```
-
-### 通过 npx 升级
-
-```bash
-npx -y @sliverp/qqbot@latest upgrade
-```
+> npm 包即将发布，届时可通过以下方式安装和升级：
+>
+> ```bash
+> openclaw plugins install @tencent-connect/openclaw-qq@latest
+> openclaw plugins upgrade @tencent-connect/openclaw-qq@latest
+> ```
 
 ### 通过 upgrade-and-run.sh 一键升级
 
@@ -403,10 +395,11 @@ bash ./pull-latest.sh --repo <git-url>          # 使用其他仓库地址
 
 </details>
 
-### 从源码升级（手动）
+### 从源码升级
 
 ```bash
-git clone https://github.com/sliverp/qqbot.git && cd qqbot
+git clone https://github.com/tencent-connect/openclaw-qq.git && cd openclaw-qq
+npm install --omit=dev
 bash ./scripts/upgrade.sh
 openclaw plugins install .
 openclaw channels add --channel qqbot --token "AppID:AppSecret"

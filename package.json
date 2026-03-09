@@ -1,5 +1,5 @@
 {
-  "name": "@sliverp/qqbot",
+  "name": "@tencent-connect/openclaw-qq",
   "version": "1.5.4",
   "type": "module",
   "main": "dist/index.js",
@@ -58,7 +58,7 @@
     "moltbot": "*",
     "openclaw": "*"
   },
-  "homepage": "https://github.com/sliverp/qqbot",
+  "homepage": "https://github.com/tencent-connect/openclaw-qq",
   "bundleDependencies": [
     "mpg123-decoder",
     "silk-wasm",
