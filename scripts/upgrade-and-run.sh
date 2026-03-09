@@ -118,6 +118,14 @@ echo "[3/6] 安装当前版本..."
 echo "检查当前目录: $(pwd)"
 echo "检查openclaw版本: $(openclaw --version 2>/dev/null || echo 'openclaw not found')"
 
+# 记录更新前的 qqbot 插件版本
+OLD_QQBOT_VERSION=$(node -e '
+    try {
+        var p = require(process.env.HOME + "/.openclaw/extensions/qqbot/package.json");
+        process.stdout.write(p.version || "unknown");
+    } catch(e) { process.stdout.write("not_installed"); }
+' 2>/dev/null || echo "not_installed")
+
 echo "开始安装插件..."
 INSTALL_LOG="/tmp/openclaw-install-$(date +%s).log"
 
@@ -183,6 +191,14 @@ else
     echo ""
     echo "✅ 插件安装成功！"
     echo "安装日志已保存到: $INSTALL_LOG"
+
+    # 记录更新后的 qqbot 插件版本
+    NEW_QQBOT_VERSION=$(node -e '
+        try {
+            var p = require(process.env.HOME + "/.openclaw/extensions/qqbot/package.json");
+            process.stdout.write(p.version || "unknown");
+        } catch(e) { process.stdout.write("unknown"); }
+    ' 2>/dev/null || echo "unknown")
 fi
 
 # 4. 配置机器人通道（仅在提供了 appid/secret 时才配置，否则使用已有配置）
@@ -315,6 +331,16 @@ if ! command -v openclaw &> /dev/null; then
 fi
 
 echo "OpenClaw版本: $(openclaw --version 2>/dev/null || echo '未知')"
+
+# 显示 qqbot 插件更新信息
+NEW_QQBOT_VERSION="${NEW_QQBOT_VERSION:-unknown}"
+if [ "$OLD_QQBOT_VERSION" = "$NEW_QQBOT_VERSION" ]; then
+    echo "QQBot 插件版本: $NEW_QQBOT_VERSION (未变化)"
+elif [ "$OLD_QQBOT_VERSION" = "not_installed" ]; then
+    echo "QQBot 插件版本: $NEW_QQBOT_VERSION (新安装)"
+else
+    echo "QQBot 插件版本: $OLD_QQBOT_VERSION -> $NEW_QQBOT_VERSION"
+fi
 echo ""
 echo "请选择启动方式:"
 echo ""
@@ -324,7 +350,7 @@ echo ""
 echo "  2) 不启动"
 echo "     插件已更新完毕，稍后自己手动启动"
 echo ""
-read -t 10 -p "请输入选择 [1/2] (默认 1): " start_choice || start_choice="1"
+read -t 30 -p "请输入选择 [1/2] (默认 1): " start_choice || start_choice="1"
 start_choice="${start_choice:-1}"
 
 case "$start_choice" in

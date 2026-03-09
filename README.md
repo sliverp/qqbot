@@ -132,7 +132,7 @@ Scan to join the QQ group chat
 
 <div align="center">
 
-[![Star History Chart](https://api.star-history.com/svg?repos=tencent-connect/openclaw-qq&type=date&legend=top-left)](https://www.star-history.com/#tencent-connect/openclaw-qq&type=date&legend=top-left)
+[![Star History Chart](https://api.star-history.com/svg?repos=tencent-connect/openclaw-qqbot&type=date&legend=top-left)](https://www.star-history.com/#tencent-connect/openclaw-qqbot&type=date&legend=top-left)
 
 </div>
 
