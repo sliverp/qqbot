@@ -594,6 +594,18 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
           log?.info(`[qqbot:${account.accountId}] Attachments: ${event.attachments.length}`);
         }
 
+        // ============ allowFrom 过滤（消息级别） ============
+        // 检查发送者是否在 allowFrom 列表中，如果不在则忽略消息（节省资源）
+        const allowFromConfig = (cfg as any)?.channels?.qqbot?.accounts?.[account.accountId]?.allowFrom ?? [];
+        const allowFrom = allowFromConfig.map((entry: string | number) => String(entry).toUpperCase());
+        const senderIdUpper = event.senderId.toUpperCase();
+        
+        if (allowFrom.length > 0 && !allowFrom.includes(senderIdUpper)) {
+          log?.debug?.(`[qqbot:${account.accountId}] Ignoring message from ${event.senderId}: not in allowFrom list`);
+          return; // 忽略不在 allowFrom 列表中的用户消息
+        }
+        // ============ allowFrom 过滤结束 ============
+
         pluginRuntime.channel.activity.record({
           channel: "qqbot",
           accountId: account.accountId,
