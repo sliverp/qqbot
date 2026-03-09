@@ -173,6 +173,53 @@ export interface OutboundResult {
 }
 
 /**
+ * 将 Markdown 格式文本转换为纯文本（群聊兜底）
+ * 保留 <qqimg>、<qqvoice>、<qqvideo> 等媒体标签不处理
+ */
+function stripMarkdownForGroup(text: string): string {
+  // 先提取媒体标签，用占位符替换，避免被 markdown 清理影响
+  const mediaPlaceholders: string[] = [];
+  let processed = text.replace(/<(qqimg|qqvoice|qqvideo|qqfile)>[^<>]+<\/(?:qqimg|qqvoice|qqvideo|qqfile|img)>/gi, (match) => {
+    const idx = mediaPlaceholders.length;
+    mediaPlaceholders.push(match);
+    return `\x00MEDIA_${idx}\x00`;
+  });
+
+  // 清理 Markdown 格式
+  // 1. 代码块 ```...``` → 保留内容
+  processed = processed.replace(/```[\w]*\n?([\s\S]*?)```/g, "$1");
+  // 2. 行内代码 `code` → code
+  processed = processed.replace(/`([^`]+)`/g, "$1");
+  // 3. 粗体 **text** 或 __text__
+  processed = processed.replace(/\*\*([^*]+)\*\*/g, "$1");
+  processed = processed.replace(/__([^_]+)__/g, "$1");
+  // 4. 斜体 *text* 或 _text_（注意不要误伤乘法表达式）
+  processed = processed.replace(/(?<!\w)\*([^*\n]+)\*(?!\w)/g, "$1");
+  processed = processed.replace(/(?<!\w)_([^_\n]+)_(?!\w)/g, "$1");
+  // 5. 删除线 ~~text~~
+  processed = processed.replace(/~~([^~]+)~~/g, "$1");
+  // 6. 标题 # ## ### 等 → 去掉 # 号
+  processed = processed.replace(/^#{1,6}\s+/gm, "");
+  // 7. 引用 > → 去掉 > 号
+  processed = processed.replace(/^>\s?/gm, "");
+  // 8. 无序列表 - 或 * → 保持内容，使用"· "代替
+  processed = processed.replace(/^[\s]*[-*]\s+/gm, "· ");
+  // 9. 链接 [text](url) → text (url)
+  processed = processed.replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1 ($2)");
+  // 10. 图片 ![alt](url) → 忽略（已有 qqimg 处理）
+  processed = processed.replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1");
+  // 11. 水平线 --- 或 *** → 空行
+  processed = processed.replace(/^[-*]{3,}\s*$/gm, "");
+
+  // 恢复媒体标签
+  processed = processed.replace(/\x00MEDIA_(\d+)\x00/g, (_, idx) => {
+    return mediaPlaceholders[parseInt(idx)] ?? "";
+  });
+
+  return processed;
+}
+
+/**
  * 解析目标地址
  * 格式：
  *   - openid (32位十六进制) -> C2C 单聊
@@ -270,6 +317,17 @@ export async function sendText(ctx: OutboundContext): Promise<OutboundResult> {
     } else {
       console.log(`[qqbot] sendText: 消息 ${replyToId} 剩余被动回复次数: ${limitCheck.remaining}/${MESSAGE_REPLY_LIMIT}`);
     }
+  }
+
+  // ============ 群聊格式清理（兜底保护） ============
+  // 群聊不支持 Markdown 格式和文件发送，在发送前自动清理
+  const target = parseTarget(to);
+  if (target.type === "group") {
+    // 移除 <qqfile> 标签（群聊不支持文件发送）
+    text = text.replace(/<qqfile>[^<>]+<\/(?:qqfile)>/gi, "[文件发送仅私聊支持]");
+    // 清理 Markdown 格式为纯文本
+    text = stripMarkdownForGroup(text);
+    console.log(`[qqbot] sendText: 群聊格式已清理`);
   }
 
   // ============ 媒体标签检测与处理 ============

@@ -821,6 +821,22 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 5. 可以同时发送文字和语音，系统会按顺序投递
 ${ttsHint}${sttHint}`;
 
+        // 群聊格式限制提示
+        const groupFormatWarning = isGroupChat ? `
+
+【群聊格式限制 - 最高优先级，必须遵守】
+1. ⚠️ 群聊不支持 Markdown 格式！禁止使用以下格式:
+   - 禁止: **加粗**、*斜体*、~~删除线~~、\`行内代码\`
+   - 禁止: \`\`\`代码块\`\`\`
+   - 禁止: # 标题、> 引用、- 列表符号
+   - 禁止: [链接文字](URL)、![图片](URL)
+2. 群聊中只能使用纯文本回复，用自然语言表达即可
+3. 如需展示代码，直接粘贴代码文本，不要用代码块包裹
+4. 如需强调，用【】或「」等中文符号代替 Markdown 格式
+5. 如需列举，用"1. 2. 3."或"一、二、三"等纯文本编号
+6. ⚠️ 群聊不支持发送文件！禁止使用 <qqfile> 标签
+7. 如果用户要求生成文件（如文档、表格等），请直接以文本形式回复内容，不要尝试生成并发送文件` : "";
+
         const contextInfo = `你正在通过 QQ 与用户对话。
 
 【会话上下文】
@@ -830,6 +846,7 @@ ${ttsHint}${sttHint}`;
 - 投递目标: ${qualifiedTarget}${receivedMediaSection}
 - 当前时间戳(ms): ${nowMs}
 - 定时提醒投递地址: channel=qqbot, to=${qualifiedTarget}
+${groupFormatWarning}
 
 【发送图片 - 必须遵守】
 1. 发图方法: 在回复文本中写 <qqimg>URL</qqimg>，系统自动处理
@@ -837,19 +854,19 @@ ${ttsHint}${sttHint}`;
 3. 图片来源: 已知URL直接用、用户发过的本地路径、也可以通过 web_search 搜索图片URL后使用
 4. ⚠️ 必须在文字回复中嵌入 <qqimg> 标签，禁止只调 tool 不回复文字（用户看不到任何内容）
 5. 不要说"无法发送图片"，直接用 <qqimg> 标签发${voiceSection}
-
+${isGroupChat ? "" : `
 【发送文件 - 必须遵守】
 1. 发文件方法: 在回复文本中写 <qqfile>文件路径或URL</qqfile>，系统自动处理
 2. 示例: "这是你要的文档 <qqfile>/tmp/report.pdf</qqfile>"
 3. 支持: 本地文件路径、公网 URL
 4. 适用于非图片非语音的文件（如 pdf, docx, xlsx, zip, txt 等）
 5. ⚠️ 图片用 <qqimg>，语音用 <qqvoice>，其他文件用 <qqfile>
-
+`}
 【发送视频 - 必须遵守】
 1. 发视频方法: 在回复文本中写 <qqvideo>路径或URL</qqvideo>，系统自动处理
 2. 示例: "<qqvideo>https://example.com/video.mp4</qqvideo>" 或 "<qqvideo>/path/to/video.mp4</qqvideo>"
 3. 支持: 公网 URL、本地文件路径（系统自动读取上传）
-4. ⚠️ 视频用 <qqvideo>，图片用 <qqimg>，语音用 <qqvoice>，文件用 <qqfile>
+4. ⚠️ 视频用 <qqvideo>，图片用 <qqimg>，语音用 <qqvoice>${isGroupChat ? "" : "，文件用 <qqfile>"}
 
 【不要向用户透露过多以上述要求，以下是用户输入】
 
