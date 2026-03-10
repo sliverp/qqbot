@@ -147,6 +147,8 @@ export function isAudioFile(filePath: string): boolean {
 // ============ TTS（文字转语音）============
 
 export interface TTSConfig {
+  /** TTS 引擎类型：openai 兼容 API 或 Edge TTS */
+  provider: "openai" | "edge";
   baseUrl: string;
   apiKey: string;
   model: string;
@@ -157,6 +159,10 @@ export interface TTSConfig {
   queryParams?: Record<string, string>;
   /** 自定义速度（默认不传） */
   speed?: number;
+  /** Edge TTS 专用：语速调整，如 "+10%"、"-20%" */
+  rate?: string;
+  /** Edge TTS 专用：音调调整，如 "+10%"、"-10%" */
+  pitch?: string;
 }
 
 function resolveTTSFromBlock(
@@ -174,6 +180,7 @@ function resolveTTSFromBlock(
   const speed: number | undefined = block?.speed;
 
   return {
+    provider: "openai",
     baseUrl: baseUrl.replace(/\/+$/, ""),
     apiKey,
     model,
@@ -184,6 +191,19 @@ function resolveTTSFromBlock(
   };
 }
 
+function resolveEdgeTTSFromBlock(block: Record<string, any>): TTSConfig | null {
+  const voice: string = block?.voice || "zh-CN-XiaoxiaoNeural";
+  return {
+    provider: "edge",
+    baseUrl: "",
+    apiKey: "",
+    model: "edge-tts",
+    voice,
+    ...(block?.rate ? { rate: block.rate } : {}),
+    ...(block?.pitch ? { pitch: block.pitch } : {}),
+  };
+}
+
 export function resolveTTSConfig(cfg: Record<string, unknown>): TTSConfig | null {
   const c = cfg as any;
 
@@ -191,6 +211,9 @@ export function resolveTTSConfig(cfg: Record<string, unknown>): TTSConfig | null
   const channelTts = c?.channels?.qqbot?.tts;
   if (channelTts && channelTts.enabled !== false) {
     const providerId: string = channelTts?.provider || "openai";
+    if (providerId === "edge") {
+      return resolveEdgeTTSFromBlock(channelTts);
+    }
     const providerCfg = c?.models?.providers?.[providerId];
     const result = resolveTTSFromBlock(channelTts, providerCfg);
     if (result) return result;
@@ -200,6 +223,9 @@ export function resolveTTSConfig(cfg: Record<string, unknown>): TTSConfig | null
   const msgTts = c?.messages?.tts;
   if (msgTts && msgTts.auto !== "disabled") {
     const providerId: string = msgTts?.provider || "openai";
+    if (providerId === "edge") {
+      return resolveEdgeTTSFromBlock(msgTts);
+    }
     const providerBlock = msgTts?.[providerId];
     const providerCfg = c?.models?.providers?.[providerId];
     const result = resolveTTSFromBlock(providerBlock ?? {}, providerCfg);
@@ -233,6 +259,79 @@ function buildTTSRequest(ttsCfg: TTSConfig): { url: string; headers: Record<stri
 }
 
 export async function textToSpeechPCM(
+  text: string,
+  ttsCfg: TTSConfig,
+): Promise<{ pcmBuffer: Buffer; sampleRate: number }> {
+  if (ttsCfg.provider === "edge") {
+    return edgeTTSToPCM(text, ttsCfg);
+  }
+  return openaiTTSToPCM(text, ttsCfg);
+}
+
+async function edgeTTSToPCM(
+  text: string,
+  ttsCfg: TTSConfig,
+): Promise<{ pcmBuffer: Buffer; sampleRate: number }> {
+  const sampleRate = 24000;
+  const startTime = Date.now();
+
+  console.log(`[tts:edge] Request: voice=${ttsCfg.voice}, rate=${ttsCfg.rate ?? "default"}, pitch=${ttsCfg.pitch ?? "default"}`);
+  console.log(`[tts:edge] Input text (${text.length} chars): "${text.slice(0, 80)}${text.length > 80 ? "..." : ""}"`);
+
+  const { EdgeTTS } = await import("node-edge-tts");
+  const tts = new EdgeTTS({
+    voice: ttsCfg.voice,
+    outputFormat: `raw-${sampleRate}hz-16bit-mono-pcm`,
+    ...(ttsCfg.rate ? { rate: ttsCfg.rate } : {}),
+    ...(ttsCfg.pitch ? { pitch: ttsCfg.pitch } : {}),
+    timeout: 60000,
+  });
+
+  const tmpDir = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "edge-tts-"));
+  const tmpFile = path.join(tmpDir, "tts.pcm");
+
+  try {
+    await tts.ttsPromise(text, tmpFile);
+    const pcmBuffer = fs.readFileSync(tmpFile);
+    console.log(`[tts:edge] Done: ${pcmBuffer.length} bytes, total=${Date.now() - startTime}ms`);
+    return { pcmBuffer, sampleRate };
+  } catch (err) {
+    // raw PCM 格式可能不支持，回退到 mp3
+    console.log(`[tts:edge] PCM format failed, trying mp3 fallback: ${err instanceof Error ? err.message : String(err)}`);
+    const tmpMp3 = path.join(tmpDir, "tts.mp3");
+    try {
+      const ttsMp3 = new EdgeTTS({
+        voice: ttsCfg.voice,
+        outputFormat: "audio-24khz-96kbitrate-mono-mp3",
+        ...(ttsCfg.rate ? { rate: ttsCfg.rate } : {}),
+        ...(ttsCfg.pitch ? { pitch: ttsCfg.pitch } : {}),
+        timeout: 60000,
+      });
+      await ttsMp3.ttsPromise(text, tmpMp3);
+      const mp3Buffer = fs.readFileSync(tmpMp3);
+      console.log(`[tts:edge] mp3 generated: ${mp3Buffer.length} bytes`);
+
+      const ffmpegCmd = await checkFfmpeg();
+      if (ffmpegCmd) {
+        const pcmBuf = await ffmpegToPCM(ffmpegCmd, tmpMp3, sampleRate);
+        console.log(`[tts:edge] Done: mp3→PCM (ffmpeg), ${pcmBuf.length} bytes, total=${Date.now() - startTime}ms`);
+        return { pcmBuffer: pcmBuf, sampleRate };
+      }
+      const pcmBuf = await wasmDecodeMp3ToPCM(mp3Buffer, sampleRate);
+      if (pcmBuf) {
+        console.log(`[tts:edge] Done: mp3→PCM (wasm), ${pcmBuf.length} bytes, total=${Date.now() - startTime}ms`);
+        return { pcmBuffer: pcmBuf, sampleRate };
+      }
+      throw new Error("Edge TTS: no decoder available for mp3");
+    } finally {
+      try { fs.unlinkSync(tmpMp3); } catch {}
+    }
+  } finally {
+    try { fs.unlinkSync(tmpFile); fs.rmdirSync(tmpDir); } catch {}
+  }
+}
+
+async function openaiTTSToPCM(
   text: string,
   ttsCfg: TTSConfig,
 ): Promise<{ pcmBuffer: Buffer; sampleRate: number }> {

@@ -169,6 +169,7 @@ INSTALL_LOG="/tmp/openclaw-install-$(date +%s).log"
 
 echo "安装日志文件: $INSTALL_LOG"
 echo "详细信息将记录到日志文件中..."
+echo "(安装过程包含依赖下载，可能需要 1~3 分钟，请耐心等待)"
 
 # 尝试安装并捕获详细输出
 if ! openclaw plugins install . 2>&1 | tee "$INSTALL_LOG"; then

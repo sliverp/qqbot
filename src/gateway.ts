@@ -1104,15 +1104,19 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
                         : event.type === "group" ? `group:${event.groupOpenid}`
                         : `channel:${event.channelId}`;
 
+          console.log(`[qqbot:${account.accountId}] >>> BEFORE dispatchReplyWithBufferedBlockDispatcher, messageId: ${event.messageId}`);
           const dispatchPromise = pluginRuntime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
             ctx: ctxPayload,
             cfg,
             dispatcherOptions: {
               responsePrefix: messagesConfig.responsePrefix,
-              deliver: async (payload: { text?: string; mediaUrls?: string[]; mediaUrl?: string }, info: { kind: string }) => {
+              deliver: async (payload: { text?: string; mediaUrls?: string[]; mediaUrl?: string; audioAsVoice?: boolean; replyToId?: string; channelData?: Record<string, unknown> }, info: { kind: string }) => {
                 hasResponse = true;
 
-                log?.info(`[qqbot:${account.accountId}] deliver called, kind: ${info.kind}, payload keys: ${Object.keys(payload).join(", ")}`);
+                // 框架可能传入 replyToId（来自 [[reply_to: xxx]] 指令），优先使用
+                const effectiveReplyId = payload.replyToId || event.messageId;
+
+                log?.info(`[qqbot:${account.accountId}] deliver called, kind: ${info.kind}, payload keys: ${Object.keys(payload).join(", ")}${payload.replyToId ? `, replyToId: ${payload.replyToId}` : ""}${payload.audioAsVoice ? ", audioAsVoice" : ""}`);
 
                 // ============ 跳过工具调用的中间结果（带兜底保护） ============
                 if (info.kind === "tool") {
@@ -2138,6 +2142,34 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
                   }
                 }
 
+                // ============ audioAsVoice: 框架请求以语音形式回复 ============
+                if (payload.audioAsVoice && replyText?.trim()) {
+                  try {
+                    const ttsCfg = resolveTTSConfig(cfg as Record<string, unknown>);
+                    if (ttsCfg) {
+                      const ttsText = replyText.replace(/<[^>]+>/g, "").replace(/!\[[^\]]*\]\([^)]+\)/g, "").trim();
+                      if (ttsText) {
+                        log?.info(`[qqbot:${account.accountId}] audioAsVoice TTS: "${ttsText.slice(0, 50)}..." via ${ttsCfg.provider}/${ttsCfg.model}`);
+                        const ttsDir = getQQBotDataDir("tts");
+                        const { silkBase64, duration } = await textToSilk(ttsText, ttsCfg, ttsDir);
+                        log?.info(`[qqbot:${account.accountId}] audioAsVoice TTS done: ${formatDuration(duration)}`);
+                        await sendWithTokenRetry(async (token) => {
+                          if (event.type === "c2c") {
+                            await sendC2CVoiceMessage(token, event.senderId, silkBase64, event.messageId);
+                          } else if (event.type === "group" && event.groupOpenid) {
+                            await sendGroupVoiceMessage(token, event.groupOpenid, silkBase64, event.messageId);
+                          }
+                        });
+                        log?.info(`[qqbot:${account.accountId}] audioAsVoice: voice message sent`);
+                      }
+                    } else {
+                      log?.info(`[qqbot:${account.accountId}] audioAsVoice: TTS not configured, skipping voice reply`);
+                    }
+                  } catch (ttsErr) {
+                    log?.error(`[qqbot:${account.accountId}] audioAsVoice TTS failed: ${ttsErr}`);
+                  }
+                }
+
                 pluginRuntime.channel.activity.record({
                   channel: "qqbot",
                   accountId: account.accountId,
@@ -2167,9 +2199,14 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
           });
 
           // 等待分发完成或超时
+          const dispatchStartMs = Date.now();
+          console.log(`[qqbot:${account.accountId}] >>> AFTER dispatchReplyWithBufferedBlockDispatcher (Promise obtained), messageId: ${event.messageId}`);
+          log?.info(`[qqbot:${account.accountId}] dispatch awaiting, messageId: ${event.messageId}`);
           try {
             await Promise.race([dispatchPromise, timeoutPromise]);
+            log?.info(`[qqbot:${account.accountId}] dispatch resolved in ${Date.now() - dispatchStartMs}ms, hasResponse: ${hasResponse}, hasBlockResponse: ${hasBlockResponse}`);
           } catch (err) {
+            log?.error(`[qqbot:${account.accountId}] dispatch rejected in ${Date.now() - dispatchStartMs}ms: ${err}, hasResponse: ${hasResponse}`);
             if (timeoutId) {
               clearTimeout(timeoutId);
             }
