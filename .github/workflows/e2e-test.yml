@@ -31,16 +31,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build test image (OpenClaw ${{ matrix.openclaw-version }})
-        run: |
-          docker build \
-            --build-arg "OPENCLAW_VERSION=${{ matrix.openclaw-version }}" \
-            -t "qqbot-e2e:${{ matrix.openclaw-version }}" \
-            -f tests/Dockerfile .
-
       - name: Run E2E tests
         env:
           BOT1_APPID: ${{ secrets.BOT1_APPID }}
@@ -51,20 +41,7 @@ jobs:
           BOT2_TEST_OPENID: ${{ secrets.BOT2_TEST_OPENID }}
           BOT1_TEST_GROUP_OPENID: ${{ secrets.BOT1_TEST_GROUP_OPENID }}
           BOT2_TEST_GROUP_OPENID: ${{ secrets.BOT2_TEST_GROUP_OPENID }}
-        run: |
-          mkdir -p tests/reports
-          docker run --rm \
-            -e BOT1_APPID \
-            -e BOT1_SECRET \
-            -e BOT1_TEST_OPENID \
-            -e BOT2_APPID \
-            -e BOT2_SECRET \
-            -e BOT2_TEST_OPENID \
-            -e BOT1_TEST_GROUP_OPENID \
-            -e BOT2_TEST_GROUP_OPENID \
-            -e "OPENCLAW_VERSION=${{ matrix.openclaw-version }}" \
-            -v "${{ github.workspace }}/tests/reports:/workspace/qqbot/tests/reports" \
-            "qqbot-e2e:${{ matrix.openclaw-version }}"
+        run: bash tests/run-tests.sh ${{ matrix.openclaw-version }}
 
       - name: Upload test reports
         if: always()

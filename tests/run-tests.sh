@@ -27,16 +27,24 @@ RESET='\033[0m'
 mkdir -p "$REPORT_DIR"
 
 # ── 加载 .env ────────────────────────────────────────────────────────
-if [ ! -f "$ENV_FILE" ]; then
-  echo -e "${RED}错误 / Error: tests/.env not found${RESET}"
-  echo "请先配置 / Please configure first:"
+# CI 环境中通过 GitHub Secrets 注入环境变量，无需 .env 文件
+# 本地运行需要 .env 文件
+if [ -f "$ENV_FILE" ]; then
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+elif [ -n "${BOT1_APPID:-}" ] && [ -n "${BOT1_SECRET:-}" ]; then
+  echo -e "${CYAN}[info]${RESET} No .env file found, using environment variables (CI mode)"
+else
+  echo -e "${RED}错误 / Error: tests/.env not found and env vars not set${RESET}"
+  echo "本地运行请先配置 / For local run, configure first:"
   echo "  cp tests/.env.example tests/.env"
   echo "  # 然后填写你的 Bot 配置 / Then fill in your bot config"
+  echo ""
+  echo "CI 环境请配置 GitHub Secrets / For CI, configure GitHub Secrets:"
+  echo "  BOT1_APPID, BOT1_SECRET, BOT1_TEST_OPENID"
+  echo "  BOT2_APPID, BOT2_SECRET, BOT2_TEST_OPENID"
   exit 1
 fi
-
-# shellcheck disable=SC1090
-source "$ENV_FILE"
 
 # ── 解析版本列表 ─────────────────────────────────────────────────────
 if [ $# -gt 0 ]; then
@@ -79,9 +87,21 @@ for VERSION in "${VERSIONS[@]}"; do
   # 运行测试
   echo -e "${CYAN}[run]${RESET} Running E2E tests ..."
   EXIT_CODE=0
+
+  # 构建 docker run 的环境变量参数
+  ENV_ARGS=()
+  if [ -f "$ENV_FILE" ]; then
+    ENV_ARGS+=(--env-file "$ENV_FILE")
+  else
+    # CI 模式：逐个传递环境变量
+    ENV_ARGS+=(-e "BOT1_APPID" -e "BOT1_SECRET" -e "BOT1_TEST_OPENID")
+    ENV_ARGS+=(-e "BOT2_APPID" -e "BOT2_SECRET" -e "BOT2_TEST_OPENID")
+    ENV_ARGS+=(-e "BOT1_TEST_GROUP_OPENID" -e "BOT2_TEST_GROUP_OPENID")
+  fi
+
   docker run --rm \
     --name "$CONTAINER_NAME" \
-    --env-file "$ENV_FILE" \
+    "${ENV_ARGS[@]}" \
     -e "OPENCLAW_VERSION=${VERSION}" \
     -v "$REPORT_DIR:/workspace/qqbot/tests/reports" \
     "qqbot-e2e:${VERSION}" \

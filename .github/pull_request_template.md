@@ -54,7 +54,23 @@ Fixes #
 
 ## ⚠️ How to Run E2E Tests / 如何运行 E2E 测试
 
-### Step 1: Configure environment / 配置环境变量
+### CI (Automatic) / CI 自动测试
+
+E2E tests run **automatically** on every PR via GitHub Actions. Secrets are configured in the repo settings — **you don't need to do anything extra**.
+
+E2E 测试会在每次 PR 时通过 GitHub Actions **自动运行**。Secrets 已在仓库设置中配置好——**你不需要额外操作**。
+
+> Repo maintainers: configure the following GitHub Secrets in **Settings → Secrets and variables → Actions**:
+>
+> 仓库管理员：在 **Settings → Secrets and variables → Actions** 中配置以下 Secrets：
+>
+> `BOT1_APPID`, `BOT1_SECRET`, `BOT1_TEST_OPENID`, `BOT2_APPID`, `BOT2_SECRET`, `BOT2_TEST_OPENID`
+
+### Local (Manual) / 本地手动测试
+
+If you want to run tests locally before submitting a PR / 如果你想在提 PR 前本地跑测试：
+
+**1. Configure environment / 配置环境变量**
 
 ```bash
 cp tests/.env.example tests/.env
@@ -72,7 +88,9 @@ BOT2_SECRET=your-bot2-secret
 BOT2_TEST_OPENID=openid-seen-by-bot2
 ```
 
-### Step 2: Get OpenIDs / 获取 OpenID
+> ⚠️ **NEVER** commit `tests/.env` to Git! / **绝对不要**把 `tests/.env` 提交到 Git！
+
+**2. Get OpenIDs / 获取 OpenID**
 
 > **EN**: Each bot (AppID) generates **unique** OpenIDs for users, groups, and guilds. The same real user will have **different** OpenIDs across different bots. If you need cross-bot identity mapping, a unionid-like mechanism will be provided in the future.
 >
@@ -89,25 +107,14 @@ BOT2_TEST_OPENID=openid-seen-by-bot2
 >
 > ⚠️ 每个 Bot 都要分别操作 —— Bot1 和 Bot2 看到的同一用户的 OpenID **是不同的**。
 
-### Step 3: Start Docker / 启动 Docker
+**3. Start Docker & run tests / 启动 Docker 并运行测试**
 
 ```bash
 sudo service docker start
-```
-
-### Step 4: Run tests / 运行测试
-
-```bash
 sudo npm test
 ```
 
-This will / 该命令会：
-- Build a Docker image with OpenClaw + test scripts / 构建包含 OpenClaw 和测试脚本的 Docker 镜像
-- Run tests inside the container: plugin install → add channels → restart gateway → send text & file messages / 在容器内运行测试：安装插件 → 添加 channel → 重启 gateway → 发送文本和文件消息
-- Save reports to `tests/reports/` / 将报告保存到 `tests/reports/`
-- Clean up Docker containers and images after completion / 测试完成后自动清理 Docker 容器和镜像
-
-### Step 5: Check reports / 查看报告
+**4. Check reports / 查看报告**
 
 ```
 tests/reports/report-<version>-<timestamp>.json   # JSON format
