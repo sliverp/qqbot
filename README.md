@@ -370,6 +370,8 @@ STT supports two-level configuration with priority fallback:
 
 ### Option 1: Upgrade via npm (Recommended)
 
+Current latest npm version: `1.5.6`
+
 ```bash
 bash ./scripts/npm-upgrade.sh
 ```
@@ -377,11 +379,8 @@ bash ./scripts/npm-upgrade.sh
 The script automatically backs up channel config → uninstalls old plugins → installs new version → restores config → restarts gateway.
 
 ```bash
-# Specify tag
-bash ./scripts/npm-upgrade.sh --tag alpha
-
 # Specify exact version
-bash ./scripts/npm-upgrade.sh --version 1.0.0-alpha.0
+bash ./scripts/npm-upgrade.sh --version 1.5.6
 ```
 
 ### Option 2: Upgrade via Source

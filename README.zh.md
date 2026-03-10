@@ -367,6 +367,8 @@ STT 支持两级配置，按优先级查找：
 
 ### 方式一：通过 npm 升级（推荐）
 
+当前最新 npm 版本：`1.5.6`
+
 ```bash
 bash ./scripts/npm-upgrade.sh
 ```
@@ -374,11 +376,8 @@ bash ./scripts/npm-upgrade.sh
 脚本会自动备份通道配置 → 卸载旧插件 → 安装新版本 → 恢复配置 → 重启网关。
 
 ```bash
-# 指定 tag
-bash ./scripts/npm-upgrade.sh --tag alpha
-
 # 指定版本号
-bash ./scripts/npm-upgrade.sh --version 1.0.0-alpha.0
+bash ./scripts/npm-upgrade.sh --version 1.5.6
 ```
 
 ### 方式二：通过源码升级
