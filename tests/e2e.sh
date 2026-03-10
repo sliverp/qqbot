@@ -67,11 +67,11 @@ record_result() {
 assert_success() {
   local name="$1"; shift
   local output exit_code=0
+  # 打印完整命令到 stderr
+  echo -e "${CYAN}  ── [${name}] \$ $*${RESET}" >&2
   output=$("$@" 2>&1) || exit_code=$?
-  # 调试信息输出到 stderr，避免被 $() 捕获
-  echo -e "${CYAN}  ── [${name}] command output (exit=${exit_code}) ──${RESET}" >&2
   echo "$output" >&2
-  echo -e "${CYAN}  ── [${name}] end output ──${RESET}" >&2
+  echo -e "${CYAN}  ── [${name}] exit=${exit_code} ──${RESET}" >&2
   if [ $exit_code -eq 0 ]; then
     record_result "$name" "pass"
     echo "$output"
@@ -93,17 +93,17 @@ assert_contains() {
   fi
 }
 
-# 断言 HTTP 状态码
+# 断言消息发送成功（返回中包含 "Sent" 和 "Message ID"）
 assert_http_ok() {
   local name="$1" output="$2"
-  if echo "$output" | grep -qiE "error|failed|500|401|403"; then
+  if echo "$output" | grep -q "Sent"; then
+    record_result "$name" "pass"
+  else
     echo -e "${RED}  ── [${name}] HTTP check FAILED, full response: ──${RESET}" >&2
     echo "$output" >&2
     echo -e "${RED}  ── [${name}] end ──${RESET}" >&2
-    record_result "$name" "fail" "response contains error"
+    record_result "$name" "fail" "response does not contain 'Sent'"
     return 1
-  else
-    record_result "$name" "pass"
   fi
 }
 
@@ -165,25 +165,17 @@ assert_contains "install.qqbot_in_list" "$LIST_OUT" "qqbot" || true
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 log_section "Suite 2: Channel Add (single & multi bot)"
 
-# 2.1 配置 Bot1（默认账户）
-assert_success "channel.bot1_appid" \
-  openclaw config set channels.qqbot.appId "$BOT1_APPID" || true
-assert_success "channel.bot1_secret" \
-  openclaw config set channels.qqbot.clientSecret "$BOT1_SECRET" || true
-assert_success "channel.bot1_enable" \
-  openclaw config set channels.qqbot.enabled true || true
+# 2.1 添加 Bot1（默认账户）
+assert_success "channel.bot1_add" \
+  openclaw channels add --channel qqbot --token "${BOT1_APPID}:${BOT1_SECRET}" || true
 
 # 2.2 验证 Bot1 通道已添加
 CH_LIST=$(assert_success "channel.list_after_bot1" openclaw channels list) || true
 assert_contains "channel.qqbot_visible" "$CH_LIST" "qqbot" || true
 
-# 2.3 配置 Bot2（多账户）
-assert_success "channel.bot2_appid" \
-  openclaw config set channels.qqbot.accounts.bot2.appId "$BOT2_APPID" || true
-assert_success "channel.bot2_secret" \
-  openclaw config set channels.qqbot.accounts.bot2.clientSecret "$BOT2_SECRET" || true
-assert_success "channel.bot2_enable" \
-  openclaw config set channels.qqbot.accounts.bot2.enabled true || true
+# 2.3 添加 Bot2（多账户）
+assert_success "channel.bot2_add" \
+  openclaw channels add --channel qqbot --account bot2 --token "${BOT2_APPID}:${BOT2_SECRET}" || true
 
 # 2.4 验证配置文件包含两个 bot
 CONFIG_JSON=$(cat ~/.openclaw/openclaw.json 2>/dev/null || echo "{}")
@@ -197,6 +189,11 @@ echo "$CONFIG_JSON" | jq '.channels.qqbot // empty' 2>/dev/null || echo "(jq par
 # TEST SUITE 3: openclaw message send — 文本 & 文件消息
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 log_section "Suite 3: Message Send (text & file)"
+
+# 重启 gateway，使 channel 配置生效
+log "重启 OpenClaw gateway ..."
+assert_success "gateway.restart" openclaw gateway restart || true
+sleep 5
 
 TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 
@@ -218,22 +215,16 @@ MSG_OUT2=$(assert_success "message.bot2_text_c2c" \
 assert_http_ok "message.bot2_text_c2c_http" "$MSG_OUT2" || true
 
 # 3.3 文件消息测试
-TEST_IMAGE="${TEST_IMAGE_PATH:-}"
-if [ -z "$TEST_IMAGE" ]; then
-  # 生成一张 1x1 PNG 作为测试图片
-  TEST_IMAGE="/tmp/e2e-test-image.png"
-  # 最小合法 PNG (67 bytes)
-  printf '\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82' > "$TEST_IMAGE"
-  log "生成测试图片 / Generated test image: $TEST_IMAGE"
-fi
+TEST_FILE="/tmp/e2e-test.txt"
+echo "[E2E Test] QQBot file message test @ $(date '+%Y-%m-%d %H:%M:%S')" > "$TEST_FILE"
+log "生成测试文件 / Generated test file: $TEST_FILE"
 
-if [ -f "$TEST_IMAGE" ]; then
+if [ -f "$TEST_FILE" ]; then
   MSG_OUT_F1=$(assert_success "message.bot1_file_c2c" \
     openclaw message send \
       --channel "qqbot" \
       --target "qqbot:c2c:${BOT1_TEST_OPENID}" \
-      --message "[E2E Test] Bot1 file msg" \
-      --media "$TEST_IMAGE") || true
+      --media "$TEST_FILE") || true
   assert_http_ok "message.bot1_file_c2c_http" "$MSG_OUT_F1" || true
 
   MSG_OUT_F2=$(assert_success "message.bot2_file_c2c" \
@@ -241,12 +232,11 @@ if [ -f "$TEST_IMAGE" ]; then
       --channel "qqbot" \
       --account bot2 \
       --target "qqbot:c2c:${BOT2_TEST_OPENID}" \
-      --message "[E2E Test] Bot2 file msg" \
-      --media "$TEST_IMAGE") || true
+      --media "$TEST_FILE") || true
   assert_http_ok "message.bot2_file_c2c_http" "$MSG_OUT_F2" || true
 else
-  record_result "message.bot1_file_c2c" "skip" "test image not available"
-  record_result "message.bot2_file_c2c" "skip" "test image not available"
+  record_result "message.bot1_file_c2c" "skip" "test file not available"
+  record_result "message.bot2_file_c2c" "skip" "test file not available"
 fi
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

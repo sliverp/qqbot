@@ -32,9 +32,6 @@ RUN mkdir -p /root/.openclaw
 WORKDIR /workspace/qqbot
 COPY . .
 
-# 安装依赖 & 构建
-RUN npm install && npm run build
-
 # 复制测试脚本并赋予执行权限
 RUN chmod +x tests/e2e.sh
 
