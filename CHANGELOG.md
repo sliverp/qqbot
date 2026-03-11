@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.5.6] - 2026-03-10
+
+### Added
+
+- Add voice input summary log with STT/ASR/fallback source counters and ASR text preview for debugging voice pipeline.
+- Add `asr_refer_text` fallback support — when STT is not configured or fails, use QQ platform's built-in ASR text as low-confidence fallback.
+- Pass voice-related metadata (`QQVoiceAsrReferTexts`, `QQVoiceTranscriptSources`, `QQVoiceInputStrategy`, etc.) to agent context.
+- Add scheduled reminder (proactive message) section to README with demo screenshot.
+- Normalize `appId` parsing to support both numeric and string values across runtime and proactive scripts.
+
+### Fixed
+
+- Fix voice prompt hints to distinguish STT-configured vs. unconfigured states and add ASR fallback / voice forward guidance.
+
 ## [1.5.5] - 2026-03-09
 
 ### Added

@@ -4,6 +4,20 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/)。
 
+## [1.5.6] - 2026-03-10
+
+### 新增
+
+- 新增语音输入汇总日志，包含 STT/ASR/fallback 来源计数和 ASR 文本预览，便于调试语音处理链路。
+- 新增 `asr_refer_text` 兜底支持——当 STT 未配置或转写失败时，使用 QQ 平台内置 ASR 文本作为低置信度兜底。
+- 向 agent 上下文传递语音相关元数据（`QQVoiceAsrReferTexts`、`QQVoiceTranscriptSources`、`QQVoiceInputStrategy` 等）。
+- README 新增定时提醒（主动消息）功能说明及演示截图。
+- 统一 `appId` 解析逻辑，同时支持数值和字符串类型（涵盖运行时和主动消息脚本）。
+
+### 修复
+
+- 修复语音 prompt 提示，区分 STT 已配置/未配置状态，并增加 ASR 兜底和语音转发引导说明。
+
 ## [1.5.5] - 2026-03-09
 
 ### 新增
