@@ -73,13 +73,12 @@ metadata: {"openclaw":{"emoji":"📸","requires":{"config":["channels.qqbot"]}}}
 当上下文中出现以下字段时，表示插件已把语音信息透传给 OpenClaw：
 - `QQVoiceAttachmentPaths`: 本地语音文件路径列表
 - `QQVoiceAttachmentUrls`: 远程语音 URL 列表
-- `QQVoiceAsrReferTexts`: 平台 ASR 兜底文本列表
+- `QQVoiceAsrReferTexts`: 平台语音识别文本列表
 - `QQVoiceInputStrategy`: 固定为 `prefer_audio_stt_then_asr_fallback`
 
 处理策略（必须遵守）：
 1. 若你具备 STT 能力（框架音频能力或 STT skill），优先对语音文件做转写。
-2. 若没有 STT 能力，或转写失败/结果为空，再使用 `asr_refer_text` 作为兜底参考。
-3. `asr_refer_text` 可能不准确；涉及关键参数、时间、金额、身份等信息时，应先向用户追问确认。
+2. 若没有 STT 能力，或转写失败/结果为空，可使用 `asr_refer_text` 作为参考。
 
 ## 发送语音
 

@@ -85,7 +85,7 @@ export interface MessageAttachment {
   size?: number;
   url: string;
   voice_wav_url?: string;  // QQ 提供的 WAV 格式语音直链，有值时优先使用以避免 SILK→WAV 转换
-  asr_refer_text?: string; // QQ 事件内置 ASR 文本（精度有限，可作为无 STT/转录失败时的兜底）
+  asr_refer_text?: string; // QQ 事件内置 ASR 语音识别文本
 }
 
 /**

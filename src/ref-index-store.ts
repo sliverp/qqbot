@@ -44,7 +44,7 @@ export interface RefAttachmentSummary {
   contentType?: string;
   /** 语音转录文本（入站：STT/ASR识别结果；出站：TTS原文本） */
   transcript?: string;
-  /** 语音转录来源：stt=本地STT、asr=QQ官方ASR、tts=TTS原文本、fallback=兜底文案 */
+  /** 语音转录来源：stt=本地STT、asr=平台ASR、tts=TTS原文本、fallback=兜底文案 */
   transcriptSource?: "stt" | "asr" | "tts" | "fallback";
   /** 已下载到本地的文件路径（持久化后可供引用时访问） */
   localPath?: string;
