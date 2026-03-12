@@ -36,6 +36,8 @@
   "scripts": {
     "build": "tsc || true",
     "dev": "tsc --watch",
+    "test": "bash tests/run-tests.sh",
+    "test:local": "bash tests/e2e.sh",
     "prepack": "npm install --omit=dev"
   },
   "dependencies": {

@@ -1,0 +1,33 @@
+# docker-compose for multi-version OpenClaw E2E tests
+# Usage:
+#   cp tests/.env.example tests/.env   # 填写你的 bot 配置
+#   docker compose -f tests/docker-compose.yml up --build --abort-on-container-exit
+
+services:
+  # ── 动态版本矩阵 ─────────────────────────────────────────
+  # OPENCLAW_VERSIONS 是逗号分隔的版本列表，由 run-tests.sh 解析后
+  # 动态生成多个容器。此处提供两个静态示例供本地手动运行。
+
+  openclaw-latest:
+    build:
+      context: ..
+      dockerfile: tests/Dockerfile
+      args:
+        OPENCLAW_VERSION: latest
+    env_file: .env
+    environment:
+      - OPENCLAW_VERSION=latest
+    volumes:
+      - ../tests/reports:/workspace/qqbot/tests/reports
+
+  openclaw-pinned:
+    build:
+      context: ..
+      dockerfile: tests/Dockerfile
+      args:
+        OPENCLAW_VERSION: ${OPENCLAW_PINNED_VERSION:-latest}
+    env_file: .env
+    environment:
+      - OPENCLAW_VERSION=${OPENCLAW_PINNED_VERSION:-latest}
+    volumes:
+      - ../tests/reports:/workspace/qqbot/tests/reports
