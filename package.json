@@ -1,11 +1,15 @@
 {
-  "name": "@sliverp/qqbot",
+  "name": "@xiaokui-bot/qqbot",
   "version": "1.6.2",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "qqbot": "./bin/qqbot-cli.js"
+  },
   "files": [
     "dist",
+    "bin",
     "src",
     "skills",
     "index.ts",
@@ -34,7 +38,7 @@
     "dev": "tsc --watch",
     "test": "bash tests/run-tests.sh",
     "test:local": "bash tests/e2e.sh",
-    "prepack": "npm run build"
+    "prepack": "npm install --omit=dev"
   },
   "dependencies": {
     "mpg123-decoder": "^1.0.3",
