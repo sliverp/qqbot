@@ -708,7 +708,8 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 
             if (isVoice && att.voice_wav_url) {
               const wavUrl = att.voice_wav_url.startsWith("//") ? `https:${att.voice_wav_url}` : att.voice_wav_url;
-              const wavLocalPath = await downloadFile(wavUrl, downloadDir);
+              const wavFilename = att.filename ? `${att.filename}.wav` : `voice_${Date.now()}.wav`;
+              const wavLocalPath = await downloadFile(wavUrl, downloadDir, wavFilename);
               if (wavLocalPath) {
                 localPath = wavLocalPath;
                 audioPath = wavLocalPath;
