@@ -411,6 +411,33 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
   let handleMessageFnRef: ((msg: QueuedMessage) => Promise<void>) | null = null;
   let totalEnqueued = 0; // 全局已入队总数（用于溢出保护）
 
+  // ============ 消息去重（防止 WebSocket resume 时消息被重复处理） ============
+  const processedMessageIds = new Set<string>();
+  const DEDUP_MAX_SIZE = 1000;
+  const DEDUP_TTL_MS = 10 * 60 * 1000; // 10 分钟
+  const processedMessageTimestamps = new Map<string, number>();
+
+  const isDuplicateMessage = (messageId: string): boolean => {
+    const now = Date.now();
+    for (const [id, ts] of processedMessageTimestamps) {
+      if (now - ts > DEDUP_TTL_MS) {
+        processedMessageIds.delete(id);
+        processedMessageTimestamps.delete(id);
+      }
+    }
+    if (processedMessageIds.has(messageId)) return true;
+    if (processedMessageIds.size >= DEDUP_MAX_SIZE) {
+      const oldest = processedMessageTimestamps.entries().next().value;
+      if (oldest) {
+        processedMessageIds.delete(oldest[0]);
+        processedMessageTimestamps.delete(oldest[0]);
+      }
+    }
+    processedMessageIds.add(messageId);
+    processedMessageTimestamps.set(messageId, now);
+    return false;
+  };
+
   // 获取消息的路由 key（决定并发隔离粒度）
   const getMessagePeerId = (msg: QueuedMessage): string => {
     if (msg.type === "guild") return `guild:${msg.channelId ?? "unknown"}`;
@@ -419,6 +446,11 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
   };
 
   const enqueueMessage = (msg: QueuedMessage): void => {
+    // 去重：防止 WebSocket resume 重放同一条消息
+    if (isDuplicateMessage(msg.messageId)) {
+      log?.info?.(`[qqbot:${account.accountId}] Duplicate messageId ${msg.messageId} skipped`);
+      return;
+    }
     const peerId = getMessagePeerId(msg);
     let queue = userQueues.get(peerId);
     if (!queue) {
