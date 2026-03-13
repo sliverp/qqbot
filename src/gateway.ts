@@ -1052,10 +1052,6 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         const hasTTS = !!resolveTTSConfig(cfg as Record<string, unknown>);
         const hasSTT = !!resolveSTTConfig(cfg as Record<string, unknown>);
 
-        const voiceSection = hasTTS || hasSTT
-          ? `\n- 语音: <qqvoice>音频文件路径</qqvoice> (支持 .silk/.wav/.mp3/.ogg 等)${hasTTS ? "，TTS 已启用" : ""}${hasSTT ? "，STT 已启用" : ""}${hasAsrReferFallback ? "，本条含平台语音识别文本" : ""}`
-          : "";
-
         const voiceAsrSection = uniqueVoiceAsrReferTexts.length > 0
           ? `\n- 语音识别文本:\n${uniqueVoiceAsrReferTexts.map((t, i) => `  ${i + 1}. ${t}`).join("\n")}`
           : "";
@@ -1070,6 +1066,12 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
           }
         }
 
+        // 媒体能力单行摘要（详细格式由 qqbot-media skill 提供）
+        const mediaCapabilities = [
+          "图片<qqimg>", "文件<qqfile>", "视频<qqvideo>",
+          ...(hasTTS || hasSTT ? ["语音<qqvoice>"] : []),
+        ].join("/");
+
         const contextInfo = `你正在通过 QQ 与用户对话。
 
 【会话上下文】
@@ -1079,12 +1081,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 - 投递目标: ${qualifiedTarget}${receivedMediaSection}${voiceAsrSection}
 - 当前时间戳(ms): ${nowMs}
 - 定时提醒投递地址: channel=qqbot, to=${qualifiedTarget}
-
-【媒体发送】在文字回复中嵌入标签，系统自动处理:
-- 图片: <qqimg>URL或本地路径</qqimg>
-- 文件: <qqfile>文件路径或URL</qqfile>
-- 视频: <qqvideo>路径或URL</qqvideo>${voiceSection}
-注意: 必须在文字回复中嵌入标签; 发送语音时不要重复语音内已朗读的文字
+- 富媒体: 支持${mediaCapabilities}，用 <qqXXX>路径或URL</qqXXX> 嵌入回复中即可${hasTTS ? "；TTS已启用" : ""}${hasSTT ? "；STT已启用" : ""}
 
 `;
         // 命令直接透传，不注入上下文
