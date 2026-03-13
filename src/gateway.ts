@@ -1294,6 +1294,33 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                   }
                   log?.info(`[qqbot:${account.accountId}] Collected tool deliver #${toolDeliverCount}: text=${toolText.length} chars, media=${toolMediaUrls.length} URLs`);
 
+                  // block 已先发送完毕，tool 后到的媒体立即转发（典型场景：AI 先流式输出文本再执行 TTS）
+                  if (hasBlockResponse && toolMediaUrls.length > 0) {
+                    log?.info(`[qqbot:${account.accountId}] Block already sent, immediately forwarding ${toolMediaUrls.length} tool media URL(s)`);
+                    const urlsToSend = [...toolMediaUrls];
+                    toolMediaUrls.length = 0;
+                    for (const mediaUrl of urlsToSend) {
+                      try {
+                        const result = await sendMediaAuto({
+                          to: qualifiedTarget,
+                          text: "",
+                          mediaUrl,
+                          accountId: account.accountId,
+                          replyToId: event.messageId,
+                          account,
+                        });
+                        if (result.error) {
+                          log?.error(`[qqbot:${account.accountId}] Tool media immediate forward error: ${result.error}`);
+                        } else {
+                          log?.info(`[qqbot:${account.accountId}] Forwarded tool media (post-block): ${mediaUrl.slice(0, 80)}...`);
+                        }
+                      } catch (err) {
+                        log?.error(`[qqbot:${account.accountId}] Tool media immediate forward failed: ${err}`);
+                      }
+                    }
+                    return;
+                  }
+
                   // 兜底已发送，不再续期
                   if (toolFallbackSent) {
                     return;
@@ -2121,6 +2148,34 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                       log?.error(`[qqbot:${account.accountId}] sendMedia(auto) failed for ${mediaPath}: ${err}`);
                     }
                   }
+                }
+
+                // ============ 转发 tool 阶段收集的媒体（TTS 语音、生成图片等） ============
+                // block 回复已发送，但 tool deliver 阶段收集的媒体 URL 未被发送（tool deliver 只收集不发送）。
+                // 此处主动转发，避免工具产出的媒体被静默丢弃。
+                if (toolMediaUrls.length > 0) {
+                  log?.info(`[qqbot:${account.accountId}] Forwarding ${toolMediaUrls.length} tool-collected media URL(s) after block deliver`);
+                  for (const mediaUrl of toolMediaUrls) {
+                    try {
+                      const result = await sendMediaAuto({
+                        to: qualifiedTarget,
+                        text: "",
+                        mediaUrl,
+                        accountId: account.accountId,
+                        replyToId: event.messageId,
+                        account,
+                      });
+                      if (result.error) {
+                        log?.error(`[qqbot:${account.accountId}] Tool media forward error: ${result.error}`);
+                      } else {
+                        log?.info(`[qqbot:${account.accountId}] Forwarded tool media: ${mediaUrl.slice(0, 80)}...`);
+                      }
+                    } catch (err) {
+                      log?.error(`[qqbot:${account.accountId}] Tool media forward failed: ${err}`);
+                    }
+                  }
+                  // 清空已转发的 URL，避免 tool-only 兜底重复发送
+                  toolMediaUrls.length = 0;
                 }
 
                 pluginRuntime.channel.activity.record({
