@@ -791,8 +791,10 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
             let localPath: string | null = null;
             let audioPath: string | null = null; // 用于 STT 的音频路径
 
-            if (isVoice && wavUrl) {
-              const wavLocalPath = await downloadFile(wavUrl, downloadDir);
+            if (isVoice && att.voice_wav_url) {
+              const wavUrl = att.voice_wav_url.startsWith("//") ? `https:${att.voice_wav_url}` : att.voice_wav_url;
+              const wavFilename = att.filename ? `${att.filename}.wav` : `voice_${Date.now()}.wav`;
+              const wavLocalPath = await downloadFile(wavUrl, downloadDir, wavFilename);
               if (wavLocalPath) {
                 localPath = wavLocalPath;
                 audioPath = wavLocalPath;
