@@ -716,7 +716,8 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
               token = await getAccessToken(account.appId, account.clientSecret);
               await sendC2CInputNotify(token, event.senderId, event.messageId, 60);
             } else {
-              throw notifyErr;
+              // 网络抖动等非 token 错误，仅打印日志，不抛出异常导致消息处理链崩溃
+              log?.warn?.(`[qqbot:${account.accountId}] InputNotify failed (non-fatal), continuing: ${errMsg}`);
             }
           }
           log?.info(`[qqbot:${account.accountId}] Sent input notify to ${event.senderId}`);
@@ -1169,7 +1170,8 @@ ${mediaSection}
               const newToken = await getAccessToken(account.appId, account.clientSecret);
               await sendFn(newToken);
             } else {
-              throw err;
+              // 网络抖动等非 token 错误，仅打印日志，不抛出异常导致消息处理崩溃
+              log?.warn?.(`[qqbot:${account.accountId}] Send failed (non-fatal), skipping: ${errMsg}`);
             }
           }
         };
