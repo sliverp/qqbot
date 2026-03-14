@@ -1258,6 +1258,20 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
           let toolRenewalCount = 0; // 已续期次数
           let timeoutId: ReturnType<typeof setTimeout> | null = null;
           let toolOnlyTimeoutId: ReturnType<typeof setTimeout> | null = null;
+          let typingIntervalId: ReturnType<typeof setInterval> | null = null;
+
+          // 启动 typing 心跳：每 5 秒重发一次 C2C InputNotify，保持"正在输入"状态
+          // 仅对私聊（C2C）有效；实际发消息前停止
+          if (event.type === "c2c") {
+            typingIntervalId = setInterval(async () => {
+              try {
+                const token = await getAccessToken(account.appId, account.clientSecret);
+                await sendC2CInputNotify(token, event.senderId, event.messageId, 60);
+              } catch {
+                // 非关键，忽略错误
+              }
+            }, 5000);
+          }
 
           // 格式化 tool 兜底消息：极简，只展示工具原始参数
           const formatToolFallback = (): string => {
@@ -1489,6 +1503,12 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
                   }
                   
                   log?.info(`[qqbot:${account.accountId}] Send queue: ${sendQueue.map(item => item.type).join(" -> ")}`);
+
+                  // 发送第一条消息前停止 typing 心跳，多段回复之间保持气泡显示
+                  if (typingIntervalId) {
+                    clearInterval(typingIntervalId);
+                    typingIntervalId = null;
+                  }
                   
                   // 按顺序发送
                   for (const item of sendQueue) {
