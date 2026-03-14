@@ -519,7 +519,12 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
       const timer = setTimeout(() => flushDebounceBuffer(peerId), inboundDebounceMs);
       debounceBuffers.set(peerId, { msgs: [msg], timer });
     }
-  };  const userQueues = new Map<string, QueuedMessage[]>(); // peerId → 消息队列
+  };
+
+  // 紧急命令列表：这些命令会立即执行，不进入队列
+  const URGENT_COMMANDS = ["/stop"];
+
+  const userQueues = new Map<string, QueuedMessage[]>(); // peerId → 消息队列
   const activeUsers = new Set<string>(); // 正在处理中的用户
   let messagesProcessed = 0;
   let handleMessageFnRef: ((msg: QueuedMessage) => Promise<void>) | null = null;
@@ -2423,7 +2428,6 @@ ${mediaSection}
               const fallback = formatToolFallback();
               await sendErrorMessage(fallback);
             }
-          } finally {
             // 确保心跳被清除
             if (typingIntervalId) {
               clearInterval(typingIntervalId);
