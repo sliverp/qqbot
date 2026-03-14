@@ -484,6 +484,10 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
   // ============ 按用户并发的消息队列（同用户串行，跨用户并行） ============
   // 每个用户有独立队列，同一用户的消息串行处理（保持时序），
   // 不同用户的消息并行处理（互不阻塞）。
+  
+  // 紧急命令列表：这些命令会立即执行，不进入队列
+  const URGENT_COMMANDS = ["/stop"];
+  
   const userQueues = new Map<string, QueuedMessage[]>(); // peerId → 消息队列
   const activeUsers = new Set<string>(); // 正在处理中的用户
   let messagesProcessed = 0;
@@ -499,6 +503,32 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 
   const enqueueMessage = (msg: QueuedMessage): void => {
     const peerId = getMessagePeerId(msg);
+    const content = (msg.content ?? "").trim().toLowerCase();
+    
+    // 检测是否为紧急命令
+    const isUrgentCommand = URGENT_COMMANDS.some(cmd => content.startsWith(cmd.toLowerCase()));
+    
+    if (isUrgentCommand) {
+      log?.info(`[qqbot:${account.accountId}] Urgent command detected: ${content.slice(0, 20)}, executing immediately`);
+      
+      // 清空该用户队列中所有待处理消息
+      const queue = userQueues.get(peerId);
+      if (queue) {
+        const droppedCount = queue.length;
+        queue.length = 0; // 清空队列
+        totalEnqueued = Math.max(0, totalEnqueued - droppedCount);
+        log?.info(`[qqbot:${account.accountId}] Dropped ${droppedCount} queued messages for ${peerId} due to urgent command`);
+      }
+      
+      // 立即异步执行紧急命令，不等待
+      if (handleMessageFnRef) {
+        handleMessageFnRef(msg).catch(err => {
+          log?.error(`[qqbot:${account.accountId}] Urgent command error: ${err}`);
+        });
+      }
+      return;
+    }
+    
     let queue = userQueues.get(peerId);
     if (!queue) {
       queue = [];
