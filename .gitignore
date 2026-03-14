@@ -6,3 +6,7 @@ package-lock.json
 .codebuddy/
 .codebuddy.zip
 openclaw.json
+
+# E2E tests
+tests/.env
+tests/reports/

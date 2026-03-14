@@ -73,21 +73,9 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
   onboarding: qqbotOnboardingAdapter,
 
   config: {
-    listAccountIds: (cfg) => {
-      const ids = listQQBotAccountIds(cfg);
-      console.log(`[qqbot:channel] listAccountIds: ${JSON.stringify(ids)}`);
-      return ids;
-    },
-    resolveAccount: (cfg, accountId) => {
-      const account = resolveQQBotAccount(cfg, accountId);
-      console.log(`[qqbot:channel] resolveAccount: input=${accountId} → resolved=${account.accountId}, appId=${account.appId}, enabled=${account.enabled}`);
-      return account;
-    },
-    defaultAccountId: (cfg) => {
-      const id = resolveDefaultQQBotAccountId(cfg);
-      console.log(`[qqbot:channel] defaultAccountId: ${id}`);
-      return id;
-    },
+    listAccountIds: (cfg) => listQQBotAccountIds(cfg),
+    resolveAccount: (cfg, accountId) => resolveQQBotAccount(cfg, accountId),
+    defaultAccountId: (cfg) => resolveDefaultQQBotAccountId(cfg),
     // 新增：设置账户启用状态
     setAccountEnabled: ({ cfg, accountId, enabled }) =>
       setAccountEnabledInConfigSection({

@@ -51,12 +51,26 @@ function parseArgs(): Record<string, string | boolean> {
   return args;
 }
 
+function normalizeAppId(raw: unknown): string {
+  if (raw === null || raw === undefined) return "";
+  return String(raw).trim();
+}
+
+function detectConfigPath(): string | null {
+  const home = process.env.HOME || "/home/ubuntu";
+  for (const app of ["openclaw", "clawdbot", "moltbot"]) {
+    const p = path.join(home, `.${app}`, `${app}.json`);
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
 // 从配置文件加载账户信息
 function loadAccount(accountId = "default"): ResolvedQQBotAccount | null {
-  const configPath = path.join(process.env.HOME || "/home/ubuntu", "clawd", "config.json");
+  const configPath = detectConfigPath();
   
   try {
-    if (!fs.existsSync(configPath)) {
+    if (!configPath || !fs.existsSync(configPath)) {
       // 尝试从环境变量获取
       const appId = process.env.QQBOT_APP_ID;
       const clientSecret = process.env.QQBOT_CLIENT_SECRET;
@@ -64,10 +78,12 @@ function loadAccount(accountId = "default"): ResolvedQQBotAccount | null {
       if (appId && clientSecret) {
         return {
           accountId,
-          appId,
+          appId: normalizeAppId(appId),
           clientSecret,
           enabled: true,
           secretSource: "env",
+          markdownSupport: true,
+          config: {},
         };
       }
       
@@ -87,10 +103,12 @@ function loadAccount(accountId = "default"): ResolvedQQBotAccount | null {
     if (accountId === "default") {
       return {
         accountId: "default",
-        appId: qqbot.appId || process.env.QQBOT_APP_ID,
+        appId: normalizeAppId(qqbot.appId ?? process.env.QQBOT_APP_ID),
         clientSecret: qqbot.clientSecret || process.env.QQBOT_CLIENT_SECRET,
         enabled: qqbot.enabled ?? true,
         secretSource: qqbot.clientSecret ? "config" : "env",
+        markdownSupport: qqbot.markdownSupport ?? true,
+        config: qqbot,
       };
     }
     
@@ -98,10 +116,12 @@ function loadAccount(accountId = "default"): ResolvedQQBotAccount | null {
     if (accountConfig) {
       return {
         accountId,
-        appId: accountConfig.appId || qqbot.appId || process.env.QQBOT_APP_ID,
+        appId: normalizeAppId(accountConfig.appId ?? qqbot.appId ?? process.env.QQBOT_APP_ID),
         clientSecret: accountConfig.clientSecret || qqbot.clientSecret || process.env.QQBOT_CLIENT_SECRET,
         enabled: accountConfig.enabled ?? true,
         secretSource: accountConfig.clientSecret ? "config" : "env",
+        markdownSupport: accountConfig.markdownSupport ?? qqbot.markdownSupport ?? true,
+        config: accountConfig,
       };
     }
     

@@ -21,7 +21,8 @@
 
 Scan to join the QQ group chat
 
-<img width="316" height="410" alt="QQ Group QR Code" src="https://github.com/user-attachments/assets/d079ba89-ecd0-437f-9e66-92319801a325" />
+<img width="300" height="540" alt="Clipboard_Screenshot_1773047715" src="https://github.com/user-attachments/assets/4d2d2337-229a-42ad-97ab-8a6d0607f296" />
+
 
 </div>
 
@@ -423,5 +424,4 @@ openclaw gateway restart
 - [Rich Media Guide](docs/qqbot-media-guide.md) — images, voice, video, files
 - [Command Reference](docs/commands.md) — OpenClaw CLI commands
 - [Changelog](docs/changelog/) — release notes ([latest: 1.5.4](docs/changelog/1.5.4.md))
-
 

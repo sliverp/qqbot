@@ -32,23 +32,40 @@ import type { ResolvedQQBotAccount } from "../src/types.js";
 // 默认端口
 const DEFAULT_PORT = 3721;
 
+// 自动检测配置文件路径（兼容 openclaw / clawdbot / moltbot）
+function detectConfigPath(): string | null {
+  const home = process.env.HOME || "/home/ubuntu";
+  for (const app of ["openclaw", "clawdbot", "moltbot"]) {
+    const p = path.join(home, `.${app}`, `${app}.json`);
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
+function normalizeAppId(raw: unknown): string {
+  if (raw === null || raw === undefined) return "";
+  return String(raw).trim();
+}
+
 // 从配置文件加载账户信息
 function loadAccount(accountId = "default"): ResolvedQQBotAccount | null {
-  const configPath = path.join(process.env.HOME || "/home/ubuntu", "clawd", "config.json");
+  const configPath = detectConfigPath();
   
   try {
     // 优先从环境变量获取
     const envAppId = process.env.QQBOT_APP_ID;
     const envClientSecret = process.env.QQBOT_CLIENT_SECRET;
     
-    if (!fs.existsSync(configPath)) {
+    if (!configPath || !fs.existsSync(configPath)) {
       if (envAppId && envClientSecret) {
         return {
           accountId,
-          appId: envAppId,
+          appId: normalizeAppId(envAppId),
           clientSecret: envClientSecret,
           enabled: true,
           secretSource: "env",
+          markdownSupport: true,
+          config: {},
         };
       }
       return null;
@@ -61,10 +78,12 @@ function loadAccount(accountId = "default"): ResolvedQQBotAccount | null {
       if (envAppId && envClientSecret) {
         return {
           accountId,
-          appId: envAppId,
+          appId: normalizeAppId(envAppId),
           clientSecret: envClientSecret,
           enabled: true,
           secretSource: "env",
+          markdownSupport: true,
+          config: {},
         };
       }
       return null;
@@ -74,10 +93,12 @@ function loadAccount(accountId = "default"): ResolvedQQBotAccount | null {
     if (accountId === "default") {
       return {
         accountId: "default",
-        appId: qqbot.appId || envAppId,
+        appId: normalizeAppId(qqbot.appId ?? envAppId),
         clientSecret: qqbot.clientSecret || envClientSecret,
         enabled: qqbot.enabled ?? true,
         secretSource: qqbot.clientSecret ? "config" : "env",
+        markdownSupport: qqbot.markdownSupport ?? true,
+        config: accountId === "default" ? (qqbot as Record<string, unknown>) : {},
       };
     }
     
@@ -85,10 +106,12 @@ function loadAccount(accountId = "default"): ResolvedQQBotAccount | null {
     if (accountConfig) {
       return {
         accountId,
-        appId: accountConfig.appId || qqbot.appId || envAppId,
+        appId: normalizeAppId(accountConfig.appId ?? qqbot.appId ?? envAppId),
         clientSecret: accountConfig.clientSecret || qqbot.clientSecret || envClientSecret,
         enabled: accountConfig.enabled ?? true,
         secretSource: accountConfig.clientSecret ? "config" : "env",
+        markdownSupport: accountConfig.markdownSupport ?? qqbot.markdownSupport ?? true,
+        config: accountConfig,
       };
     }
     
@@ -100,9 +123,9 @@ function loadAccount(accountId = "default"): ResolvedQQBotAccount | null {
 
 // 加载配置（用于 broadcastMessage）
 function loadConfig(): Record<string, unknown> {
-  const configPath = path.join(process.env.HOME || "/home/ubuntu", "clawd", "config.json");
+  const configPath = detectConfigPath();
   try {
-    if (fs.existsSync(configPath)) {
+    if (configPath && fs.existsSync(configPath)) {
       return JSON.parse(fs.readFileSync(configPath, "utf-8"));
     }
   } catch {}

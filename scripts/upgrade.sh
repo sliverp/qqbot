@@ -23,18 +23,18 @@ cleanup_installation() {
   local APP_NAME="$1"
   local APP_DIR="$HOME/.$APP_NAME"
   local CONFIG_FILE="$APP_DIR/$APP_NAME.json"
-  local EXTENSION_DIR="$APP_DIR/extensions/qqbot"
+  local EXTENSION_DIR="$APP_DIR/extensions"
 
   echo ""
   echo ">>> 处理 $APP_NAME 安装..."
 
-  # 1. 删除旧的扩展目录
-  if [ -d "$EXTENSION_DIR" ]; then
-    echo "删除旧版本插件: $EXTENSION_DIR"
-    rm -rf "$EXTENSION_DIR"
-  else
-    echo "未找到旧版本插件目录，跳过删除"
-  fi
+  # 1. 删除所有可能的旧版扩展目录（多历史插件 ID 变体）
+  for dir_name in qqbot openclaw-qqbot openclaw-qq; do
+    if [ -d "$EXTENSION_DIR/$dir_name" ]; then
+      echo "删除旧版本插件: $EXTENSION_DIR/$dir_name"
+      rm -rf "$EXTENSION_DIR/$dir_name"
+    fi
+  done
 
   # 2. 清理配置文件中的 qqbot 相关字段
   if [ -f "$CONFIG_FILE" ]; then
@@ -51,16 +51,25 @@ cleanup_installation() {
         console.log('  - 已删除 channels.qqbot');
       }
       
-      // 删除 plugins.entries.qqbot
-      if (config.plugins && config.plugins.entries && config.plugins.entries.qqbot) {
-        delete config.plugins.entries.qqbot;
-        console.log('  - 已删除 plugins.entries.qqbot');
+      // 清理 plugins.entries 中的所有历史插件 ID
+      const legacyIds = ['qqbot', 'openclaw-qqbot', 'openclaw-qq', '@sliverp/qqbot', '@tencent-connect/qqbot', '@tencent-connect/openclaw-qq', '@tencent-connect/openclaw-qqbot'];
+      if (config.plugins && config.plugins.entries) {
+        for (const id of legacyIds) {
+          if (config.plugins.entries[id]) {
+            delete config.plugins.entries[id];
+            console.log('  - 已删除 plugins.entries.' + id);
+          }
+        }
       }
       
-      // 删除 plugins.installs.qqbot
-      if (config.plugins && config.plugins.installs && config.plugins.installs.qqbot) {
-        delete config.plugins.installs.qqbot;
-        console.log('  - 已删除 plugins.installs.qqbot');
+      // 清理 plugins.installs 中的所有历史插件 ID
+      if (config.plugins && config.plugins.installs) {
+        for (const id of legacyIds) {
+          if (config.plugins.installs[id]) {
+            delete config.plugins.installs[id];
+            console.log('  - 已删除 plugins.installs.' + id);
+          }
+        }
       }
       
       fs.writeFileSync('$CONFIG_FILE', JSON.stringify(config, null, 2));
@@ -86,10 +95,16 @@ if [ -d "$HOME/.openclaw" ]; then
   FOUND_INSTALLATION="openclaw"
 fi
 
+# 检查 moltbot
+if [ -d "$HOME/.moltbot" ]; then
+  cleanup_installation "moltbot"
+  FOUND_INSTALLATION="moltbot"
+fi
+
 # 如果都没找到
 if [ -z "$FOUND_INSTALLATION" ]; then
-  echo "未找到 clawdbot 或 openclaw 安装目录"
-  echo "请确认已安装 clawdbot 或 openclaw"
+  echo "未找到 clawdbot、openclaw 或 moltbot 安装目录"
+  echo "请确认已安装 clawdbot、openclaw 或 moltbot"
   exit 1
 fi
 
