@@ -1543,9 +1543,14 @@ ${mediaSection}
                   if (textAfter) {
                     sendQueue.push({ type: "text", content: filterInternalMarkers(textAfter) });
                   }
+                  
+                  log?.info(`[qqbot:${account.accountId}] Send queue: ${sendQueue.map(item => item.type).join(" -> ")}`);
 
-
-                  log?.info(`[qqbot:${account.accountId}] Send queue: ${sendQueue.map(item => `${item.type}`).join(" -> ")}`);
+                  // 发送第一条消息前停止 typing 心跳
+                  if (typingIntervalId) {
+                    clearInterval(typingIntervalId);
+                    typingIntervalId = null;
+                  }
                   
                   // 按顺序发送
                   for (const item of sendQueue) {
