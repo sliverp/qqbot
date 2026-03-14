@@ -105,11 +105,22 @@ export function expandTilde(p: string): string {
 }
 
 /**
- * 对路径进行完整的规范化处理：展开波浪线 + 去除首尾空白
+ * 对路径进行完整的规范化处理：剥离 file:// 前缀 + 展开波浪线 + 去除首尾空白
  * 所有文件操作前应通过此函数处理用户输入的路径
  */
 export function normalizePath(p: string): string {
-  return expandTilde(p.trim());
+  let result = p.trim();
+  // 剥离 file:// 协议前缀: file:///Users/... → /Users/...
+  if (result.startsWith("file://")) {
+    result = result.slice("file://".length);
+    // 处理 URL 编码（file:// 路径中空格等字符可能被编码）
+    try {
+      result = decodeURIComponent(result);
+    } catch {
+      // decodeURIComponent 失败时保留原样
+    }
+  }
+  return expandTilde(result);
 }
 
 // ============ 文件名 UTF-8 规范化 ============
@@ -163,6 +174,7 @@ export function sanitizeFileName(name: string): string {
  * - Windows 绝对路径: C:\..., D:/..., \\server\share
  * - 相对路径: ./file, ../file
  * - 波浪线路径: ~/Desktop/file.png
+ * - file:// 协议: file:///Users/..., file:///home/...
  *
  * 不匹配:
  * - http:// / https:// URL
@@ -170,6 +182,8 @@ export function sanitizeFileName(name: string): string {
  */
 export function isLocalPath(p: string): boolean {
   if (!p) return false;
+  // file:// 协议（本地文件 URI）
+  if (p.startsWith("file://")) return true;
   // 波浪线路径（Mac/Linux 用户常用）
   if (p === "~" || p.startsWith("~/") || p.startsWith("~\\")) return true;
   // Unix 绝对路径

@@ -85,6 +85,7 @@ export interface MessageAttachment {
   size?: number;
   url: string;
   voice_wav_url?: string;  // QQ 提供的 WAV 格式语音直链，有值时优先使用以避免 SILK→WAV 转换
+  asr_refer_text?: string; // QQ 事件内置 ASR 文本（精度有限，可作为无 STT/转录失败时的兜底）
 }
 
 /**
@@ -101,6 +102,8 @@ export interface C2CMessageEvent {
   timestamp: string;
   message_scene?: {
     source: string;
+    /** ext 数组，可能包含 ref_msg_idx=REFIDX_xxx（引用的消息）和 msg_idx=REFIDX_xxx（自身索引） */
+    ext?: string[];
   };
   attachments?: MessageAttachment[];
 }
@@ -139,6 +142,10 @@ export interface GroupMessageEvent {
   timestamp: string;
   group_id: string;
   group_openid: string;
+  message_scene?: {
+    source: string;
+    ext?: string[];
+  };
   attachments?: MessageAttachment[];
 }
 

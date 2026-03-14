@@ -443,9 +443,12 @@ export async function downloadFile(
     // 确定文件名
     let finalFilename: string;
     if (originalFilename) {
+      // QQ 平台返回的 filename 可能是 URL 编码的（如 %E7%AC%94%E5%A2%A8...），先解码
+      let decodedFilename = originalFilename;
+      try { decodedFilename = decodeURIComponent(originalFilename); } catch { /* keep original */ }
       // 使用原始文件名，但添加时间戳避免冲突
-      const ext = path.extname(originalFilename);
-      const baseName = path.basename(originalFilename, ext);
+      const ext = path.extname(decodedFilename);
+      const baseName = path.basename(decodedFilename, ext);
       const timestamp = Date.now();
       finalFilename = `${baseName}_${timestamp}${ext}`;
     } else {
