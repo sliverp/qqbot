@@ -292,7 +292,7 @@ export interface GatewayContext {
 /**
  * 消息队列项类型（用于异步处理消息，防止阻塞心跳）
  */
-interface QueuedMessage {
+export interface QueuedMessage {
   type: "c2c" | "guild" | "dm" | "group";
   senderId: string;
   senderName?: string;
@@ -307,6 +307,57 @@ interface QueuedMessage {
   refMsgIdx?: string;
   /** 当前消息自身的 refIdx（供将来被引用） */
   msgIdx?: string;
+}
+
+/**
+ * 消息预处理器类型
+ *
+ * 预处理器在消息入队之前被调用，可以用于：
+ * - 实现快速响应通道（绕过串行队列）
+ * - 解决死锁问题（如审批响应）
+ * - 消息过滤、路由等
+ *
+ * @param msg - 待处理的消息
+ * @returns true 表示消息已被处理，不入队；false 表示继续正常入队
+ *
+ * @example
+ * // 注册审批响应预处理器
+ * registerMessagePreprocessor((msg) => {
+ *   if (msg.content.startsWith('批准 sudo-')) {
+ *     handleApproval(msg.content);
+ *     return true; // 已处理，不入队
+ *   }
+ *   return false; // 继续正常处理
+ * });
+ */
+export type MessagePreprocessor = (msg: QueuedMessage) => boolean;
+
+// 模块级预处理器列表（所有账户共享）
+const messagePreprocessors: MessagePreprocessor[] = [];
+
+/**
+ * 注册消息预处理器
+ *
+ * 预处理器按注册顺序执行，任一预处理器返回 true 即停止处理。
+ *
+ * @param fn - 预处理器函数
+ * @returns 取消注册的函数
+ *
+ * @example
+ * const unregister = registerMessagePreprocessor((msg) => {
+ *   // 处理紧急消息
+ *   return false;
+ * });
+ *
+ * // 不再需要时取消注册
+ * unregister();
+ */
+export function registerMessagePreprocessor(fn: MessagePreprocessor): () => void {
+  messagePreprocessors.push(fn);
+  return () => {
+    const idx = messagePreprocessors.indexOf(fn);
+    if (idx >= 0) messagePreprocessors.splice(idx, 1);
+  };
 }
 
 /**
@@ -502,15 +553,27 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
   };
 
   const enqueueMessage = (msg: QueuedMessage): void => {
+    // 1. 预处理器快速通道（在入队之前执行）
+    for (const preprocessor of messagePreprocessors) {
+      try {
+        if (preprocessor(msg)) {
+          log?.info(`[qqbot:${account.accountId}] Message intercepted by preprocessor: ${msg.content?.substring(0, 60)}`);
+          return; // 已处理，不入队
+        }
+      } catch (err) {
+        log?.error(`[qqbot:${account.accountId}] Message preprocessor error: ${err}`);
+      }
+    }
+
     const peerId = getMessagePeerId(msg);
     const content = (msg.content ?? "").trim().toLowerCase();
-    
-    // 检测是否为紧急命令
+
+    // 2. 检测是否为紧急命令
     const isUrgentCommand = URGENT_COMMANDS.some(cmd => content.startsWith(cmd.toLowerCase()));
-    
+
     if (isUrgentCommand) {
       log?.info(`[qqbot:${account.accountId}] Urgent command detected: ${content.slice(0, 20)}, executing immediately`);
-      
+
       // 清空该用户队列中所有待处理消息
       const queue = userQueues.get(peerId);
       if (queue) {
@@ -519,7 +582,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         totalEnqueued = Math.max(0, totalEnqueued - droppedCount);
         log?.info(`[qqbot:${account.accountId}] Dropped ${droppedCount} queued messages for ${peerId} due to urgent command`);
       }
-      
+
       // 立即异步执行紧急命令，不等待
       if (handleMessageFnRef) {
         handleMessageFnRef(msg).catch(err => {
@@ -528,7 +591,8 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
       }
       return;
     }
-    
+
+    // 3. 正常入队流程
     let queue = userQueues.get(peerId);
     if (!queue) {
       queue = [];
