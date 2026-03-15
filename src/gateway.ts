@@ -1,11 +1,13 @@
 import WebSocket from "ws";
 import path from "node:path";
 import * as fs from "node:fs";
+import type { OpenClawConfig } from "openclaw/plugin-sdk";
 import type { ResolvedQQBotAccount, WSPayload, C2CMessageEvent, GuildMessageEvent, GroupMessageEvent } from "./types.js";
 import { getAccessToken, getGatewayUrl, sendC2CMessage, sendChannelMessage, sendGroupMessage, clearTokenCache, sendC2CImageMessage, sendGroupImageMessage, sendC2CVoiceMessage, sendGroupVoiceMessage, sendC2CVideoMessage, sendGroupVideoMessage, sendC2CFileMessage, sendGroupFileMessage, initApiConfig, startBackgroundTokenRefresh, stopBackgroundTokenRefresh, sendC2CInputNotify, onMessageSent } from "./api.js";
 import { loadSession, saveSession, clearSession, type SessionState } from "./session-store.js";
 import { recordKnownUser, flushKnownUsers } from "./known-users.js";
 import { getQQBotRuntime } from "./runtime.js";
+import { maybePersistInitialQQBotAllowlist } from "./allowlist-writeback.js";
 import { startImageServer, isImageServerRunning, downloadFile, type ImageServerConfig } from "./image-server.js";
 import { getImageSize, formatQQBotMarkdownImage, hasQQBotImageSize, DEFAULT_IMAGE_SIZE } from "./utils/image-size.js";
 import { parseQQBotPayload, encodePayloadForCron, isCronReminderPayload, isMediaPayload, type CronReminderPayload, type MediaPayload } from "./utils/payload.js";
@@ -279,7 +281,7 @@ function filterInternalMarkers(text: string): string {
 export interface GatewayContext {
   account: ResolvedQQBotAccount;
   abortSignal: AbortSignal;
-  cfg: unknown;
+  cfg: OpenClawConfig;
   onReady?: (data: unknown) => void;
   onError?: (error: Error) => void;
   log?: {
@@ -382,6 +384,8 @@ async function ensureImageServer(log?: GatewayContext["log"], publicBaseUrl?: st
  */
 export async function startGateway(ctx: GatewayContext): Promise<void> {
   const { account, abortSignal, cfg, onReady, onError, log } = ctx;
+  let currentCfg = cfg;
+  let currentAccount = account;
 
   if (!account.appId || !account.clientSecret) {
     throw new Error("QQBot not configured (missing appId or clientSecret)");
@@ -700,6 +704,24 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         refMsgIdx?: string;
         msgIdx?: string;
       }) => {
+        let activeCfg = currentCfg;
+        let activeAccount = currentAccount;
+        if (event.type === "c2c") {
+          const seeded = await maybePersistInitialQQBotAllowlist({
+            cfg: activeCfg,
+            account: activeAccount,
+            openid: event.senderId,
+            log,
+          });
+          if (seeded.changed) {
+            currentCfg = seeded.cfg;
+            currentAccount = seeded.account;
+            activeCfg = seeded.cfg;
+            activeAccount = seeded.account;
+          }
+        }
+        const cfg = activeCfg;
+        const account = activeAccount;
 
         log?.debug?.(`[qqbot:${account.accountId}] Received message: ${JSON.stringify(event)}`);
         log?.info(`[qqbot:${account.accountId}] Processing message from ${event.senderId}: ${event.content}`);

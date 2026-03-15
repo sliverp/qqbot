@@ -21,6 +21,10 @@ declare module "openclaw/plugin-sdk" {
       whatsapp?: unknown;
       [key: string]: unknown;
     };
+    commands?: {
+      ownerAllowFrom?: Array<string | number>;
+      [key: string]: unknown;
+    };
     /** 其他配置字段 */
     [key: string]: unknown;
   }
@@ -94,6 +98,10 @@ declare module "openclaw/plugin-sdk" {
     };
     /** 其他运行时方法 */
     [key: string]: unknown;
+    config?: {
+      writeConfigFile?: (cfg: OpenClawConfig) => Promise<void>;
+      [key: string]: unknown;
+    };
   }
 
   // ============ 插件 API ============
