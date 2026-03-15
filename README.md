@@ -283,6 +283,12 @@ openclaw message send --channel "qqbot" \
 
 > ⚠️ **Important**: Each bot has its own set of user OpenIDs. An OpenID received by Bot A **cannot** be used to send messages via Bot B — this will result in a 500 error. Always use the matching bot's `accountId` to send messages to its users.
 
+### Owner Bootstrap in C2C
+
+- If `commands.ownerAllowFrom` is already configured, `qqbot` will respect that configuration and will not override it.
+- If `commands.ownerAllowFrom` is empty, the first inbound C2C sender is auto-bound as owner and persisted as `qqbot:OPENID`.
+- This makes owner-only tools available without asking end users to manually discover their QQ Bot OpenID.
+
 ### How It Works
 
 - When `openclaw gateway` starts, all accounts with `enabled: true` launch their own WebSocket connections
@@ -424,4 +430,3 @@ openclaw gateway restart
 - [Rich Media Guide](docs/qqbot-media-guide.md) — images, voice, video, files
 - [Command Reference](docs/commands.md) — OpenClaw CLI commands
 - [Changelog](docs/changelog/) — release notes ([latest: 1.5.4](docs/changelog/1.5.4.md))
-

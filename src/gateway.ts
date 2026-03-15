@@ -14,6 +14,7 @@ import { normalizeMediaTags } from "./utils/media-tags.js";
 import { checkFileSize, readFileAsync, fileExistsAsync, isLargeFile, formatFileSize } from "./utils/file-utils.js";
 import { getQQBotDataDir, isLocalPath as isLocalFilePath, looksLikeLocalPath, normalizePath, sanitizeFileName, runDiagnostics } from "./utils/platform.js";
 import { setRefIndex, getRefIndex, formatRefEntryForAgent, flushRefIndex, type RefAttachmentSummary } from "./ref-index-store.js";
+import { ensureOwnerBoundForFirstC2C } from "./owner-auto-bind.js";
 
 /**
  * 通用 OpenAI 兼容 STT（语音转文字）
@@ -713,6 +714,15 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
           direction: "inbound",
         });
 
+        const autoBoundOwnerAllowFrom = event.type === "c2c"
+          ? await ensureOwnerBoundForFirstC2C({
+              cfg: cfg as Record<string, unknown>,
+              accountId: account.accountId,
+              senderId: event.senderId,
+              log,
+            })
+          : [];
+
         // 发送输入状态提示（非关键，失败不影响主流程）
         try {
           let token = await getAccessToken(account.appId, account.clientSecret);
@@ -1187,6 +1197,9 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
           QQVoiceAsrReferTexts: uniqueVoiceAsrReferTexts,
           QQVoiceInputStrategy: "prefer_audio_stt_then_asr_fallback",
           CommandAuthorized: commandAuthorized,
+          ...(autoBoundOwnerAllowFrom.length > 0 ? {
+            OwnerAllowFrom: autoBoundOwnerAllowFrom,
+          } : {}),
           // 传递媒体路径和 URL，使 openclaw 原生媒体处理（视觉等）能正常工作
           ...(localMediaPaths.length > 0 ? {
             MediaPaths: localMediaPaths,

@@ -279,6 +279,12 @@ openclaw message send --channel "qqbot" \
 
 > ⚠️ **注意**：每个机器人的用户 OpenID 是不同的。机器人 A 收到的用户 OpenID 不能用机器人 B 去发消息，否则会返回 500 错误。必须用对应机器人的 accountId 去给该机器人的用户发消息。
 
+### C2C 首次 owner 绑定
+
+- 如果已经显式配置了 `commands.ownerAllowFrom`，`qqbot` 会尊重现有配置，不会覆盖。
+- 如果 `commands.ownerAllowFrom` 为空，插件会把首个进入 C2C 私聊的发送者自动绑定为 owner，并持久化为 `qqbot:OPENID`。
+- 这样就不需要要求终端用户自己查找 QQ Bot 侧的 OpenID，也能使用 owner-only 工具。
+
 ### 工作原理
 
 - 启动 `openclaw gateway` 后，所有 `enabled: true` 的账户会同时启动 WebSocket 连接
@@ -420,4 +426,3 @@ openclaw gateway restart
 - [富媒体指南](docs/qqbot-media-guide.md) — 图片、语音、视频、文件
 - [命令参考](docs/commands.md) — OpenClaw CLI 常用命令
 - [更新日志](docs/changelog/) — 各版本变更记录（[最新: 1.5.4](docs/changelog/1.5.4.md)）
-
