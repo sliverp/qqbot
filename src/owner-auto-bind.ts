@@ -78,24 +78,32 @@ export async function ensureOwnerBoundForFirstC2C(params: {
 
     const runtime = getQQBotRuntime();
     const nextCfg = withOwnerAllowFrom(params.cfg, ownerEntry);
-
-    applyOwnerAllowFromInPlace(params.cfg, ownerEntry);
-
-    if (typeof runtime.setConfig === "function") {
-      runtime.setConfig(nextCfg);
-    }
+    let persisted = false;
 
     try {
       const configApi = runtime.config as ConfigWriter | undefined;
       if (typeof configApi?.writeConfigFile === "function") {
         await configApi.writeConfigFile(nextCfg);
+        persisted = true;
       }
-      params.log?.info?.(`[qqbot:${params.accountId}] Auto-bound first C2C sender as owner: ${ownerEntry}`);
     } catch (error) {
       params.log?.error?.(
         `[qqbot:${params.accountId}] Failed to persist auto-bound owner ${ownerEntry}: ${String(error)}`
       );
     }
+
+    // Keep the live gateway config in sync after persistence, otherwise the
+    // runtime snapshot merge used by writeConfigFile can erase this change.
+    applyOwnerAllowFromInPlace(params.cfg, ownerEntry);
+    if (typeof runtime.setConfig === "function") {
+      runtime.setConfig(nextCfg);
+    }
+
+    params.log?.info?.(
+      persisted
+        ? `[qqbot:${params.accountId}] Auto-bound first C2C sender as owner: ${ownerEntry}`
+        : `[qqbot:${params.accountId}] Auto-bound first C2C sender as owner in runtime only: ${ownerEntry}`
+    );
 
     return [ownerEntry];
   })().finally(() => {
