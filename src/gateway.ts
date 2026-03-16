@@ -72,10 +72,29 @@ async function transcribeAudio(audioPath: string, cfg: Record<string, unknown>):
   if (!sttCfg) return null;
 
   const fileBuffer = fs.readFileSync(audioPath);
-  const fileName = sanitizeFileName(path.basename(audioPath));
+  let fileName = sanitizeFileName(path.basename(audioPath));
+
+  // Detect actual audio format from file header (magic bytes) to fix incorrect
+  // extensions.  When voice_wav_url is downloaded without an originalFilename,
+  // downloadFile() saves it as "<hash>.bin".  Most cloud STT APIs (Groq, OpenAI,
+  // etc.) reject files whose extension is not in their allowlist, so we must
+  // correct the extension before uploading.
+  const hdr = fileBuffer.subarray(0, 12);
+  const hdrStr = hdr.toString("ascii");
+  if (hdrStr.startsWith("RIFF") && hdrStr.slice(8, 12) === "WAVE") {
+    if (!fileName.endsWith(".wav")) fileName = fileName.replace(/\.[^.]+$/, ".wav");
+  } else if (hdr[0] === 0xff && (hdr[1] & 0xe0) === 0xe0) {
+    if (!fileName.endsWith(".mp3")) fileName = fileName.replace(/\.[^.]+$/, ".mp3");
+  } else if (hdrStr.startsWith("OggS")) {
+    if (!fileName.endsWith(".ogg")) fileName = fileName.replace(/\.[^.]+$/, ".ogg");
+  } else if (hdrStr.startsWith("fLaC")) {
+    if (!fileName.endsWith(".flac")) fileName = fileName.replace(/\.[^.]+$/, ".flac");
+  }
+
   const mime = fileName.endsWith(".wav") ? "audio/wav"
     : fileName.endsWith(".mp3") ? "audio/mpeg"
     : fileName.endsWith(".ogg") ? "audio/ogg"
+    : fileName.endsWith(".flac") ? "audio/flac"
     : "application/octet-stream";
 
   const form = new FormData();
