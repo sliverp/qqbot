@@ -1,28 +1,12 @@
 import { Type } from "@sinclair/typebox";
 import type { ChannelAgentTool } from "openclaw/plugin-sdk";
 import { sendMedia } from "./outbound.js";
-import { resolveQQBotAccount, DEFAULT_ACCOUNT_ID } from "./config.js";
-import { getQQBotRuntime } from "./runtime.js";
+import { getCurrentQQBotAccount } from "./runtime.js";
 
 /**
  * QQBot 媒体发送工具
  * 用于让 AI 直接调用工具发送图片、视频、文件、语音
  */
-
-/**
- * 获取默认账户 ID
- */
-function getDefaultAccountId(): string {
-  return DEFAULT_ACCOUNT_ID;
-}
-
-/**
- * 从运行时获取配置
- */
-function getConfig() {
-  const runtime = getQQBotRuntime();
-  return runtime.config as { channels?: { qqbot?: Record<string, unknown> } };
-}
 
 /**
  * 创建发送图片的工具
@@ -55,9 +39,15 @@ export function createQQBotSendImageTool(): ChannelAgentTool {
       }
 
       try {
-        const cfg = getConfig();
-        const accountId = getDefaultAccountId();
-        const account = resolveQQBotAccount(cfg as any, accountId);
+        // 直接从 runtime 获取已解析的 account 对象
+        const account = getCurrentQQBotAccount();
+
+        if (!account) {
+          return {
+            content: [{ type: "text", text: "错误: QQBot 未启动或未配置" }],
+            isError: true,
+          };
+        }
 
         if (!account.appId || !account.clientSecret) {
           return {
@@ -70,7 +60,7 @@ export function createQQBotSendImageTool(): ChannelAgentTool {
           to: target,
           text: text ?? "",
           mediaUrl: imageUrl,
-          accountId,
+          accountId: account.accountId,
           replyToId: undefined,
           account,
         });
@@ -127,9 +117,15 @@ export function createQQBotSendVideoTool(): ChannelAgentTool {
       }
 
       try {
-        const cfg = getConfig();
-        const accountId = getDefaultAccountId();
-        const account = resolveQQBotAccount(cfg as any, accountId);
+        // 直接从 runtime 获取已解析的 account 对象
+        const account = getCurrentQQBotAccount();
+
+        if (!account) {
+          return {
+            content: [{ type: "text", text: "错误: QQBot 未启动或未配置" }],
+            isError: true,
+          };
+        }
 
         if (!account.appId || !account.clientSecret) {
           return {
@@ -142,7 +138,7 @@ export function createQQBotSendVideoTool(): ChannelAgentTool {
           to: target,
           text: text ?? "",
           mediaUrl: videoUrl,
-          accountId,
+          accountId: account.accountId,
           replyToId: undefined,
           account,
         });
@@ -199,9 +195,15 @@ export function createQQBotSendFileTool(): ChannelAgentTool {
       }
 
       try {
-        const cfg = getConfig();
-        const accountId = getDefaultAccountId();
-        const account = resolveQQBotAccount(cfg as any, accountId);
+        // 直接从 runtime 获取已解析的 account 对象
+        const account = getCurrentQQBotAccount();
+
+        if (!account) {
+          return {
+            content: [{ type: "text", text: "错误: QQBot 未启动或未配置" }],
+            isError: true,
+          };
+        }
 
         if (!account.appId || !account.clientSecret) {
           return {
@@ -214,7 +216,7 @@ export function createQQBotSendFileTool(): ChannelAgentTool {
           to: target,
           text: text ?? "",
           mediaUrl: fileUrl,
-          accountId,
+          accountId: account.accountId,
           replyToId: undefined,
           account,
         });
@@ -271,9 +273,15 @@ export function createQQBotSendVoiceTool(): ChannelAgentTool {
       }
 
       try {
-        const cfg = getConfig();
-        const accountId = getDefaultAccountId();
-        const account = resolveQQBotAccount(cfg as any, accountId);
+        // 直接从 runtime 获取已解析的 account 对象
+        const account = getCurrentQQBotAccount();
+
+        if (!account) {
+          return {
+            content: [{ type: "text", text: "错误: QQBot 未启动或未配置" }],
+            isError: true,
+          };
+        }
 
         if (!account.appId || !account.clientSecret) {
           return {
@@ -286,7 +294,7 @@ export function createQQBotSendVoiceTool(): ChannelAgentTool {
           to: target,
           text: text ?? "",
           mediaUrl: voiceUrl,
-          accountId,
+          accountId: account.accountId,
           replyToId: undefined,
           account,
         });

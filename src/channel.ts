@@ -11,7 +11,7 @@ import { DEFAULT_ACCOUNT_ID, listQQBotAccountIds, resolveQQBotAccount, applyQQBo
 import { sendText, sendMedia } from "./outbound.js";
 import { startGateway } from "./gateway.js";
 import { qqbotOnboardingAdapter } from "./onboarding.js";
-import { getQQBotRuntime } from "./runtime.js";
+import { getQQBotRuntime, setCurrentQQBotAccount } from "./runtime.js";
 import { getQQBotTools } from "./agent-tools.js";
 
 /**
@@ -265,6 +265,9 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
   gateway: {
     startAccount: async (ctx) => {
       const { account, abortSignal, log, cfg } = ctx;
+
+      // 存储已解析的 account 对象，供工具函数使用
+      setCurrentQQBotAccount(account);
 
       log?.info(`[qqbot:${account.accountId}] Starting gateway — appId=${account.appId}, enabled=${account.enabled}, name=${account.name ?? "unnamed"}`);
       console.log(`[qqbot:channel] startAccount: accountId=${account.accountId}, appId=${account.appId}, secretSource=${account.secretSource}`);

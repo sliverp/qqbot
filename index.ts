@@ -18,7 +18,7 @@ const plugin = {
 export default plugin;
 
 export { qqbotPlugin } from "./src/channel.js";
-export { setQQBotRuntime, getQQBotRuntime } from "./src/runtime.js";
+export { setQQBotRuntime, getQQBotRuntime, setCurrentQQBotAccount, getCurrentQQBotAccount } from "./src/runtime.js";
 export { qqbotOnboardingAdapter } from "./src/onboarding.js";
 export * from "./src/types.js";
 export * from "./src/api.js";
