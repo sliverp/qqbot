@@ -1044,35 +1044,6 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         const hasTTS = !!resolveTTSConfig(cfg as Record<string, unknown>);
         const hasSTT = !!resolveSTTConfig(cfg as Record<string, unknown>);
 
-        // 语音能力说明：<qqvoice> 标签本身只负责发送已有的音频文件，不依赖插件 TTS。
-        // TTS 只是生成音频文件的一种方式，框架侧的 TTS 工具（如 audio_speech）也能生成。
-        // 因此始终暴露 <qqvoice> 能力，但根据 TTS 状态给出不同的使用指引。
-        const ttsHint = hasTTS
-          ? `6. 🎤 插件 TTS 已启用: 如果你有 TTS 工具（如 audio_speech），可用它生成音频文件后用 <qqvoice> 发送`
-          : `6. ⚠️ 插件 TTS 未配置: 如果你有 TTS 工具（如 audio_speech），仍可用它生成音频文件后用 <qqvoice> 发送；若无 TTS 工具，则无法主动生成语音`;
-        const sttHint = hasSTT
-          ? `\n7. 插件侧 STT 已配置，用户发送的语音消息会尽量自动转录`
-          : `\n7. 插件侧 STT 未配置，插件不会自动转录语音消息`;
-        const asrFallbackHint = hasAsrReferFallback
-          ? `\n8. 本条消息包含平台返回的 asr_refer_text 兜底文本（低置信度）。理解用户意图时可参考，但如关键信息不明确应先追问确认。`
-          : "";
-        const voiceForwardHint = uniqueVoicePaths.length > 0 || uniqueVoiceUrls.length > 0
-          ? `\n9. 本条消息已附带语音文件路径/URL。若你具备 STT 能力（框架能力或 STT skill），优先直接转写音频；若无 STT 能力或转写失败，再使用 asr_refer_text（若存在）作为兜底。`
-          : "";
-        const voiceSection = `
-
-【发送语音 - 必须遵守】
-1. 发语音方法: 在回复文本中写 <qqvoice>本地音频文件路径</qqvoice>，系统自动处理
-2. 示例: "来听听吧！ <qqvoice>/tmp/tts/voice.mp3</qqvoice>"
-3. 支持格式: .silk, .slk, .slac, .amr, .wav, .mp3, .ogg, .pcm
-4. ⚠️ <qqvoice> 只用于语音文件，图片请用 <qqimg>；两者不要混用
-5. 发送语音时，不要重复输出语音中已朗读的文字内容；语音前后的文字应是补充信息而非语音的文字版重复
-${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
-
-        const voiceAsrSection = uniqueVoiceAsrReferTexts.length > 0
-          ? `\n- 语音ASR兜底文本:\n${uniqueVoiceAsrReferTexts.map((t, i) => `  ${i + 1}. ${t}`).join("\n")}`
-          : "";
-
         // 引用消息上下文
         let quotePart = "";
         if (replyToIsQuote) {
@@ -1088,7 +1059,6 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
 
         // 完全移除提示词注入，仅传递用户消息
         // AI 可以通过调用 qqbot_send_image/video/file/voice 工具来发送媒体
-        // 这样就不需要在消息中注入 <qqimg> 等标签了
         const agentBody = userMessage;
         
         log?.info(`[qqbot:${account.accountId}] agentBody length: ${agentBody.length}`);
