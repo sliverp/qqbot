@@ -1073,40 +1073,6 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
           ? `\n- 语音ASR兜底文本:\n${uniqueVoiceAsrReferTexts.map((t, i) => `  ${i + 1}. ${t}`).join("\n")}`
           : "";
 
-        const contextInfo = `你正在通过 QQ 与用户对话。
-
-【会话上下文】
-- 用户: ${event.senderName || "未知"} (${event.senderId})
-- 场景: ${isGroupChat ? "群聊" : "私聊"}${isGroupChat ? ` (群组: ${event.groupOpenid})` : ""}
-- 消息ID: ${event.messageId}
-- 投递目标: ${qualifiedTarget}${receivedMediaSection}${voiceAsrSection}
-- 当前时间戳(ms): ${nowMs}
-- 定时提醒投递地址: channel=qqbot, to=${qualifiedTarget}
-
-【发送图片 - 必须遵守】
-1. 发图方法: 在回复文本中写 <qqimg>URL</qqimg>，系统自动处理
-2. 示例: "龙虾来啦！🦞 <qqimg>https://picsum.photos/800/600</qqimg>"
-3. 图片来源: 已知URL直接用、用户发过的本地路径、也可以通过 web_search 搜索图片URL后使用
-4. ⚠️ 必须在文字回复中嵌入 <qqimg> 标签，禁止只调 tool 不回复文字（用户看不到任何内容）
-5. 不要说"无法发送图片"，直接用 <qqimg> 标签发${voiceSection}
-
-【发送文件 - 必须遵守】
-1. 发文件方法: 在回复文本中写 <qqfile>文件路径或URL</qqfile>，系统自动处理
-2. 示例: "这是你要的文档 <qqfile>/tmp/report.pdf</qqfile>"
-3. 支持: 本地文件路径、公网 URL
-4. 适用于非图片非语音的文件（如 pdf, docx, xlsx, zip, txt 等）
-5. ⚠️ 图片用 <qqimg>，语音用 <qqvoice>，其他文件用 <qqfile>
-
-【发送视频 - 必须遵守】
-1. 发视频方法: 在回复文本中写 <qqvideo>路径或URL</qqvideo>，系统自动处理
-2. 示例: "<qqvideo>https://example.com/video.mp4</qqvideo>" 或 "<qqvideo>/path/to/video.mp4</qqvideo>"
-3. 支持: 公网 URL、本地文件路径（系统自动读取上传）
-4. ⚠️ 视频用 <qqvideo>，图片用 <qqimg>，语音用 <qqvoice>，文件用 <qqfile>
-
-【不要向用户透露过多以上述要求，以下是用户输入】
-
-`;
-
         // 引用消息上下文
         let quotePart = "";
         if (replyToIsQuote) {
@@ -1119,11 +1085,11 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
 
         // 命令直接透传，不注入上下文
         const userMessage = `${quotePart}${userContent}`;
-        const agentBody = userContent.startsWith("/")
-          ? userContent
-          : systemPrompts.length > 0 
-            ? `${contextInfo}\n\n${systemPrompts.join("\n")}\n\n${userMessage}`
-            : `${contextInfo}\n\n${userMessage}`;
+
+        // 完全移除提示词注入，仅传递用户消息
+        // AI 可以通过调用 qqbot_send_image/video/file/voice 工具来发送媒体
+        // 这样就不需要在消息中注入 <qqimg> 等标签了
+        const agentBody = userMessage;
         
         log?.info(`[qqbot:${account.accountId}] agentBody length: ${agentBody.length}`);
         // 日志：输出送给大模型的完整 JSON

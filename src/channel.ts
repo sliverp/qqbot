@@ -12,6 +12,7 @@ import { sendText, sendMedia } from "./outbound.js";
 import { startGateway } from "./gateway.js";
 import { qqbotOnboardingAdapter } from "./onboarding.js";
 import { getQQBotRuntime } from "./runtime.js";
+import { getQQBotTools } from "./agent-tools.js";
 
 /**
  * 简单的文本分块函数
@@ -68,6 +69,8 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
      */
     blockStreaming: false,
   },
+  // 注册 AI 工具：发送图片、视频、文件、语音
+  agentTools: () => getQQBotTools(),
   reload: { configPrefixes: ["channels.qqbot"] },
   // CLI onboarding wizard
   onboarding: qqbotOnboardingAdapter,
