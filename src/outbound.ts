@@ -821,7 +821,7 @@ export async function sendMedia(ctx: MediaOutboundContext): Promise<OutboundResu
   const isHttpUrl = mediaUrl.startsWith("http://") || mediaUrl.startsWith("https://");
 
   if (isLocalPath && isAudioFile(mediaUrl)) {
-    return sendVoiceFile(ctx);
+    return sendVoiceFile({ ...ctx, mediaUrl });
   }
 
   // 判断是否为视频（公网 URL 或本地视频文件）
