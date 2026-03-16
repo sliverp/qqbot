@@ -99,13 +99,52 @@ declare module "openclaw/plugin-sdk" {
   // ============ 插件 API ============
 
   /**
+   * Agent Tool 执行结果
+   */
+  export interface AgentToolResult {
+    content: Array<{ type: "text"; text: string }>;
+    details?: unknown;
+  }
+
+  /**
+   * Agent Tool 定义
+   */
+  export interface AnyAgentTool {
+    name: string;
+    label?: string;
+    description: string;
+    parameters: unknown;
+    execute: (toolCallId: string, params: unknown) => Promise<AgentToolResult> | AgentToolResult;
+  }
+
+  /**
+   * Tool 注册选项
+   */
+  export interface ToolRegistrationOptions {
+    name?: string;
+    names?: string[];
+    optional?: boolean;
+  }
+
+  /**
    * OpenClaw 插件 API
    */
   export interface OpenClawPluginApi {
     /** 运行时实例 */
     runtime: PluginRuntime;
+    /** 当前配置 */
+    config: OpenClawConfig;
+    /** 日志 */
+    logger: {
+      info?: (msg: string) => void;
+      warn?: (msg: string) => void;
+      error?: (msg: string) => void;
+      debug?: (msg: string) => void;
+    };
     /** 注册频道 */
     registerChannel<TAccount = unknown>(options: { plugin: ChannelPlugin<TAccount> }): void;
+    /** 注册工具 */
+    registerTool(tool: AnyAgentTool, opts?: ToolRegistrationOptions): void;
     /** 其他 API 方法 */
     [key: string]: unknown;
   }

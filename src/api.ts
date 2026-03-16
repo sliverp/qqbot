@@ -446,6 +446,23 @@ export async function sendChannelMessage(
   });
 }
 
+/**
+ * 发送频道私信消息
+ * @param guildId - 私信会话的 guild_id（由 DIRECT_MESSAGE_CREATE 事件提供）
+ * @param msgId - 被动回复时必填
+ */
+export async function sendDmMessage(
+  accessToken: string,
+  guildId: string,
+  content: string,
+  msgId?: string
+): Promise<{ id: string; timestamp: string }> {
+  return apiRequest(accessToken, "POST", `/dms/${guildId}/messages`, {
+    content,
+    ...(msgId ? { msg_id: msgId } : {}),
+  });
+}
+
 export async function sendGroupMessage(
   accessToken: string,
   groupOpenid: string,
