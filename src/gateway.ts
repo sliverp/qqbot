@@ -16,7 +16,7 @@ import { convertSilkToWav, isVoiceAttachment, formatDuration, resolveTTSConfig, 
 import { normalizeMediaTags } from "./utils/media-tags.js";
 import { checkFileSize, readFileAsync, fileExistsAsync, isLargeFile, formatFileSize } from "./utils/file-utils.js";
 import { getQQBotDataDir, isLocalPath as isLocalFilePath, normalizePath, sanitizeFileName, runDiagnostics } from "./utils/platform.js";
-import { MSG, formatMediaErrorMessage } from "./user-messages.js";
+
 import { sendPhoto, sendVoice, sendVideoMsg, sendDocument, sendMedia as sendMediaAuto, type MediaTargetContext } from "./outbound.js";
 import { chunkText, TEXT_CHUNK_LIMIT } from "./channel.js";
 
@@ -411,7 +411,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
     }
   }
 
-  // 后台版本检查（供 /qqbot-version、/qqbot-upgrade 指令被动查询）
+  // 后台版本检查（供 /bot-version、/bot-upgrade 指令被动查询）
   triggerUpdateCheck(log);
 
   // 初始化 API 配置（markdown 支持）
@@ -1683,7 +1683,6 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                       const result = await sendPhoto(mediaTarget, item.content);
                       if (result.error) {
                         log?.error(`[qqbot:${account.accountId}] sendPhoto error: ${result.error}`);
-                        await sendErrorMessage(formatMediaErrorMessage("图片", new Error(result.error)));
                       }
                     } else if (item.type === "voice") {
                       const uploadFormats = account.config?.audioFormatPolicy?.uploadDirectFormats ?? account.config?.voiceDirectUploadFormats;
@@ -1699,23 +1698,19 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                         ]);
                         if (result.error) {
                           log?.error(`[qqbot:${account.accountId}] sendVoice error: ${result.error}`);
-                          await sendErrorMessage(formatMediaErrorMessage("语音", new Error(result.error)));
                         }
                       } catch (err) {
                         log?.error(`[qqbot:${account.accountId}] sendVoice unexpected error: ${err}`);
-                        await sendErrorMessage(formatMediaErrorMessage("语音", err));
                       }
                     } else if (item.type === "video") {
                       const result = await sendVideoMsg(mediaTarget, item.content);
                       if (result.error) {
                         log?.error(`[qqbot:${account.accountId}] sendVideoMsg error: ${result.error}`);
-                        await sendErrorMessage(formatMediaErrorMessage("视频", new Error(result.error)));
                       }
                     } else if (item.type === "file") {
                       const result = await sendDocument(mediaTarget, item.content);
                       if (result.error) {
                         log?.error(`[qqbot:${account.accountId}] sendDocument error: ${result.error}`);
-                        await sendErrorMessage(formatMediaErrorMessage("文件", new Error(result.error)));
                       }
                     } else if (item.type === "media") {
                       // qqmedia: 自动根据扩展名路由到 sendPhoto/sendVoice/sendVideoMsg/sendDocument
@@ -1729,7 +1724,6 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                       });
                       if (result.error) {
                         log?.error(`[qqbot:${account.accountId}] sendMedia(auto) error: ${result.error}`);
-                        await sendErrorMessage(formatMediaErrorMessage("媒体", new Error(result.error)));
                       }
                     }
                   }
@@ -1749,9 +1743,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                 
                 if (payloadResult.isPayload) {
                   if (payloadResult.error) {
-                    // 载荷解析失败，发送错误提示
                     log?.error(`[qqbot:${account.accountId}] Payload parse error: ${payloadResult.error}`);
-                    await sendErrorMessage(MSG.PAYLOAD_PARSE_ERROR);
                     return;
                   }
                   
@@ -1804,12 +1796,12 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                         if (parsedPayload.source === "file") {
                           try {
                             if (!(await fileExistsAsync(imageUrl))) {
-                              await sendErrorMessage(MSG.IMAGE_NOT_FOUND);
+                              log?.error(`[qqbot:${account.accountId}] Image not found: ${imageUrl}`);
                               return;
                             }
                             const imgSzCheck = checkFileSize(imageUrl);
                             if (!imgSzCheck.ok) {
-                              await sendErrorMessage(MSG.IMAGE_SEND_FAILED);
+                              log?.error(`[qqbot:${account.accountId}] Image size check failed: ${imgSzCheck.error}`);
                               return;
                             }
                             const fileBuffer = await readFileAsync(imageUrl);
@@ -1825,14 +1817,13 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                             };
                             const mimeType = mimeTypes[ext];
                             if (!mimeType) {
-                              await sendErrorMessage(MSG.IMAGE_FORMAT_UNSUPPORTED(ext));
+                              log?.error(`[qqbot:${account.accountId}] Unsupported image format: ${ext}`);
                               return;
                             }
                             imageUrl = `data:${mimeType};base64,${base64Data}`;
                             log?.info(`[qqbot:${account.accountId}] Converted local image to Base64 (size: ${formatFileSize(fileBuffer.length)})`);
                           } catch (readErr) {
                             log?.error(`[qqbot:${account.accountId}] Failed to read local image: ${readErr}`);
-                            await sendErrorMessage(MSG.IMAGE_SEND_FAILED);
                             return;
                           }
                         }
@@ -1865,19 +1856,17 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                           }
                         } catch (err) {
                           log?.error(`[qqbot:${account.accountId}] Failed to send image: ${err}`);
-                          await sendErrorMessage(formatMediaErrorMessage("图片", err));
                         }
                       } else if (parsedPayload.mediaType === "audio") {
                         // TTS 语音发送：文字 → PCM → SILK → QQ 语音
                         try {
                           const ttsText = parsedPayload.caption || parsedPayload.path;
                             if (!ttsText?.trim()) {
-                              await sendErrorMessage(MSG.VOICE_MISSING_TEXT);
+                              log?.error(`[qqbot:${account.accountId}] Voice missing text`);
                             } else {
                               const ttsCfg = resolveTTSConfig(cfg as Record<string, unknown>);
                               if (!ttsCfg) {
                                 log?.error(`[qqbot:${account.accountId}] TTS not configured (channels.qqbot.tts in openclaw.json)`);
-                                await sendErrorMessage(MSG.VOICE_NOT_AVAILABLE);
                             } else {
                               log?.info(`[qqbot:${account.accountId}] TTS: "${ttsText.slice(0, 50)}..." via ${ttsCfg.model}`);
                               const ttsDir = getQQBotDataDir("tts");
@@ -1890,7 +1879,8 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                                 } else if (event.type === "group" && event.groupOpenid) {
                                   await sendGroupVoiceMessage(token, event.groupOpenid, silkBase64, event.messageId);
                                 } else if (event.channelId) {
-                                  await sendChannelMessage(token, event.channelId, `${MSG.VOICE_CHANNEL_UNSUPPORTED}\n${ttsText}`, event.messageId);
+                                  log?.error(`[qqbot:${account.accountId}] Voice not supported in channel, sending text fallback`);
+                                  await sendChannelMessage(token, event.channelId, ttsText, event.messageId);
                                 }
                               });
                               log?.info(`[qqbot:${account.accountId}] Voice message sent`);
@@ -1898,14 +1888,13 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                           }
                         } catch (err) {
                           log?.error(`[qqbot:${account.accountId}] TTS/voice send failed: ${err}`);
-                          await sendErrorMessage(formatMediaErrorMessage("语音", err));
                         }
                       } else if (parsedPayload.mediaType === "video") {
                         // 视频发送：支持公网 URL 和本地文件
                         try {
                           const videoPath = normalizePath(parsedPayload.path ?? "");
                           if (!videoPath?.trim()) {
-                            await sendErrorMessage(MSG.VIDEO_MISSING_PATH);
+                            log?.error(`[qqbot:${account.accountId}] Video missing path`);
                           } else {
                             const isHttpUrl = videoPath.startsWith("http://") || videoPath.startsWith("https://");
                             log?.info(`[qqbot:${account.accountId}] Video send: "${videoPath.slice(0, 60)}..."`);
@@ -1918,7 +1907,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                                 } else if (event.type === "group" && event.groupOpenid) {
                                   await sendGroupVideoMessage(token, event.groupOpenid, videoPath, undefined, event.messageId);
                                 } else if (event.channelId) {
-                                  await sendChannelMessage(token, event.channelId, MSG.VIDEO_CHANNEL_UNSUPPORTED, event.messageId);
+                                  log?.error(`[qqbot:${account.accountId}] Video not supported in channel`);
                                 }
                               } else {
                                 // 本地文件：读取为 Base64
@@ -1938,7 +1927,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                                 } else if (event.type === "group" && event.groupOpenid) {
                                   await sendGroupVideoMessage(token, event.groupOpenid, undefined, videoBase64, event.messageId);
                                 } else if (event.channelId) {
-                                  await sendChannelMessage(token, event.channelId, MSG.VIDEO_CHANNEL_UNSUPPORTED, event.messageId);
+                                  log?.error(`[qqbot:${account.accountId}] Video not supported in channel`);
                                 }
                               }
                             });
@@ -1959,14 +1948,13 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                           }
                         } catch (err) {
                           log?.error(`[qqbot:${account.accountId}] Video send failed: ${err}`);
-                          await sendErrorMessage(formatMediaErrorMessage("视频", err));
                         }
                       } else if (parsedPayload.mediaType === "file") {
                         // 文件发送
                         try {
                           const filePath = normalizePath(parsedPayload.path ?? "");
                           if (!filePath?.trim()) {
-                            await sendErrorMessage(MSG.FILE_MISSING_PATH);
+                            log?.error(`[qqbot:${account.accountId}] File missing path`);
                           } else {
                             const isHttpUrl = filePath.startsWith("http://") || filePath.startsWith("https://");
                             const fileName = sanitizeFileName(path.basename(filePath));
@@ -1979,7 +1967,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                                 } else if (event.type === "group" && event.groupOpenid) {
                                   await sendGroupFileMessage(token, event.groupOpenid, undefined, filePath, event.messageId, fileName);
                                 } else if (event.channelId) {
-                                  await sendChannelMessage(token, event.channelId, MSG.FILE_CHANNEL_UNSUPPORTED, event.messageId);
+                                  log?.error(`[qqbot:${account.accountId}] File not supported in channel`);
                                 }
                               } else {
                                 if (!(await fileExistsAsync(filePath))) {
@@ -1996,7 +1984,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                                 } else if (event.type === "group" && event.groupOpenid) {
                                   await sendGroupFileMessage(token, event.groupOpenid, fileBase64, undefined, event.messageId, fileName);
                                 } else if (event.channelId) {
-                                  await sendChannelMessage(token, event.channelId, MSG.FILE_CHANNEL_UNSUPPORTED, event.messageId);
+                                  log?.error(`[qqbot:${account.accountId}] File not supported in channel`);
                                 }
                               }
                             });
@@ -2004,11 +1992,9 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                           }
                         } catch (err) {
                           log?.error(`[qqbot:${account.accountId}] File send failed: ${err}`);
-                          await sendErrorMessage(formatMediaErrorMessage("文件", err));
                         }
                       } else {
                         log?.error(`[qqbot:${account.accountId}] Unknown media type: ${(parsedPayload as MediaPayload).mediaType}`);
-                        await sendErrorMessage(MSG.UNSUPPORTED_MEDIA_TYPE);
                       }
                       
                       // 记录活动并返回
@@ -2021,7 +2007,6 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                     } else {
                       // 未知的载荷类型
                       log?.error(`[qqbot:${account.accountId}] Unknown payload type: ${(parsedPayload as any).type}`);
-                      await sendErrorMessage(MSG.UNSUPPORTED_PAYLOAD_TYPE);
                       return;
                     }
                   }
@@ -2370,9 +2355,9 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                 // 发送错误提示给用户，显示完整错误信息
                 const errMsg = String(err);
                 if (errMsg.includes("401") || errMsg.includes("key") || errMsg.includes("auth")) {
-                  await sendErrorMessage(MSG.AI_AUTH_ERROR);
+                  log?.error(`[qqbot:${account.accountId}] AI auth error: ${errMsg}`);
                 } else {
-                  await sendErrorMessage(MSG.AI_PROCESS_ERROR);
+                  log?.error(`[qqbot:${account.accountId}] AI process error: ${errMsg}`);
                 }
               },
             },
@@ -2390,7 +2375,6 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
             }
             if (!hasResponse) {
               log?.error(`[qqbot:${account.accountId}] No response within timeout`);
-              await sendErrorMessage(MSG.TIMEOUT_HINT);
             }
           } finally {
             // 清理 tool-only 兜底定时器
@@ -2407,7 +2391,6 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
           }
         } catch (err) {
           log?.error(`[qqbot:${account.accountId}] Message processing failed: ${err}`);
-          await sendErrorMessage(MSG.GENERIC_ERROR);
         }
       };
 

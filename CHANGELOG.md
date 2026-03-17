@@ -4,12 +4,30 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.6.2] - 2026-03-18
+
+### Changed
+
+- **Markdown-aware text chunking**: Replaced custom `chunkText` with SDK built-in `chunkMarkdownText`, supporting auto code-fence close/reopen, bracket awareness, etc.
+- **Enable block streaming**: Set `blockStreaming: true` — the framework now collects streamed responses and delivers via the `deliver` callback.
+- **Reduce text chunk limit**: `textChunkLimit` lowered from 20000 to 5000 for better message readability.
+- **Silent media errors**: Media send failures (image/voice/video/file) are now logged only; error messages are no longer surfaced to the user, aligning with the Feishu plugin approach.
+
+### Improved
+
+- **Ref-index content untruncated**: Removed `MAX_CONTENT_LENGTH` cap when storing quoted-message content, preserving full message body in ref-index store.
+
+### Removed
+
+- `MSG` constants and `formatMediaErrorMessage` from `user-messages.ts` — plugin layer no longer generates user-facing error text.
+
 ## [1.6.1] - 2026-03-18
 
 ### Improved
 
 - **Upgrade script auto-restart**: `upgrade-via-npm.sh` now automatically restarts the gateway after upgrade to apply the new version immediately.
-- **Remove proactive update push**: Removed the auto-push notification to admin when a new version is detected; version info is now only available passively via `/qqbot-version` and `/qqbot-upgrade` commands, reducing noise.
+- **Increase text chunk limit**: Raised `textChunkLimit` from 2000 to 20000, allowing longer messages to be sent without splitting.
+- **Remove proactive update push**: Removed the auto-push notification to admin when a new version is detected; version info is now only available passively via `/bot-version` and `/bot-upgrade` commands, reducing noise.
 
 ### Removed
 
@@ -19,10 +37,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
-- **Slash command system**: `/qqbot-ping`, `/qqbot-version`, `/qqbot-help`, `/qqbot-upgrade`, `/qqbot-logs` — five plugin-level slash commands.
-- **Update checker**: Background npm version check with update status in `/qqbot-version` and upgrade guide in `/qqbot-upgrade`.
+- **Slash command system**: `/bot-ping`, `/bot-version`, `/bot-help`, `/bot-upgrade`, `/bot-logs` — five plugin-level slash commands.
+- **Update checker**: Background npm version check with update status in `/bot-version` and upgrade guide in `/bot-upgrade`.
 - **Startup greeting**: Distinguish first install vs. restart with different greeting messages.
-- **Log download**: `/qqbot-logs` packages the last 2000 lines of logs and sends as a file.
+- **Log download**: `/bot-logs` packages the last 2000 lines of logs and sends as a file.
 
 ### Changed
 

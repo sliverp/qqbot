@@ -60,7 +60,7 @@ export interface QQBotAccountConfig {
    */
   urlDirectUpload?: boolean;
   /**
-   * /qqbot-upgrade 指令返回的升级指引网址
+   * /bot-upgrade 指令返回的升级指引网址
    * 默认: https://doc.weixin.qq.com/doc/w3_AKEAGQaeACgCNHrh1CbHzTAKtT2gB?scode=AJEAIQdfAAozxFEnLZAKEAGQaeACg
    */
   upgradeUrl?: string;

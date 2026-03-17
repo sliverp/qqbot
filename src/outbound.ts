@@ -26,7 +26,6 @@ import { normalizeMediaTags } from "./utils/media-tags.js";
 import { checkFileSize, readFileAsync, fileExistsAsync, isLargeFile, formatFileSize } from "./utils/file-utils.js";
 import { isLocalPath as isLocalFilePath, normalizePath, sanitizeFileName, getQQBotDataDir } from "./utils/platform.js";
 import { downloadFile } from "./image-server.js";
-import { MSG } from "./user-messages.js";
 
 // ============ 消息回复限流器 ============
 // 同一 message_id 1小时内最多回复 4 次，超过 1 小时无法被动回复（需改为主动消息）
@@ -313,7 +312,7 @@ export async function sendPhoto(
 
   if (isLocal) {
     if (!(await fileExistsAsync(mediaPath))) {
-      return { channel: "qqbot", error: MSG.IMAGE_NOT_FOUND };
+      return { channel: "qqbot", error: "Image not found" };
     }
     const sizeCheck = checkFileSize(mediaPath);
     if (!sizeCheck.ok) {
@@ -327,7 +326,7 @@ export async function sendPhoto(
     };
     const mimeType = mimeTypes[ext];
     if (!mimeType) {
-      return { channel: "qqbot", error: MSG.IMAGE_FORMAT_UNSUPPORTED(ext) };
+      return { channel: "qqbot", error: `Unsupported image format: ${ext}` };
     }
     imageUrl = `data:${mimeType};base64,${fileBuffer.toString("base64")}`;
     console.log(`${prefix} sendPhoto: local → Base64 (${formatFileSize(fileBuffer.length)})`);
@@ -430,8 +429,8 @@ export async function sendVoice(
           const r = await sendGroupVoiceMessage(token, ctx.targetId, undefined, mediaPath, ctx.replyToId);
           return { channel: "qqbot", messageId: r.id, timestamp: r.timestamp };
         } else {
-          const r = await sendChannelMessage(token, ctx.targetId, MSG.VOICE_CHANNEL_UNSUPPORTED, ctx.replyToId);
-          return { channel: "qqbot", messageId: r.id, timestamp: r.timestamp };
+          console.log(`${prefix} sendVoice: voice not supported in channel`);
+          return { channel: "qqbot", error: "Voice not supported in channel" };
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -464,7 +463,7 @@ async function sendVoiceFromLocal(
   // 等待文件就绪（TTS 异步生成，文件可能还没写完）
   const fileSize = await waitForFile(mediaPath);
   if (fileSize === 0) {
-    return { channel: "qqbot", error: MSG.VOICE_GENERATE_FAILED };
+    return { channel: "qqbot", error: "Voice generate failed" };
   }
 
   // 精细检测：是否需要转码
@@ -498,8 +497,8 @@ async function sendVoiceFromLocal(
       const r = await sendGroupVoiceMessage(token, ctx.targetId, uploadBase64, undefined, ctx.replyToId);
       return { channel: "qqbot", messageId: r.id, timestamp: r.timestamp };
     } else {
-      const r = await sendChannelMessage(token, ctx.targetId, MSG.VOICE_CHANNEL_UNSUPPORTED, ctx.replyToId);
-      return { channel: "qqbot", messageId: r.id, timestamp: r.timestamp };
+      console.log(`${prefix} sendVoice: voice not supported in channel`);
+      return { channel: "qqbot", error: "Voice not supported in channel" };
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -543,8 +542,8 @@ export async function sendVideoMsg(
         const r = await sendGroupVideoMessage(token, ctx.targetId, mediaPath, undefined, ctx.replyToId);
         return { channel: "qqbot", messageId: r.id, timestamp: r.timestamp };
       } else {
-        const r = await sendChannelMessage(token, ctx.targetId, MSG.VIDEO_CHANNEL_UNSUPPORTED, ctx.replyToId);
-        return { channel: "qqbot", messageId: r.id, timestamp: r.timestamp };
+        console.log(`${prefix} sendVideoMsg: video not supported in channel`);
+        return { channel: "qqbot", error: "Video not supported in channel" };
       }
     }
 
@@ -570,7 +569,7 @@ export async function sendVideoMsg(
 /** 从本地文件发送视频（sendVideoMsg 的内部辅助） */
 async function sendVideoFromLocal(ctx: MediaTargetContext, mediaPath: string, prefix: string): Promise<OutboundResult> {
   if (!(await fileExistsAsync(mediaPath))) {
-    return { channel: "qqbot", error: MSG.VIDEO_NOT_FOUND };
+    return { channel: "qqbot", error: "Video not found" };
   }
   const sizeCheck = checkFileSize(mediaPath);
   if (!sizeCheck.ok) {
@@ -590,8 +589,8 @@ async function sendVideoFromLocal(ctx: MediaTargetContext, mediaPath: string, pr
       const r = await sendGroupVideoMessage(token, ctx.targetId, undefined, videoBase64, ctx.replyToId);
       return { channel: "qqbot", messageId: r.id, timestamp: r.timestamp };
     } else {
-      const r = await sendChannelMessage(token, ctx.targetId, MSG.VIDEO_CHANNEL_UNSUPPORTED, ctx.replyToId);
-      return { channel: "qqbot", messageId: r.id, timestamp: r.timestamp };
+      console.log(`${prefix} sendVideoMsg: video not supported in channel`);
+      return { channel: "qqbot", error: "Video not supported in channel" };
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -636,8 +635,8 @@ export async function sendDocument(
         const r = await sendGroupFileMessage(token, ctx.targetId, undefined, mediaPath, ctx.replyToId, fileName);
         return { channel: "qqbot", messageId: r.id, timestamp: r.timestamp };
       } else {
-        const r = await sendChannelMessage(token, ctx.targetId, MSG.FILE_CHANNEL_UNSUPPORTED, ctx.replyToId);
-        return { channel: "qqbot", messageId: r.id, timestamp: r.timestamp };
+        console.log(`${prefix} sendDocument: file not supported in channel`);
+        return { channel: "qqbot", error: "File not supported in channel" };
       }
     }
 
@@ -665,7 +664,7 @@ async function sendDocumentFromLocal(ctx: MediaTargetContext, mediaPath: string,
   const fileName = sanitizeFileName(path.basename(mediaPath));
 
   if (!(await fileExistsAsync(mediaPath))) {
-    return { channel: "qqbot", error: MSG.FILE_NOT_FOUND };
+    return { channel: "qqbot", error: "File not found" };
   }
   const sizeCheck = checkFileSize(mediaPath);
   if (!sizeCheck.ok) {
@@ -687,8 +686,8 @@ async function sendDocumentFromLocal(ctx: MediaTargetContext, mediaPath: string,
       const r = await sendGroupFileMessage(token, ctx.targetId, fileBase64, undefined, ctx.replyToId, fileName);
       return { channel: "qqbot", messageId: r.id, timestamp: r.timestamp };
     } else {
-      const r = await sendChannelMessage(token, ctx.targetId, MSG.FILE_CHANNEL_UNSUPPORTED, ctx.replyToId);
-      return { channel: "qqbot", messageId: r.id, timestamp: r.timestamp };
+      console.log(`${prefix} sendDocument: file not supported in channel`);
+      return { channel: "qqbot", error: "File not supported in channel" };
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

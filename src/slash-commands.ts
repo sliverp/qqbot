@@ -127,10 +127,10 @@ function registerCommand(cmd: SlashCommand): void {
 // ============ 内置指令 ============
 
 /**
- * /qqbot-ping — 测试当前 openclaw 与 QQ 连接的网络延迟
+ * /bot-ping — 测试当前 openclaw 与 QQ 连接的网络延迟
  */
 registerCommand({
-  name: "qqbot-ping",
+  name: "bot-ping",
   description: "测试当前 openclaw 与 QQ 连接的网络延迟",
   handler: (ctx) => {
     const now = Date.now();
@@ -153,10 +153,10 @@ registerCommand({
 });
 
 /**
- * /qqbot-version — 查看插件版本号
+ * /bot-version — 查看插件版本号
  */
 registerCommand({
-  name: "qqbot-version",
+  name: "bot-version",
   description: "查看插件版本号",
   handler: () => {
     const frameworkVersion = getFrameworkVersion();
@@ -170,7 +170,7 @@ registerCommand({
     } else if (info.error) {
       lines.push(`⚠️ 版本检查失败`);
     } else if (info.hasUpdate && info.latest) {
-      lines.push(`🆕最新可用版本：v${info.latest}，点击 <qqbot-cmd-input text="/qqbot-upgrade" show="/qqbot-upgrade"/> 查看升级指引`);
+      lines.push(`🆕最新可用版本：v${info.latest}，点击 <qqbot-cmd-input text="/bot-upgrade" show="/bot-upgrade"/> 查看升级指引`);
     } 
     lines.push(`🌟官方 GitHub 仓库：[点击前往](https://github.com/tencent-connect/openclaw-qqbot/)`);
     return lines.join("\n");
@@ -178,10 +178,10 @@ registerCommand({
 });
 
 /**
- * /qqbot-help — 查看所有指令以及用途
+ * /bot-help — 查看所有指令以及用途
  */
 registerCommand({
-  name: "qqbot-help",
+  name: "bot-help",
   description: "查看所有指令以及用途",
   handler: () => {
     const lines = [`### QQBot插件内置调试指令`, ``];
@@ -196,10 +196,10 @@ registerCommand({
 const DEFAULT_UPGRADE_URL = "https://doc.weixin.qq.com/doc/w3_AKEAGQaeACgCNHrh1CbHzTAKtT2gB?scode=AJEAIQdfAAozxFEnLZAKEAGQaeACg";
 
 /**
- * /qqbot-upgrade — 查看版本更新状态 + 升级指引
+ * /bot-upgrade — 查看版本更新状态 + 升级指引
  */
 registerCommand({
-  name: "qqbot-upgrade",
+  name: "bot-upgrade",
   description: "查看版本更新与升级指引",
   handler: (ctx) => {
     const url = ctx.accountConfig?.upgradeUrl || DEFAULT_UPGRADE_URL;
@@ -225,10 +225,10 @@ registerCommand({
 });
 
 /**
- * /qqbot-logs — 导出本地日志文件
+ * /bot-logs — 导出本地日志文件
  */
 registerCommand({
-  name: "qqbot-logs",
+  name: "bot-logs",
   description: "导出本地日志文件",
   handler: () => {
     const homeDir = process.env.HOME || "~";
@@ -264,7 +264,7 @@ registerCommand({
       fs.mkdirSync(tmpDir, { recursive: true });
     }
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    const tmpFile = path.join(tmpDir, `qqbot-logs-${timestamp}.txt`);
+    const tmpFile = path.join(tmpDir, `bot-logs-${timestamp}.txt`);
     fs.writeFileSync(tmpFile, lines.join("\n"), "utf8");
 
     const totalLines = lines.filter(l => !l.startsWith("=")).length;

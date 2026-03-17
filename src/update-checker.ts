@@ -2,7 +2,7 @@
  * 后台版本检查器
  *
  * - triggerUpdateCheck(): gateway 启动时调用，后台检查 npm registry 是否有新版本
- * - getUpdateInfo(): 返回上次检查结果（供 /qqbot-version、/qqbot-help 指令使用）
+ * - getUpdateInfo(): 返回上次检查结果（供 /bot-version、/bot-help 指令使用）
  * - formatUpdateNotice(): 格式化更新提示文本
  */
 

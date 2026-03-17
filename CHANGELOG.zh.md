@@ -4,12 +4,30 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/)。
 
+## [1.6.2] - 2026-03-18
+
+### 变更
+
+- **Markdown 感知文本分块**：使用 SDK 内置 `chunkMarkdownText` 替代自定义分块函数，支持代码块自动关闭/重开、括号感知等。
+- **启用块流式（blockStreaming）**：设置 `blockStreaming: true`，框架收集流式响应后通过 `deliver` 回调统一发送。
+- **降低文本分块上限**：`textChunkLimit` 从 20000 调整为 5000，提升消息可读性。
+- **静默媒体发送错误**：图片/语音/视频/文件发送失败时仅写日志，不再向用户展示错误提示，对齐飞书插件设计。
+
+### 改进
+
+- **引用内容不再截断**：移除存储引用消息时的 `MAX_CONTENT_LENGTH` 截断，保留完整消息原文。
+
+### 移除
+
+- 移除 `user-messages.ts` 中的 `MSG` 常量和 `formatMediaErrorMessage` 函数——插件层不再生成面向用户的错误提示。
+
 ## [1.6.1] - 2026-03-18
 
 ### 改进
 
 - **升级脚本自动重启**：`upgrade-via-npm.sh` 升级完成后自动重启网关，使新版本立即生效。
-- **移除主动推送更新通知**：不再在检测到新版本时主动推送通知给管理员，版本信息仅通过 `/qqbot-version` 和 `/qqbot-upgrade` 指令被动查询，减少消息打扰。
+- **提高文本分块上限**：`textChunkLimit` 从 2000 提升至 20000，允许更长的消息不被拆分发送。
+- **移除主动推送更新通知**：不再在检测到新版本时主动推送通知给管理员，版本信息仅通过 `/bot-version` 和 `/bot-upgrade` 指令被动查询，减少消息打扰。
 
 ### 移除
 
@@ -19,10 +37,10 @@
 
 ### 新增
 
-- **斜杠指令体系**：新增 `/qqbot-ping`、`/qqbot-version`、`/qqbot-help`、`/qqbot-upgrade`、`/qqbot-logs` 五个插件级指令。
-- **版本检查**：后台定时检查 npm 最新版本，`/qqbot-version` 展示更新状态，`/qqbot-upgrade` 提供升级指引。
+- **斜杠指令体系**：新增 `/bot-ping`、`/bot-version`、`/bot-help`、`/bot-upgrade`、`/bot-logs` 五个插件级指令。
+- **版本检查**：后台定时检查 npm 最新版本，`/bot-version` 展示更新状态，`/bot-upgrade` 提供升级指引。
 - **启动问候语**：区分首次安装与普通重启，发送不同问候语。
-- **日志下载**：`/qqbot-logs` 打包最近 2000 行日志发送文件给用户。
+- **日志下载**：`/bot-logs` 打包最近 2000 行日志发送文件给用户。
 
 ### 变更
 

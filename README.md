@@ -10,7 +10,7 @@
 
 **Connect your AI assistant to QQ — private chat, group chat, and rich media, all in one plugin.**
 
-### 🚀 Current Version: `v1.6.1`
+### 🚀 Current Version: `v1.6.2`
 
 [![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![QQ Bot](https://img.shields.io/badge/QQ_Bot-API_v2-red)](https://bot.q.qq.com/wiki/)
@@ -149,9 +149,9 @@ AI can send videos directly. Supports local files and URLs.
 
 The plugin provides built-in slash commands that are intercepted before reaching the AI queue, giving instant responses for diagnostics and management.
 
-#### `/qqbot-ping` — Latency Test
+#### `/bot-ping` — Latency Test
 
-> **You**: `/qqbot-ping`
+> **You**: `/bot-ping`
 >
 > **QQBot**: ✅ pong！⏱ Latency: 602ms (network: 602ms, plugin: 0ms)
 
@@ -159,27 +159,27 @@ Measures end-to-end latency from QQ server push to plugin response, broken down 
 
 <img width="360" src="docs/images/slash-ping.jpg" alt="Ping Demo" />
 
-#### `/qqbot-version` — Version Info
+#### `/bot-version` — Version Info
 
-> **You**: `/qqbot-version`
+> **You**: `/bot-version`
 >
-> **QQBot**: 🦞 Framework: OpenClaw 2026.3.13 (61d171a) / 🤖 Plugin: v1.6.1 / 🌟 GitHub repo
+> **QQBot**: 🦞 Framework: OpenClaw 2026.3.13 (61d171a) / 🤖 Plugin: v1.6.2 / 🌟 GitHub repo
 
 Shows framework version, plugin version, and a direct link to the official repository.
 
 <img width="360" src="docs/images/slash-version.jpg" alt="Version Demo" />
 
-#### `/qqbot-help` — Command List
+#### `/bot-help` — Command List
 
-> **You**: `/qqbot-help`
+> **You**: `/bot-help`
 >
 > **QQBot**: Lists all available slash commands with clickable shortcuts.
 
 <img width="360" src="docs/images/slash-help.jpg" alt="Help Demo" />
 
-#### `/qqbot-upgrade` — Upgrade Guide
+#### `/bot-upgrade` — Upgrade Guide
 
-> **You**: `/qqbot-upgrade`
+> **You**: `/bot-upgrade`
 >
 > **QQBot**: 📌 Current version / ✅ Up to date / ⬆️ Upgrade guide / 🌟 GitHub repo
 
@@ -187,9 +187,9 @@ Shows current version, update status, upgrade guide link, and official repositor
 
 <img width="360" src="docs/images/slash-upgrade.jpg" alt="Upgrade Demo" /> 
 
-#### `/qqbot-logs` — Log Export
+#### `/bot-logs` — Log Export
 
-> **You**: `/qqbot-logs`
+> **You**: `/bot-logs`
 >
 > **QQBot**: 📋 Logs packaged (~2000 lines), sending file... *(sends a .txt file)*
 

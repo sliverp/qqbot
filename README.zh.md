@@ -9,7 +9,7 @@
 
 **让你的 AI 助手接入 QQ — 私聊、群聊、富媒体，一个插件全搞定。**
 
-### 🚀 当前版本： `v1.6.1`
+### 🚀 当前版本： `v1.6.2`
 
 [![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![QQ Bot](https://img.shields.io/badge/QQ_Bot-API_v2-red)](https://bot.q.qq.com/wiki/)
@@ -144,9 +144,9 @@ AI 可直接发送视频，支持本地文件和公网 URL。
 
 插件内置一组斜杠指令，在消息进入 AI 队列前拦截处理，即时响应，用于诊断和管理。
 
-#### `/qqbot-ping` — 延迟测试
+#### `/bot-ping` — 延迟测试
 
-> **你**：`/qqbot-ping`
+> **你**：`/bot-ping`
 >
 > **QQBot**：✅ pong！⏱ 延迟: 602ms（网络传输: 602ms，插件处理: 0ms）
 
@@ -154,27 +154,27 @@ AI 可直接发送视频，支持本地文件和公网 URL。
 
 <img width="360" src="docs/images/slash-ping.jpg" alt="Ping 演示" />
 
-#### `/qqbot-version` — 版本信息
+#### `/bot-version` — 版本信息
 
-> **你**：`/qqbot-version`
+> **你**：`/bot-version`
 >
-> **QQBot**：🦞框架版本：OpenClaw 2026.3.13 (61d171a) / 🤖QQBot 插件版本：v1.6.1 / 🌟官方 GitHub 仓库
+> **QQBot**：🦞框架版本：OpenClaw 2026.3.13 (61d171a) / 🤖QQBot 插件版本：v1.6.2 / 🌟官方 GitHub 仓库
 
 一目了然查看框架版本、插件版本，并可直接跳转官方仓库。
 
 <img width="360" src="docs/images/slash-version.jpg" alt="Version 演示" />
 
-#### `/qqbot-help` — 指令列表
+#### `/bot-help` — 指令列表
 
-> **你**：`/qqbot-help`
+> **你**：`/bot-help`
 >
 > **QQBot**：列出所有可用的斜杠指令及说明，指令可点击快速输入。
 
 <img width="360" src="docs/images/slash-help.jpg" alt="Help 演示" />
 
-#### `/qqbot-upgrade` — 升级指引
+#### `/bot-upgrade` — 升级指引
 
-> **你**：`/qqbot-upgrade`
+> **你**：`/bot-upgrade`
 >
 > **QQBot**：📌当前版本 / ✅当前已是最新版本 / ⬆️升级指引 / 🌟官方 GitHub 仓库
 
@@ -182,9 +182,9 @@ AI 可直接发送视频，支持本地文件和公网 URL。
 
 <img width="360" src="docs/images/slash-upgrade.jpg" alt="Upgrade 演示" /> 
 
-#### `/qqbot-logs` — 日志导出
+#### `/bot-logs` — 日志导出
 
-> **你**：`/qqbot-logs`
+> **你**：`/bot-logs`
 >
 > **QQBot**：📋 日志已打包（约 2000 行），正在发送文件… *（发送 .txt 文件）*
 
