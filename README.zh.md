@@ -9,7 +9,7 @@
 
 **让你的 AI 助手接入 QQ — 私聊、群聊、富媒体，一个插件全搞定。**
 
-### 🚀 当前版本： `v1.6.0`
+### 🚀 当前版本： `v1.6.1`
 
 [![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![QQ Bot](https://img.shields.io/badge/QQ_Bot-API_v2-red)](https://bot.q.qq.com/wiki/)
@@ -158,7 +158,7 @@ AI 可直接发送视频，支持本地文件和公网 URL。
 
 > **你**：`/qqbot-version`
 >
-> **QQBot**：🦞框架版本：OpenClaw 2026.3.13 (61d171a) / 🤖QQBot 插件版本：v1.6.0 / 🌟官方 GitHub 仓库
+> **QQBot**：🦞框架版本：OpenClaw 2026.3.13 (61d171a) / 🤖QQBot 插件版本：v1.6.1 / 🌟官方 GitHub 仓库
 
 一目了然查看框架版本、插件版本，并可直接跳转官方仓库。
 

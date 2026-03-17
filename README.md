@@ -10,7 +10,7 @@
 
 **Connect your AI assistant to QQ — private chat, group chat, and rich media, all in one plugin.**
 
-### 🚀 Current Version: `v1.6.0`
+### 🚀 Current Version: `v1.6.1`
 
 [![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![QQ Bot](https://img.shields.io/badge/QQ_Bot-API_v2-red)](https://bot.q.qq.com/wiki/)
@@ -163,7 +163,7 @@ Measures end-to-end latency from QQ server push to plugin response, broken down 
 
 > **You**: `/qqbot-version`
 >
-> **QQBot**: 🦞 Framework: OpenClaw 2026.3.13 (61d171a) / 🤖 Plugin: v1.6.0 / 🌟 GitHub repo
+> **QQBot**: 🦞 Framework: OpenClaw 2026.3.13 (61d171a) / 🤖 Plugin: v1.6.1 / 🌟 GitHub repo
 
 Shows framework version, plugin version, and a direct link to the official repository.
 
