@@ -233,12 +233,21 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
     chunker: chunkText,
     chunkerMode: "markdown",
     textChunkLimit: 2000,
-    sendText: async ({ to, text, accountId, replyToId, cfg }) => {
-      console.log(`[qqbot:channel] sendText called — accountId=${accountId}, to=${to}, replyToId=${replyToId}, text.length=${text?.length ?? 0}`);
+    sendText: async (ctx) => {
+      const { to, text, accountId, replyToId, cfg } = ctx;
+      const target = (ctx as typeof ctx & { target?: string }).target;
+      const messageTarget = target ?? to;
+      console.log(`[qqbot:channel] sendText called — accountId=${accountId}, to=${messageTarget}, replyToId=${replyToId}, text.length=${text?.length ?? 0}`);
       console.log(`[qqbot:channel] sendText text preview: ${text?.slice(0, 100)}${(text?.length ?? 0) > 100 ? "..." : ""}`);
+      if (!messageTarget) {
+        return {
+          channel: "qqbot",
+          error: new Error("QQBot target is required"),
+        };
+      }
       const account = resolveQQBotAccount(cfg, accountId);
       console.log(`[qqbot:channel] sendText resolved account: id=${account.accountId}, appId=${account.appId}, enabled=${account.enabled}`);
-      const result = await sendText({ to, text, accountId, replyToId, account });
+      const result = await sendText({ to: messageTarget, text, accountId, replyToId, account });
       console.log(`[qqbot:channel] sendText result: messageId=${result.messageId}, error=${result.error ?? "none"}`);
       return {
         channel: "qqbot",
@@ -246,11 +255,20 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
         error: result.error ? new Error(result.error) : undefined,
       };
     },
-    sendMedia: async ({ to, text, mediaUrl, accountId, replyToId, cfg }) => {
-      console.log(`[qqbot:channel] sendMedia called — accountId=${accountId}, to=${to}, replyToId=${replyToId}, mediaUrl=${mediaUrl?.slice(0, 80)}, text.length=${text?.length ?? 0}`);
+    sendMedia: async (ctx) => {
+      const { to, text, mediaUrl, accountId, replyToId, cfg } = ctx;
+      const target = (ctx as typeof ctx & { target?: string }).target;
+      const messageTarget = target ?? to;
+      console.log(`[qqbot:channel] sendMedia called — accountId=${accountId}, to=${messageTarget}, replyToId=${replyToId}, mediaUrl=${mediaUrl?.slice(0, 80)}, text.length=${text?.length ?? 0}`);
+      if (!messageTarget) {
+        return {
+          channel: "qqbot",
+          error: new Error("QQBot target is required"),
+        };
+      }
       const account = resolveQQBotAccount(cfg, accountId);
       console.log(`[qqbot:channel] sendMedia resolved account: id=${account.accountId}, appId=${account.appId}, enabled=${account.enabled}`);
-      const result = await sendMedia({ to, text: text ?? "", mediaUrl: mediaUrl ?? "", accountId, replyToId, account });
+      const result = await sendMedia({ to: messageTarget, text: text ?? "", mediaUrl: mediaUrl ?? "", accountId, replyToId, account });
       console.log(`[qqbot:channel] sendMedia result: messageId=${result.messageId}, error=${result.error ?? "none"}`);
       return {
         channel: "qqbot",
