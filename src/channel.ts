@@ -13,38 +13,17 @@ import { startGateway } from "./gateway.js";
 import { qqbotOnboardingAdapter } from "./onboarding.js";
 import { getQQBotRuntime } from "./runtime.js";
 
+/** QQ Bot 单条消息文本长度上限 */
+export const TEXT_CHUNK_LIMIT = 5000;
+
 /**
- * 简单的文本分块函数
- * 用于预先分块长文本
+ * Markdown 感知的文本分块函数
+ * 委托给 SDK 内置的 channel.text.chunkMarkdownText
+ * 支持代码块自动关闭/重开、括号感知等
  */
-function chunkText(text: string, limit: number): string[] {
-  if (text.length <= limit) return [text];
-  
-  const chunks: string[] = [];
-  let remaining = text;
-  
-  while (remaining.length > 0) {
-    if (remaining.length <= limit) {
-      chunks.push(remaining);
-      break;
-    }
-    
-    // 尝试在换行处分割
-    let splitAt = remaining.lastIndexOf("\n", limit);
-    if (splitAt <= 0 || splitAt < limit * 0.5) {
-      // 没找到合适的换行，尝试在空格处分割
-      splitAt = remaining.lastIndexOf(" ", limit);
-    }
-    if (splitAt <= 0 || splitAt < limit * 0.5) {
-      // 还是没找到，强制在 limit 处分割
-      splitAt = limit;
-    }
-    
-    chunks.push(remaining.slice(0, splitAt));
-    remaining = remaining.slice(splitAt).trimStart();
-  }
-  
-  return chunks;
+export function chunkText(text: string, limit: number): string[] {
+  const runtime = getQQBotRuntime();
+  return runtime.channel.text.chunkMarkdownText(text, limit);
 }
 
 export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
@@ -66,7 +45,7 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
      * blockStreaming: true 表示该 Channel 支持块流式
      * 框架会收集流式响应，然后通过 deliver 回调发送
      */
-    blockStreaming: false,
+    blockStreaming: true,
   },
   reload: { configPrefixes: ["channels.qqbot"] },
   // CLI onboarding wizard
@@ -230,9 +209,9 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
   },
   outbound: {
     deliveryMode: "direct",
-    chunker: chunkText,
+    chunker: (text, limit) => getQQBotRuntime().channel.text.chunkMarkdownText(text, limit),
     chunkerMode: "markdown",
-    textChunkLimit: 20000,
+    textChunkLimit: 5000,
     sendText: async ({ to, text, accountId, replyToId, cfg }) => {
       console.log(`[qqbot:channel] sendText called — accountId=${accountId}, to=${to}, replyToId=${replyToId}, text.length=${text?.length ?? 0}`);
       console.log(`[qqbot:channel] sendText text preview: ${text?.slice(0, 100)}${(text?.length ?? 0) > 100 ? "..." : ""}`);

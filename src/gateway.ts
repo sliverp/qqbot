@@ -8,7 +8,7 @@ import { recordKnownUser, flushKnownUsers, listKnownUsers } from "./known-users.
 import { getQQBotRuntime } from "./runtime.js";
 import { setRefIndex, getRefIndex, formatRefEntryForAgent, flushRefIndex, type RefAttachmentSummary } from "./ref-index-store.js";
 import { matchSlashCommand, getPluginVersion, type SlashCommandContext, type SlashCommandFileResult, type QueueSnapshot } from "./slash-commands.js";
-import { triggerUpdateCheck, onUpdateFound, formatUpdateNotice } from "./update-checker.js";
+import { triggerUpdateCheck } from "./update-checker.js";
 import { startImageServer, isImageServerRunning, downloadFile, type ImageServerConfig } from "./image-server.js";
 import { getImageSize, formatQQBotMarkdownImage, hasQQBotImageSize, DEFAULT_IMAGE_SIZE } from "./utils/image-size.js";
 import { parseQQBotPayload, encodePayloadForCron, isCronReminderPayload, isMediaPayload, type CronReminderPayload, type MediaPayload } from "./utils/payload.js";
@@ -18,6 +18,7 @@ import { checkFileSize, readFileAsync, fileExistsAsync, isLargeFile, formatFileS
 import { getQQBotDataDir, isLocalPath as isLocalFilePath, normalizePath, sanitizeFileName, runDiagnostics } from "./utils/platform.js";
 import { MSG, formatMediaErrorMessage } from "./user-messages.js";
 import { sendPhoto, sendVoice, sendVideoMsg, sendDocument, sendMedia as sendMediaAuto, type MediaTargetContext } from "./outbound.js";
+import { chunkText, TEXT_CHUNK_LIMIT } from "./channel.js";
 
 /**
  * 通用 OpenAI 兼容 STT（语音转文字）
@@ -410,35 +411,8 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
     }
   }
 
-  // 后台版本检查（detached 子进程，零阻塞）
+  // 后台版本检查（供 /qqbot-version、/qqbot-upgrade 指令被动查询）
   triggerUpdateCheck(log);
-
-  // 注册新版本通知回调：仅发给管理员，带防抖
-  let lastUpdateNotifyAt = 0;
-  const UPDATE_NOTIFY_DEBOUNCE_MS = 5 * 60 * 1000; // 5 分钟内不重复通知
-  onUpdateFound(async (info) => {
-    try {
-      // 防抖：避免短时间内重复推送
-      const now = Date.now();
-      if (now - lastUpdateNotifyAt < UPDATE_NOTIFY_DEBOUNCE_MS) {
-        log?.debug?.(`[qqbot:${account.accountId}] Update notification debounced`);
-        return;
-      }
-      const notice = formatUpdateNotice(info);
-      if (!notice) return;
-      const adminId = resolveAdminOpenId();
-      if (!adminId) {
-        log?.debug?.(`[qqbot:${account.accountId}] No admin or known user to send update notification`);
-        return;
-      }
-      const token = await getAccessToken(account.appId, account.clientSecret);
-      await sendProactiveC2CMessage(token, adminId, notice);
-      lastUpdateNotifyAt = Date.now();
-      log?.info(`[qqbot:${account.accountId}] Sent update notification to admin: ${adminId}`);
-    } catch (err) {
-      log?.debug?.(`[qqbot:${account.accountId}] Failed to send update notification to admin: ${err}`);
-    }
-  });
 
   // 初始化 API 配置（markdown 支持）
   initApiConfig({
@@ -470,7 +444,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
       attachments.push(attachment);
     }
     setRefIndex(refIdx, {
-      content: (meta.text ?? "").slice(0, 500),
+      content: meta.text ?? "",
       senderId: account.accountId,
       senderName: account.accountId,
       timestamp: Date.now(),
@@ -1686,20 +1660,24 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 
                   for (const item of sendQueue) {
                     if (item.type === "text") {
-                      try {
-                        await sendWithTokenRetry(async (token) => {
-                          const ref = consumeQuoteRef();
-                          if (event.type === "c2c") {
-                            return await sendC2CMessage(token, event.senderId, item.content, event.messageId, ref);
-                          } else if (event.type === "group" && event.groupOpenid) {
-                            return await sendGroupMessage(token, event.groupOpenid, item.content, event.messageId);
-                          } else if (event.channelId) {
-                            return await sendChannelMessage(token, event.channelId, item.content, event.messageId);
-                          }
-                        });
-                        log?.info(`[qqbot:${account.accountId}] Sent text: ${item.content.slice(0, 50)}...`);
-                      } catch (err) {
-                        log?.error(`[qqbot:${account.accountId}] Failed to send text: ${err}`);
+                      // 对长文本进行分块发送
+                      const textChunks = getQQBotRuntime().channel.text.chunkMarkdownText(item.content, TEXT_CHUNK_LIMIT);
+                      for (const chunk of textChunks) {
+                        try {
+                          await sendWithTokenRetry(async (token) => {
+                            const ref = consumeQuoteRef();
+                            if (event.type === "c2c") {
+                              return await sendC2CMessage(token, event.senderId, chunk, event.messageId, ref);
+                            } else if (event.type === "group" && event.groupOpenid) {
+                              return await sendGroupMessage(token, event.groupOpenid, chunk, event.messageId);
+                            } else if (event.channelId) {
+                              return await sendChannelMessage(token, event.channelId, chunk, event.messageId);
+                            }
+                          });
+                          log?.info(`[qqbot:${account.accountId}] Sent text chunk (${chunk.length}/${item.content.length} chars): ${chunk.slice(0, 50)}...`);
+                        } catch (err) {
+                          log?.error(`[qqbot:${account.accountId}] Failed to send text chunk: ${err}`);
+                        }
                       }
                     } else if (item.type === "image") {
                       const result = await sendPhoto(mediaTarget, item.content);
@@ -2245,20 +2223,23 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                   
                   // 🔹 第三步：发送带公网图片的 markdown 消息
                   if (textWithoutImages.trim()) {
-                    try {
-                      await sendWithTokenRetry(async (token) => {
-                        const ref = consumeQuoteRef();
-                        if (event.type === "c2c") {
-                          return await sendC2CMessage(token, event.senderId, textWithoutImages, event.messageId, ref);
-                        } else if (event.type === "group" && event.groupOpenid) {
-                          return await sendGroupMessage(token, event.groupOpenid, textWithoutImages, event.messageId);
-                        } else if (event.channelId) {
-                          return await sendChannelMessage(token, event.channelId, textWithoutImages, event.messageId);
-                        }
-                      });
-                      log?.info(`[qqbot:${account.accountId}] Sent markdown message with ${httpImageUrls.length} HTTP images (${event.type})`);
-                    } catch (err) {
-                      log?.error(`[qqbot:${account.accountId}] Failed to send markdown message: ${err}`);
+                    const mdChunks = chunkText(textWithoutImages, TEXT_CHUNK_LIMIT);
+                    for (const chunk of mdChunks) {
+                      try {
+                        await sendWithTokenRetry(async (token) => {
+                          const ref = consumeQuoteRef();
+                          if (event.type === "c2c") {
+                            return await sendC2CMessage(token, event.senderId, chunk, event.messageId, ref);
+                          } else if (event.type === "group" && event.groupOpenid) {
+                            return await sendGroupMessage(token, event.groupOpenid, chunk, event.messageId);
+                          } else if (event.channelId) {
+                            return await sendChannelMessage(token, event.channelId, chunk, event.messageId);
+                          }
+                        });
+                        log?.info(`[qqbot:${account.accountId}] Sent markdown chunk (${chunk.length}/${textWithoutImages.length} chars) with ${httpImageUrls.length} HTTP images (${event.type})`);
+                      } catch (err) {
+                        log?.error(`[qqbot:${account.accountId}] Failed to send markdown message chunk: ${err}`);
+                      }
                     }
                   }
                 } else {
@@ -2298,19 +2279,22 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                       }
                     }
 
-                    // 发送文本消息
+                    // 发送文本消息（分块）
                     if (textWithoutImages.trim()) {
-                      await sendWithTokenRetry(async (token) => {
-                        const ref = consumeQuoteRef();
-                        if (event.type === "c2c") {
-                          return await sendC2CMessage(token, event.senderId, textWithoutImages, event.messageId, ref);
-                        } else if (event.type === "group" && event.groupOpenid) {
-                          return await sendGroupMessage(token, event.groupOpenid, textWithoutImages, event.messageId);
-                        } else if (event.channelId) {
-                          return await sendChannelMessage(token, event.channelId, textWithoutImages, event.messageId);
-                        }
-                      });
-                      log?.info(`[qqbot:${account.accountId}] Sent text reply (${event.type})`);
+                      const plainChunks = chunkText(textWithoutImages, TEXT_CHUNK_LIMIT);
+                      for (const chunk of plainChunks) {
+                        await sendWithTokenRetry(async (token) => {
+                          const ref = consumeQuoteRef();
+                          if (event.type === "c2c") {
+                            return await sendC2CMessage(token, event.senderId, chunk, event.messageId, ref);
+                          } else if (event.type === "group" && event.groupOpenid) {
+                            return await sendGroupMessage(token, event.groupOpenid, chunk, event.messageId);
+                          } else if (event.channelId) {
+                            return await sendChannelMessage(token, event.channelId, chunk, event.messageId);
+                          }
+                        });
+                        log?.info(`[qqbot:${account.accountId}] Sent text chunk (${chunk.length}/${textWithoutImages.length} chars) (${event.type})`);
+                      }
                     }
                   } catch (err) {
                     log?.error(`[qqbot:${account.accountId}] Send failed: ${err}`);
@@ -2393,7 +2377,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
               },
             },
             replyOptions: {
-              disableBlockStreaming: false,
+              disableBlockStreaming: true,
             },
           });
 
@@ -2531,6 +2515,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                 } // end isFirstReady
               } else if (t === "RESUMED") {
                 log?.info(`[qqbot:${account.accountId}] Session resumed`);
+                onReady?.(d); // 通知框架连接已恢复，避免 health-monitor 误判 disconnected
                 // RESUMED 也属于首次启动（gateway restart 通常走 resume）
                 if (isFirstReadyGlobal) {
                   isFirstReadyGlobal = false;
