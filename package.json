@@ -4,12 +4,8 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "bin": {
-    "qqbot": "./bin/qqbot-cli.js"
-  },
   "files": [
     "dist",
-    "bin",
     "src",
     "skills",
     "index.ts",

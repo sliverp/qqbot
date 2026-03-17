@@ -6,12 +6,11 @@ import { getAccessToken, getGatewayUrl, sendC2CMessage, sendChannelMessage, send
 import { loadSession, saveSession, clearSession, type SessionState } from "./session-store.js";
 import { recordKnownUser, flushKnownUsers } from "./known-users.js";
 import { getQQBotRuntime } from "./runtime.js";
-import { startImageServer, isImageServerRunning, downloadFile, type ImageServerConfig } from "./image-server.js";
 import { getImageSize, formatQQBotMarkdownImage, hasQQBotImageSize, DEFAULT_IMAGE_SIZE } from "./utils/image-size.js";
 import { parseQQBotPayload, encodePayloadForCron, isCronReminderPayload, isMediaPayload, type CronReminderPayload, type MediaPayload } from "./utils/payload.js";
-import { convertSilkToWav, isVoiceAttachment, formatDuration, resolveTTSConfig, textToSilk, audioFileToSilkBase64, waitForFile, isAudioFile } from "./utils/audio-convert.js";
-import { normalizeMediaTags } from "./utils/media-tags.js";
-import { checkFileSize, readFileAsync, fileExistsAsync, isLargeFile, formatFileSize } from "./utils/file-utils.js";
+import { isVoiceAttachment, formatDuration, resolveTTSConfig, textToSilk, audioFileToSilkBase64, waitForFile, isAudioFile } from "./utils/audio-convert.js";
+import { normalizeMediaTags, detectMediaType, type MediaType } from "./utils/media-tags.js";
+import { checkFileSize, readFileAsync, fileExistsAsync, isLargeFile, formatFileSize, downloadFile } from "./utils/file-utils.js";
 import { getQQBotDataDir, isLocalPath as isLocalFilePath, looksLikeLocalPath, normalizePath, sanitizeFileName, runDiagnostics } from "./utils/platform.js";
 import { setRefIndex, getRefIndex, formatRefEntryForAgent, flushRefIndex, type RefAttachmentSummary } from "./ref-index-store.js";
 
@@ -136,11 +135,6 @@ const RATE_LIMIT_DELAY = 60000; // 遇到频率限制时等待 60 秒
 const MAX_RECONNECT_ATTEMPTS = 100;
 const MAX_QUICK_DISCONNECT_COUNT = 3; // 连续快速断开次数阈值
 const QUICK_DISCONNECT_THRESHOLD = 5000; // 5秒内断开视为快速断开
-
-// 图床服务器配置（可通过环境变量覆盖）
-const IMAGE_SERVER_PORT = parseInt(process.env.QQBOT_IMAGE_SERVER_PORT || "18765", 10);
-// 使用绝对路径，确保文件保存和读取使用同一目录
-const IMAGE_SERVER_DIR = process.env.QQBOT_IMAGE_SERVER_DIR || getQQBotDataDir("images");
 
 // 消息队列配置（异步处理，防止阻塞心跳）
 const MESSAGE_QUEUE_SIZE = 1000; // 最大队列长度（全局总量）
@@ -352,31 +346,6 @@ function buildAttachmentSummaries(
 }
 
 /**
- * 启动图床服务器
- */
-async function ensureImageServer(log?: GatewayContext["log"], publicBaseUrl?: string): Promise<string | null> {
-  if (isImageServerRunning()) {
-    return publicBaseUrl || `http://0.0.0.0:${IMAGE_SERVER_PORT}`;
-  }
-
-  try {
-    const config: Partial<ImageServerConfig> = {
-      port: IMAGE_SERVER_PORT,
-      storageDir: IMAGE_SERVER_DIR,
-      // 使用用户配置的公网地址，而不是 0.0.0.0
-      baseUrl: publicBaseUrl || `http://0.0.0.0:${IMAGE_SERVER_PORT}`,
-      ttlSeconds: 3600, // 1 小时过期
-    };
-    await startImageServer(config);
-    log?.info(`[qqbot] Image server started on port ${IMAGE_SERVER_PORT}, baseUrl: ${config.baseUrl}`);
-    return config.baseUrl!;
-  } catch (err) {
-    log?.error(`[qqbot] Failed to start image server: ${err}`);
-    return null;
-  }
-}
-
-/**
  * 启动 Gateway WebSocket 连接（带自动重连）
  * 支持流式消息发送
  */
@@ -411,17 +380,6 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
     log?.info(`[qqbot:${account.accountId}] TTS apiKey: ${maskedKey}${ttsCfg.queryParams ? `, queryParams=${JSON.stringify(ttsCfg.queryParams)}` : ""}${ttsCfg.speed !== undefined ? `, speed=${ttsCfg.speed}` : ""}`);
   } else {
     log?.info(`[qqbot:${account.accountId}] TTS not configured (voice messages will be unavailable)`);
-  }
-
-  // 如果配置了公网 URL，启动图床服务器
-  let imageServerBaseUrl: string | null = null;
-  if (account.imageServerBaseUrl) {
-    // 使用用户配置的公网地址作为 baseUrl
-    await ensureImageServer(log, account.imageServerBaseUrl);
-    imageServerBaseUrl = account.imageServerBaseUrl;
-    log?.info(`[qqbot:${account.accountId}] Image server enabled with URL: ${imageServerBaseUrl}`);
-  } else {
-    log?.info(`[qqbot:${account.accountId}] Image server disabled (no imageServerBaseUrl configured)`);
   }
 
   // 注册出站消息 refIdx 缓存钩子
@@ -835,32 +793,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                     voiceTranscriptSources.push("fallback");
                   }
                 } else {
-                  // 如果还没有 WAV 路径（voice_wav_url 不可用），需要 SILK→WAV 转换
-                  if (!audioPath) {
-                    const sttFormats = account.config?.audioFormatPolicy?.sttDirectFormats;
-                    log?.info(`[qqbot:${account.accountId}] Voice attachment: ${att.filename}, converting SILK→WAV...`);
-                    try {
-                      const wavResult = await convertSilkToWav(localPath, downloadDir);
-                      if (wavResult) {
-                        audioPath = wavResult.wavPath;
-                        log?.info(`[qqbot:${account.accountId}] Voice converted: ${wavResult.wavPath} (${formatDuration(wavResult.duration)})`);
-                      } else {
-                        audioPath = localPath; // 转换失败，尝试用原始文件
-                      }
-                    } catch (convertErr) {
-                      log?.error(`[qqbot:${account.accountId}] Voice conversion failed: ${convertErr}`);
-                      if (asrReferText) {
-                        log?.info(`[qqbot:${account.accountId}] Voice attachment: ${att.filename} (using asr_refer_text fallback after convert failure)`);
-                        voiceTranscripts.push(asrReferText);
-                        voiceTranscriptSources.push("asr");
-                      } else {
-                        voiceTranscripts.push("[语音消息 - 格式转换失败]");
-                        voiceTranscriptSources.push("fallback");
-                      }
-                      continue;
-                    }
-                  }
-
+                  // voice_wav_url 已由平台保证提供，audioPath 在前面已赋值
                   // STT 转录
                   try {
                     const transcript = await transcribeAudio(audioPath!, cfg as Record<string, unknown>);

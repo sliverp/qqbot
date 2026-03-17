@@ -1,51 +1,62 @@
 /**
  * 富媒体标签预处理与纠错
  *
- * 小模型常见的标签拼写错误及变体，在正则匹配前统一修正为标准格式。
+ * 统一使用 <qqmedia> 标签，后端根据文件后缀 / Content-Type 自动判断媒体类型。
+ * 同时向后兼容旧标签名（qqimg / qqvoice / qqvideo / qqfile）。
  */
 
+import * as path from "node:path";
 import { expandTilde } from "./platform.js";
+import { isAudioFile } from "./audio-convert.js";
 
-// 标准标签名
-const VALID_TAGS = ["qqimg", "qqvoice", "qqvideo", "qqfile"] as const;
+// 统一标签名
+const CANONICAL_TAG = "qqmedia" as const;
 
-// 开头标签别名映射（key 全部小写）
-const TAG_ALIASES: Record<string, typeof VALID_TAGS[number]> = {
-  // ---- qqimg 变体 ----
-  "qq_img": "qqimg",
-  "qqimage": "qqimg",
-  "qq_image": "qqimg",
-  "qqpic": "qqimg",
-  "qq_pic": "qqimg",
-  "qqpicture": "qqimg",
-  "qq_picture": "qqimg",
-  "qqphoto": "qqimg",
-  "qq_photo": "qqimg",
-  "img": "qqimg",
-  "image": "qqimg",
-  "pic": "qqimg",
-  "picture": "qqimg",
-  "photo": "qqimg",
-  // ---- qqvoice 变体 ----
-  "qq_voice": "qqvoice",
-  "qqaudio": "qqvoice",
-  "qq_audio": "qqvoice",
-  "voice": "qqvoice",
-  "audio": "qqvoice",
-  // ---- qqvideo 变体 ----
-  "qq_video": "qqvideo",
-  "video": "qqvideo",
-  // ---- qqfile 变体 ----
-  "qq_file": "qqfile",
-  "qqdoc": "qqfile",
-  "qq_doc": "qqfile",
-  "file": "qqfile",
-  "doc": "qqfile",
-  "document": "qqfile",
+// 所有可识别的标签名（标准名 + 旧名 + 别名），全部映射到 qqmedia
+const TAG_ALIASES: Record<string, string> = {
+  // 统一标签
+  "qqmedia": CANONICAL_TAG,
+  "qq_media": CANONICAL_TAG,
+  "media": CANONICAL_TAG,
+  // ---- 旧 qqimg 及变体 ----
+  "qqimg": CANONICAL_TAG,
+  "qq_img": CANONICAL_TAG,
+  "qqimage": CANONICAL_TAG,
+  "qq_image": CANONICAL_TAG,
+  "qqpic": CANONICAL_TAG,
+  "qq_pic": CANONICAL_TAG,
+  "qqpicture": CANONICAL_TAG,
+  "qq_picture": CANONICAL_TAG,
+  "qqphoto": CANONICAL_TAG,
+  "qq_photo": CANONICAL_TAG,
+  "img": CANONICAL_TAG,
+  "image": CANONICAL_TAG,
+  "pic": CANONICAL_TAG,
+  "picture": CANONICAL_TAG,
+  "photo": CANONICAL_TAG,
+  // ---- 旧 qqvoice 及变体 ----
+  "qqvoice": CANONICAL_TAG,
+  "qq_voice": CANONICAL_TAG,
+  "qqaudio": CANONICAL_TAG,
+  "qq_audio": CANONICAL_TAG,
+  "voice": CANONICAL_TAG,
+  "audio": CANONICAL_TAG,
+  // ---- 旧 qqvideo 及变体 ----
+  "qqvideo": CANONICAL_TAG,
+  "qq_video": CANONICAL_TAG,
+  "video": CANONICAL_TAG,
+  // ---- 旧 qqfile 及变体 ----
+  "qqfile": CANONICAL_TAG,
+  "qq_file": CANONICAL_TAG,
+  "qqdoc": CANONICAL_TAG,
+  "qq_doc": CANONICAL_TAG,
+  "file": CANONICAL_TAG,
+  "doc": CANONICAL_TAG,
+  "document": CANONICAL_TAG,
 };
 
-// 构建所有可识别的标签名列表（标准名 + 别名）
-const ALL_TAG_NAMES = [...VALID_TAGS, ...Object.keys(TAG_ALIASES)];
+// 构建所有可识别的标签名列表
+const ALL_TAG_NAMES = Object.keys(TAG_ALIASES);
 // 按长度降序排列，优先匹配更长的名称（避免 "img" 抢先匹配 "qqimg" 的子串）
 ALL_TAG_NAMES.sort((a, b) => b.length - a.length);
 
@@ -81,25 +92,7 @@ const FUZZY_MEDIA_TAG_REGEX = new RegExp(
 );
 
 /**
- * 将标签名映射为标准名称
- */
-function resolveTagName(raw: string): typeof VALID_TAGS[number] {
-  const lower = raw.toLowerCase();
-  if ((VALID_TAGS as readonly string[]).includes(lower)) {
-    return lower as typeof VALID_TAGS[number];
-  }
-  return TAG_ALIASES[lower] ?? "qqimg";
-}
-
-/**
  * 预清理：将富媒体标签内部的换行/回车/制表符压缩为单个空格。
- *
- * 部分模型会在标签内部插入 \n \r \t 等空白字符，例如：
- *   <qqimg>\n  /path/to/file.png\n</qqimg>
- *   <qqimg>/path/to/\nfile.png</qqimg>
- *
- * 此正则匹配从开标签到闭标签之间的内容（允许跨行），
- * 将内部所有 [\r\n\t] 替换为空格，然后压缩连续空格。
  */
 const MULTILINE_TAG_CLEANUP = new RegExp(
   "([<＜<]\\s*(?:" + TAG_NAME_PATTERN + ")\\s*[>＞>])" +
@@ -109,9 +102,7 @@ const MULTILINE_TAG_CLEANUP = new RegExp(
 );
 
 /**
- * 预处理 LLM 输出文本，将各种畸形/错误的富媒体标签修正为标准格式。
- *
- * 标准格式：<qqimg>/path/to/file</qqimg>
+ * 预处理 LLM 输出文本，将各种畸形/错误的富媒体标签统一修正为 <qqmedia>。
  *
  * @param text LLM 原始输出
  * @returns 修正后的文本（如果没有匹配到任何标签则原样返回）
@@ -124,11 +115,72 @@ export function normalizeMediaTags(text: string): string {
   });
 
   return cleaned.replace(FUZZY_MEDIA_TAG_REGEX, (_match, rawTag: string, content: string) => {
-    const tag = resolveTagName(rawTag);
     const trimmed = content.trim();
-    if (!trimmed) return _match; // 空内容不处理
-    // 展开波浪线路径：~/Desktop/file.png → /Users/xxx/Desktop/file.png
+    if (!trimmed) return _match;
     const expanded = expandTilde(trimmed);
-    return `<${tag}>${expanded}</${tag}>`;
+    return `<${CANONICAL_TAG}>${expanded}</${CANONICAL_TAG}>`;
   });
+}
+
+// ---- 媒体类型自动检测 ----
+
+export type MediaType = "image" | "voice" | "video" | "file";
+
+const IMAGE_EXTS = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg", ".ico", ".tiff", ".tif"]);
+const VIDEO_EXTS = new Set([".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv", ".wmv", ".m4v", ".3gp"]);
+
+/**
+ * 根据文件后缀判断媒体类型（本地路径或 URL 均可）。
+ * 对 URL 会先去掉 query/fragment 再取扩展名。
+ */
+export function detectMediaTypeByExt(resource: string): MediaType {
+  let ext: string;
+  try {
+    // 对 URL 先解析出 pathname
+    if (/^https?:\/\//i.test(resource)) {
+      const u = new URL(resource);
+      ext = path.extname(u.pathname).toLowerCase();
+    } else {
+      ext = path.extname(resource).toLowerCase();
+    }
+  } catch {
+    ext = path.extname(resource).toLowerCase();
+  }
+  if (!ext) return "file";
+  if (IMAGE_EXTS.has(ext)) return "image";
+  if (VIDEO_EXTS.has(ext)) return "video";
+  if (isAudioFile(resource)) return "voice";
+  return "file";
+}
+
+/**
+ * 通过 HTTP HEAD 请求探测 URL 的 Content-Type，返回媒体类型。
+ * 超时或失败时返回 null（调用方应 fallback 到后缀检测）。
+ */
+export async function detectMediaTypeByContentType(url: string): Promise<MediaType | null> {
+  try {
+    const resp = await fetch(url, { method: "HEAD", signal: AbortSignal.timeout(5000) });
+    const ct = resp.headers.get("content-type")?.toLowerCase() || "";
+    if (ct.startsWith("image/")) return "image";
+    if (ct.startsWith("video/")) return "video";
+    if (ct.startsWith("audio/") || ct.includes("silk") || ct.includes("amr")) return "voice";
+    return null; // 未知类型，让调用方 fallback
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 自动检测媒体类型（综合后缀 + Content-Type）。
+ * 对本地路径直接用后缀；对 URL 先看后缀，后缀无法判断时再 HEAD 探测。
+ */
+export async function detectMediaType(resource: string): Promise<MediaType> {
+  const byExt = detectMediaTypeByExt(resource);
+  // 本地路径直接用后缀结果
+  if (!/^https?:\/\//i.test(resource)) return byExt;
+  // URL：后缀能判断就用后缀（避免多余网络请求）
+  if (byExt !== "file") return byExt;
+  // 后缀无法判断，HEAD 探测
+  const byCt = await detectMediaTypeByContentType(resource);
+  return byCt ?? "file";
 }
