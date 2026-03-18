@@ -9,5 +9,3 @@ openclaw.json
 *.tgz
 *.log
 pnpm-lock.yaml
-mermaid.mmd
-architecture-diagram.html
