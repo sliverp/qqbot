@@ -11,7 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **Markdown-aware text chunking**: Replaced custom `chunkText` with SDK built-in `chunkMarkdownText`, supporting auto code-fence close/reopen, bracket awareness, etc.
 - **Enable block streaming**: Set `blockStreaming: true` — the framework now collects streamed responses and delivers via the `deliver` callback.
 - **Reduce text chunk limit**: `textChunkLimit` lowered from 20000 to 5000 for better message readability.
-- **Silent media errors**: Media send failures (image/voice/video/file) are now logged only; error messages are no longer surfaced to the user, aligning with the Feishu plugin approach.
+- **Silent media errors**: Media send failures (image/voice/video/file) are now logged only; error messages are no longer surfaced to the user.
 
 ### Improved
 
