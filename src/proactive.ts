@@ -74,8 +74,18 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk";
  */
 import { getQQBotDataDir } from "./utils/platform.js";
 
-const STORAGE_DIR = getQQBotDataDir("data");
-const KNOWN_USERS_FILE = path.join(STORAGE_DIR, "known-users.json");
+// 存储目录 - lazy 求值，避免在 setOpenClawStateDir() 调用前就被求值
+let _storageDir: string | null = null;
+function getStorageDir(): string {
+  if (!_storageDir) {
+    _storageDir = getQQBotDataDir("data");
+  }
+  return _storageDir;
+}
+
+function getKnownUsersFilePath(): string {
+  return path.join(getStorageDir(), "known-users.json");
+}
 
 // 内存缓存
 let knownUsersCache: Map<string, KnownUser> | null = null;
@@ -85,8 +95,9 @@ let cacheLastModified = 0;
  * 确保存储目录存在
  */
 function ensureStorageDir(): void {
-  if (!fs.existsSync(STORAGE_DIR)) {
-    fs.mkdirSync(STORAGE_DIR, { recursive: true });
+  const dir = getStorageDir();
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
   }
 }
 
@@ -101,10 +112,12 @@ function getUserKey(type: string, openid: string, accountId: string): string {
  * 从文件加载已知用户
  */
 function loadKnownUsers(): Map<string, KnownUser> {
+  const knownUsersFile = getKnownUsersFilePath();
+  
   if (knownUsersCache !== null) {
     // 检查文件是否被修改
     try {
-      const stat = fs.statSync(KNOWN_USERS_FILE);
+      const stat = fs.statSync(knownUsersFile);
       if (stat.mtimeMs <= cacheLastModified) {
         return knownUsersCache;
       }
@@ -117,14 +130,14 @@ function loadKnownUsers(): Map<string, KnownUser> {
   const users = new Map<string, KnownUser>();
   
   try {
-    if (fs.existsSync(KNOWN_USERS_FILE)) {
-      const data = fs.readFileSync(KNOWN_USERS_FILE, "utf-8");
+    if (fs.existsSync(knownUsersFile)) {
+      const data = fs.readFileSync(knownUsersFile, "utf-8");
       const parsed = JSON.parse(data) as KnownUser[];
       for (const user of parsed) {
         const key = getUserKey(user.type, user.openid, user.accountId);
         users.set(key, user);
       }
-      cacheLastModified = fs.statSync(KNOWN_USERS_FILE).mtimeMs;
+      cacheLastModified = fs.statSync(knownUsersFile).mtimeMs;
     }
   } catch (err) {
     console.error(`[qqbot:proactive] Failed to load known users: ${err}`);
@@ -141,7 +154,7 @@ function saveKnownUsers(users: Map<string, KnownUser>): void {
   try {
     ensureStorageDir();
     const data = Array.from(users.values());
-    fs.writeFileSync(KNOWN_USERS_FILE, JSON.stringify(data, null, 2), "utf-8");
+    fs.writeFileSync(getKnownUsersFilePath(), JSON.stringify(data, null, 2), "utf-8");
     cacheLastModified = Date.now();
     knownUsersCache = users;
   } catch (err) {
