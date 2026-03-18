@@ -56,6 +56,7 @@ export interface ListKnownUsersOptions {
   limit?: number;
 }
 import {
+  initApiConfig,
   getAccessToken,
   sendProactiveC2CMessage,
   sendProactiveGroupMessage,
@@ -312,6 +313,11 @@ export async function sendProactive(
       error: "QQBot not configured (missing appId or clientSecret)",
     };
   }
+
+  initApiConfig({
+    appId: account.appId,
+    markdownSupport: account.markdownSupport,
+  });
   
   try {
     const accessToken = await getAccessToken(account.appId, account.clientSecret);
@@ -485,6 +491,11 @@ export async function sendProactiveMessageDirect(
       error: "QQBot not configured (missing appId or clientSecret)",
     };
   }
+
+  initApiConfig({
+    appId: account.appId,
+    markdownSupport: account.markdownSupport,
+  });
   
   try {
     const accessToken = await getAccessToken(account.appId, account.clientSecret);

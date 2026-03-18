@@ -397,6 +397,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 
   // 初始化 API 配置（markdown 支持）
   initApiConfig({
+    appId: account.appId,
     markdownSupport: account.markdownSupport,
   });
   log?.info(`[qqbot:${account.accountId}] API config: markdownSupport=${account.markdownSupport === true}`);
@@ -469,6 +470,8 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
   let shouldRefreshToken = false; // 下次连接是否需要刷新 token
   let intentLevelIndex = 0; // 当前尝试的权限级别索引
   let lastSuccessfulIntentLevel = -1; // 上次成功的权限级别
+  let pendingHandshakeMode: "resume" | "identify" | null = null; // 当前握手类型
+  let pendingIntentLevelIndex: number | null = null; // 当前 identify 尝试的权限级别
 
   // ============ P1-2: 尝试从持久化存储恢复 Session ============
   // 传入当前 appId，如果 appId 已变更（换了机器人），旧 session 自动失效
@@ -2440,6 +2443,8 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
               
               // 如果有 session_id，尝试 Resume
               if (sessionId && lastSeq !== null) {
+                pendingHandshakeMode = "resume";
+                pendingIntentLevelIndex = null;
                 log?.info(`[qqbot:${account.accountId}] Attempting to resume session ${sessionId}`);
                 ws.send(JSON.stringify({
                   op: 6, // Resume
@@ -2453,7 +2458,10 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
                 // 新连接，发送 Identify
                 // 如果有上次成功的级别，直接使用；否则从当前级别开始尝试
                 const levelToUse = lastSuccessfulIntentLevel >= 0 ? lastSuccessfulIntentLevel : intentLevelIndex;
-                const intentLevel = INTENT_LEVELS[Math.min(levelToUse, INTENT_LEVELS.length - 1)];
+                const nextIntentLevelIndex = Math.min(levelToUse, INTENT_LEVELS.length - 1);
+                const intentLevel = INTENT_LEVELS[nextIntentLevelIndex];
+                pendingHandshakeMode = "identify";
+                pendingIntentLevelIndex = nextIntentLevelIndex;
                 log?.info(`[qqbot:${account.accountId}] Sending identify with intents: ${intentLevel.intents} (${intentLevel.description})`);
                 ws.send(JSON.stringify({
                   op: 2,
@@ -2481,15 +2489,19 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
                 const readyData = d as { session_id: string };
                 sessionId = readyData.session_id;
                 // 记录成功的权限级别
-                lastSuccessfulIntentLevel = intentLevelIndex;
-                const successLevel = INTENT_LEVELS[intentLevelIndex];
+                const successIntentLevelIndex = pendingIntentLevelIndex ?? intentLevelIndex;
+                intentLevelIndex = successIntentLevelIndex;
+                lastSuccessfulIntentLevel = successIntentLevelIndex;
+                pendingHandshakeMode = null;
+                pendingIntentLevelIndex = null;
+                const successLevel = INTENT_LEVELS[successIntentLevelIndex];
                 log?.info(`[qqbot:${account.accountId}] Ready with ${successLevel.description}, session: ${sessionId}`);
                 // P1-2: 保存新的 Session 状态
                 saveSession({
                   sessionId,
                   lastSeq,
                   lastConnectedAt: Date.now(),
-                  intentLevelIndex,
+                  intentLevelIndex: successIntentLevelIndex,
                   accountId: account.accountId,
                   savedAt: Date.now(),
                   appId: account.appId,
@@ -2497,6 +2509,8 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
                 onReady?.(d);
               } else if (t === "RESUMED") {
                 log?.info(`[qqbot:${account.accountId}] Session resumed`);
+                pendingHandshakeMode = null;
+                pendingIntentLevelIndex = null;
                 // P1-2: 更新 Session 连接时间
                 if (sessionId) {
                   saveSession({
@@ -2509,6 +2523,7 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
                     appId: account.appId,
                   });
                 }
+                onReady?.(d);
               } else if (t === "C2C_MESSAGE_CREATE") {
                 const event = d as C2CMessageEvent;
                 // P1-3: 记录已知用户
@@ -2616,7 +2631,8 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
 
             case 9: // Invalid Session
               const canResume = d as boolean;
-              const currentLevel = INTENT_LEVELS[intentLevelIndex];
+              const failedIntentLevelIndex = pendingIntentLevelIndex ?? intentLevelIndex;
+              const currentLevel = INTENT_LEVELS[Math.min(failedIntentLevelIndex, INTENT_LEVELS.length - 1)];
               log?.error(`[qqbot:${account.accountId}] Invalid session (${currentLevel.description}), can resume: ${canResume}, raw: ${rawData}`);
               
               if (!canResume) {
@@ -2624,18 +2640,27 @@ ${ttsHint}${sttHint}${asrFallbackHint}${voiceForwardHint}`;
                 lastSeq = null;
                 // P1-2: 清除持久化的 Session
                 clearSession(account.accountId);
-                
-                // 尝试降级到下一个权限级别
-                if (intentLevelIndex < INTENT_LEVELS.length - 1) {
-                  intentLevelIndex++;
-                  const nextLevel = INTENT_LEVELS[intentLevelIndex];
-                  log?.info(`[qqbot:${account.accountId}] Downgrading intents to: ${nextLevel.description}`);
+
+                if (pendingHandshakeMode === "resume") {
+                  intentLevelIndex = lastSuccessfulIntentLevel >= 0 ? lastSuccessfulIntentLevel : failedIntentLevelIndex;
+                  const retryLevel = INTENT_LEVELS[Math.min(intentLevelIndex, INTENT_LEVELS.length - 1)];
+                  log?.info(`[qqbot:${account.accountId}] Resume session invalid, retrying fresh identify with same intents: ${retryLevel.description}`);
                 } else {
-                  // 已经是最低权限级别了
-                  log?.error(`[qqbot:${account.accountId}] All intent levels failed. Please check AppID/Secret.`);
-                  shouldRefreshToken = true;
+                  // 只有 identify 本身失败时，才尝试降级权限级别
+                  if (failedIntentLevelIndex < INTENT_LEVELS.length - 1) {
+                    intentLevelIndex = failedIntentLevelIndex + 1;
+                    const nextLevel = INTENT_LEVELS[intentLevelIndex];
+                    log?.info(`[qqbot:${account.accountId}] Downgrading intents to: ${nextLevel.description}`);
+                  } else {
+                    intentLevelIndex = failedIntentLevelIndex;
+                    // 已经是最低权限级别了
+                    log?.error(`[qqbot:${account.accountId}] All intent levels failed. Please check AppID/Secret.`);
+                    shouldRefreshToken = true;
+                  }
                 }
               }
+              pendingHandshakeMode = null;
+              pendingIntentLevelIndex = null;
               cleanup();
               // Invalid Session 后等待一段时间再重连
               scheduleReconnect(3000);

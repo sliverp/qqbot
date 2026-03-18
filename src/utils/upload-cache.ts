@@ -4,7 +4,7 @@
  * QQ Bot API 上传文件后返回 file_info + ttl，在 TTL 内相同文件可直接复用 file_info
  * 避免重复上传同一文件，节省带宽和时间。
  * 
- * 缓存 key = md5(fileContent) + targetType(c2c/group) + targetId + fileType
+ * 缓存 key = accountScope + md5(fileContent) + targetType(c2c/group) + targetId + fileType
  */
 
 import * as crypto from "node:crypto";
@@ -17,7 +17,7 @@ interface CacheEntry {
   expiresAt: number;
 }
 
-// 内存缓存，key 格式：`${contentHash}:${scope}:${targetId}:${fileType}`
+// 内存缓存，key 格式：`${accountScope}:${contentHash}:${scope}:${targetId}:${fileType}`
 const cache = new Map<string, CacheEntry>();
 
 // 最大缓存条目数，防止内存泄漏
@@ -39,8 +39,8 @@ export function computeFileHash(data: string | Buffer): string {
  * @param targetId - 用户 openid 或群 openid
  * @param fileType - 1=IMAGE, 2=VIDEO, 3=VOICE, 4=FILE
  */
-function buildCacheKey(contentHash: string, scope: string, targetId: string, fileType: number): string {
-  return `${contentHash}:${scope}:${targetId}:${fileType}`;
+function buildCacheKey(accountScope: string, contentHash: string, scope: string, targetId: string, fileType: number): string {
+  return `${accountScope}:${contentHash}:${scope}:${targetId}:${fileType}`;
 }
 
 /**
@@ -48,12 +48,13 @@ function buildCacheKey(contentHash: string, scope: string, targetId: string, fil
  * @returns file_info 字符串，未命中或已过期返回 null
  */
 export function getCachedFileInfo(
+  accountScope: string,
   contentHash: string,
   scope: "c2c" | "group",
   targetId: string,
   fileType: number,
 ): string | null {
-  const key = buildCacheKey(contentHash, scope, targetId, fileType);
+  const key = buildCacheKey(accountScope, contentHash, scope, targetId, fileType);
   const entry = cache.get(key);
 
   if (!entry) return null;
@@ -73,6 +74,7 @@ export function getCachedFileInfo(
  * @param ttl - API 返回的 TTL（秒），缓存会提前 60 秒失效
  */
 export function setCachedFileInfo(
+  accountScope: string,
   contentHash: string,
   scope: "c2c" | "group",
   targetId: string,
@@ -98,7 +100,7 @@ export function setCachedFileInfo(
     }
   }
 
-  const key = buildCacheKey(contentHash, scope, targetId, fileType);
+  const key = buildCacheKey(accountScope, contentHash, scope, targetId, fileType);
   // 提前 60 秒失效，避免临界点过期
   const safetyMargin = 60;
   const effectiveTtl = Math.max(ttl - safetyMargin, 10);
