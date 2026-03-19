@@ -718,17 +718,33 @@ else
   record_result "runtime.slash_command_intercepted" "skip" "gateway.log not found"
 fi
 
-# 8.10 startup-marker.json 文件验证
-MARKER_FILE="$HOME/.openclaw/qqbot/data/startup-marker.json"
-if [ -f "$MARKER_FILE" ]; then
-  MARKER_CONTENT=$(cat "$MARKER_FILE" 2>/dev/null || echo "{}")
+# 8.10 startup-marker-{accountId}.json 文件验证（per-account marker）
+# 现在每个账号各自有一个 startup-marker 文件
+MARKER_DIR="$HOME/.openclaw/qqbot/data"
+MARKER_FOUND=0
+if [ -d "$MARKER_DIR" ]; then
+  for mf in "$MARKER_DIR"/startup-marker-*.json; do
+    [ -f "$mf" ] || continue
+    MARKER_FOUND=1
+    MF_BASE=$(basename "$mf")
+    MARKER_CONTENT=$(cat "$mf" 2>/dev/null || echo "{}")
+    if echo "$MARKER_CONTENT" | jq -e '.version' &>/dev/null; then
+      record_result "runtime.startup_marker_valid.${MF_BASE}" "pass"
+    else
+      record_result "runtime.startup_marker_valid.${MF_BASE}" "fail" "${MF_BASE} exists but has no 'version' field"
+    fi
+  done
+fi
+# 兼容旧版单文件 marker
+if [ "$MARKER_FOUND" -eq 0 ] && [ -f "$MARKER_DIR/startup-marker.json" ]; then
+  MARKER_CONTENT=$(cat "$MARKER_DIR/startup-marker.json" 2>/dev/null || echo "{}")
   if echo "$MARKER_CONTENT" | jq -e '.version' &>/dev/null; then
-    record_result "runtime.startup_marker_valid" "pass"
+    record_result "runtime.startup_marker_valid" "pass" "(legacy single-file marker)"
   else
     record_result "runtime.startup_marker_valid" "fail" "startup-marker.json exists but has no 'version' field"
   fi
-else
-  record_result "runtime.startup_marker_valid" "skip" "startup-marker.json not yet created (first run may not have completed)"
+elif [ "$MARKER_FOUND" -eq 0 ]; then
+  record_result "runtime.startup_marker_valid" "skip" "no startup-marker files found (first run may not have completed)"
 fi
 
 # 8.11 update-checker 模块单元验证（Node.js import 测试）

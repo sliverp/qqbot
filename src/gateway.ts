@@ -353,20 +353,21 @@ function buildAttachmentSummaries(
 // 区分 gateway restart（进程重启）和 health-monitor 断线重连
 const accountFirstReadySet = new Set<string>();
 
-const STARTUP_MARKER_FILE = path.join(getQQBotDataDir("data"), "startup-marker.json");
-
 /**
  * 判断是否为首次安装或版本更新，返回对应的问候语。
  * - 首次安装 / 版本变更 → "Haha，我的'灵魂'已上线，随时等你吩咐。"
  * - 普通重启（同版本） → null（不发送）
+ *
+ * marker 文件按 accountId 隔离，避免多账号场景下第一个账号写入后其他账号被跳过。
  */
-function getStartupGreeting(): string | null {
+function getStartupGreeting(accountId: string): string | null {
+  const markerFile = path.join(getQQBotDataDir("data"), `startup-marker-${accountId}.json`);
   const currentVersion = getPluginVersion();
   let isFirstOrUpdated = true;
 
   try {
-    if (fs.existsSync(STARTUP_MARKER_FILE)) {
-      const data = JSON.parse(fs.readFileSync(STARTUP_MARKER_FILE, "utf8"));
+    if (fs.existsSync(markerFile)) {
+      const data = JSON.parse(fs.readFileSync(markerFile, "utf8"));
       if (data.version === currentVersion) {
         isFirstOrUpdated = false;
       }
@@ -382,7 +383,7 @@ function getStartupGreeting(): string | null {
 
   // 更新 marker 文件
   try {
-    fs.writeFileSync(STARTUP_MARKER_FILE, JSON.stringify({
+    fs.writeFileSync(markerFile, JSON.stringify({
       version: currentVersion,
       startedAt: new Date().toISOString(),
       greetedAt: new Date().toISOString(),
@@ -531,7 +532,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
   const sendStartupGreetings = (trigger: "READY" | "RESUMED") => {
     (async () => {
       try {
-        const greeting = getStartupGreeting();
+        const greeting = getStartupGreeting(account.accountId);
         if (!greeting) {
           log?.info(`[qqbot:${account.accountId}] Skipping startup greeting (debounced, trigger=${trigger})`);
           return;
