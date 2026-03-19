@@ -240,6 +240,164 @@ else
 fi
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# TEST SUITE 4: <qqmedia> 标签消息
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+log_section "Suite 4: Media Tag Messages (<qqmedia>)"
+
+# 4.1 文本中包含 <qqmedia> 图片 URL 标签
+MSG_TAG_IMG=$(assert_success "media_tag.image_url" \
+  openclaw message send \
+    --channel "qqbot" \
+    --target "qqbot:c2c:${BOT1_TEST_OPENID}" \
+    --message "[E2E Tag] 这是一张图片 <qqmedia>https://picsum.photos/400/300</qqmedia> @ ${TIMESTAMP}") || true
+assert_http_ok "media_tag.image_url_http" "$MSG_TAG_IMG" || true
+
+# 4.2 文本中包含 <qqmedia> 本地文件标签
+TEST_TAG_FILE="/tmp/e2e-tag-test.txt"
+echo "[E2E Test] Tag file content @ $(date '+%Y-%m-%d %H:%M:%S')" > "$TEST_TAG_FILE"
+MSG_TAG_FILE=$(assert_success "media_tag.local_file" \
+  openclaw message send \
+    --channel "qqbot" \
+    --target "qqbot:c2c:${BOT1_TEST_OPENID}" \
+    --message "[E2E Tag] 这是文件 <qqmedia>${TEST_TAG_FILE}</qqmedia> @ ${TIMESTAMP}") || true
+assert_http_ok "media_tag.local_file_http" "$MSG_TAG_FILE" || true
+
+# 4.3 文本中包含多个 <qqmedia> 标签（混合）
+MSG_TAG_MULTI=$(assert_success "media_tag.multi_tags" \
+  openclaw message send \
+    --channel "qqbot" \
+    --target "qqbot:c2c:${BOT1_TEST_OPENID}" \
+    --message "[E2E Tag] 图1 <qqmedia>https://picsum.photos/200/200</qqmedia> 图2 <qqmedia>https://picsum.photos/300/200</qqmedia> @ ${TIMESTAMP}") || true
+assert_http_ok "media_tag.multi_tags_http" "$MSG_TAG_MULTI" || true
+
+# 4.4 向后兼容：旧标签 <qqimg> 应被自动转换为 <qqmedia>
+MSG_TAG_COMPAT=$(assert_success "media_tag.compat_qqimg" \
+  openclaw message send \
+    --channel "qqbot" \
+    --target "qqbot:c2c:${BOT1_TEST_OPENID}" \
+    --message "[E2E Tag] 旧标签兼容测试 <qqimg>https://picsum.photos/250/250</qqimg> @ ${TIMESTAMP}") || true
+assert_http_ok "media_tag.compat_qqimg_http" "$MSG_TAG_COMPAT" || true
+
+# 4.5 纯文本 + 标签前后都有文字（验证文本拆分正确）
+MSG_TAG_SURROUND=$(assert_success "media_tag.text_around" \
+  openclaw message send \
+    --channel "qqbot" \
+    --target "qqbot:c2c:${BOT1_TEST_OPENID}" \
+    --message "前面的文字 <qqmedia>https://picsum.photos/150/150</qqmedia> 后面的文字 @ ${TIMESTAMP}") || true
+assert_http_ok "media_tag.text_around_http" "$MSG_TAG_SURROUND" || true
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# TEST SUITE 5: Markdown 格式消息
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+log_section "Suite 5: Markdown Format Messages"
+
+# 5.1 标题 + 加粗 + 斜体
+MSG_MD_BASIC=$(assert_success "markdown.basic_format" \
+  openclaw message send \
+    --channel "qqbot" \
+    --target "qqbot:c2c:${BOT1_TEST_OPENID}" \
+    --message "# E2E Markdown 测试
+
+## 二级标题
+
+这是 **加粗文字**，这是 *斜体文字*，这是 ~~删除线~~。
+
+@ ${TIMESTAMP} | OpenClaw ${OC_VERSION}") || true
+assert_http_ok "markdown.basic_format_http" "$MSG_MD_BASIC" || true
+
+# 5.2 列表 + 代码块
+MSG_MD_LIST=$(assert_success "markdown.list_and_code" \
+  openclaw message send \
+    --channel "qqbot" \
+    --target "qqbot:c2c:${BOT1_TEST_OPENID}" \
+    --message "### 功能列表
+
+- 项目一：文本消息
+- 项目二：图片消息
+- 项目三：语音消息
+
+有序列表：
+1. 第一步
+2. 第二步
+3. 第三步
+
+代码块：
+\`\`\`python
+print('Hello QQBot!')
+\`\`\`
+
+行内代码：\`openclaw message send\`
+
+@ ${TIMESTAMP}") || true
+assert_http_ok "markdown.list_and_code_http" "$MSG_MD_LIST" || true
+
+# 5.3 链接 + 引用
+MSG_MD_LINK=$(assert_success "markdown.link_and_quote" \
+  openclaw message send \
+    --channel "qqbot" \
+    --target "qqbot:c2c:${BOT1_TEST_OPENID}" \
+    --message "### 链接 & 引用测试
+
+> 这是一段引用文字
+> 可以有多行
+
+链接：[OpenClaw 文档](https://github.com)
+
+分隔线：
+
+---
+
+@ ${TIMESTAMP}") || true
+assert_http_ok "markdown.link_and_quote_http" "$MSG_MD_LINK" || true
+
+# 5.4 Markdown + <qqmedia> 标签混合
+MSG_MD_TAG=$(assert_success "markdown.mixed_with_media_tag" \
+  openclaw message send \
+    --channel "qqbot" \
+    --target "qqbot:c2c:${BOT1_TEST_OPENID}" \
+    --message "## 混合测试
+
+**加粗标题** 下面是一张图片：
+
+<qqmedia>https://picsum.photos/350/250</qqmedia>
+
+> 图片上方和下方都有 Markdown 格式内容
+
+- 列表项 A
+- 列表项 B
+
+@ ${TIMESTAMP} | OpenClaw ${OC_VERSION}") || true
+assert_http_ok "markdown.mixed_with_media_tag_http" "$MSG_MD_TAG" || true
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# TEST SUITE 6: 真实文件 & 无后缀 URL 类型检测
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+log_section "Suite 6: Real File & Content-Type Detection"
+
+# 6.1 本地真实图片文件（tests/test.jpg）
+E2E_TEST_IMG="$(cd "$(dirname "$0")" && pwd)/test.jpg"
+if [ -f "$E2E_TEST_IMG" ]; then
+  MSG_REAL_IMG=$(assert_success "detect.local_image_jpg" \
+    openclaw message send \
+      --channel "qqbot" \
+      --target "qqbot:c2c:${BOT1_TEST_OPENID}" \
+      --message "[E2E] 本地真实图片 <qqmedia>${E2E_TEST_IMG}</qqmedia> @ ${TIMESTAMP}") || true
+  assert_http_ok "detect.local_image_jpg_http" "$MSG_REAL_IMG" || true
+else
+  record_result "detect.local_image_jpg" "skip" "test.jpg not found in tests/"
+  record_result "detect.local_image_jpg_http" "skip" "test.jpg not found in tests/"
+fi
+
+# 6.2 无后缀网络 URL（服务端返回 Content-Type: image/png）
+#     验证 HEAD fallback → GET+Range 能正确探测为 image
+MSG_NOEXT_URL=$(assert_success "detect.url_no_extension" \
+  openclaw message send \
+    --channel "qqbot" \
+    --target "qqbot:c2c:${BOT1_TEST_OPENID}" \
+    --message "[E2E] 无后缀URL图片 <qqmedia>https://exam.clawhome.cc/cert/47513288-b4e4-4ecc-a385-c85d9a13a9b4/image</qqmedia> @ ${TIMESTAMP}") || true
+assert_http_ok "detect.url_no_extension_http" "$MSG_NOEXT_URL" || true
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 生成报告
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 log_section "测试报告 / Test Report"

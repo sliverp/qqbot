@@ -1,0 +1,25 @@
+# 源码和配置（已通过 files 字段白名单控制）
+node_modules/
+tests/
+*.log
+*.tgz
+
+# 开发文件
+.git/
+.github/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 测试和构建产物
+coverage/
+.nyc_output/
+*.test.ts
+*.spec.ts
+
+# 文档
+README.md
+docs/
+examples/

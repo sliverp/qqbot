@@ -20,7 +20,6 @@ interface QQBotChannelConfig {
   clientSecret?: string;
   clientSecretFile?: string;
   name?: string;
-  imageServerBaseUrl?: string;
   markdownSupport?: boolean;
   allowFrom?: string[];
   accounts?: Record<string, {
@@ -29,7 +28,6 @@ interface QQBotChannelConfig {
     clientSecret?: string;
     clientSecretFile?: string;
     name?: string;
-    imageServerBaseUrl?: string;
     markdownSupport?: boolean;
     allowFrom?: string[];
   }>;

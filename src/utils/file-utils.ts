@@ -1,9 +1,10 @@
 /**
- * 文件操作工具 — 异步读取 + 大小校验 + 进度提示
+ * 文件操作工具 — 异步读取 + 大小校验 + 进度提示 + 下载
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import crypto from "node:crypto";
 
 /** QQ Bot API 最大上传文件大小：20MB */
 export const MAX_UPLOAD_SIZE = 20 * 1024 * 1024;
@@ -119,4 +120,52 @@ export function getMimeType(filePath: string): string {
     ".txt": "text/plain",
   };
   return mimeTypes[ext] ?? "application/octet-stream";
+}
+
+/**
+ * 下载远程文件并保存到本地
+ * @param url 远程文件 URL
+ * @param destDir 目标目录
+ * @param originalFilename 原始文件名（可选，完整文件名包含扩展名）
+ * @returns 本地文件路径，失败返回 null
+ */
+export async function downloadFile(
+  url: string,
+  destDir: string,
+  originalFilename?: string
+): Promise<string | null> {
+  try {
+    if (!fs.existsSync(destDir)) {
+      fs.mkdirSync(destDir, { recursive: true });
+    }
+
+    const response = await fetch(url);
+    if (!response.ok) {
+      console.error(`[file-utils] Download failed: ${response.status} ${response.statusText}`);
+      return null;
+    }
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+
+    let finalFilename: string;
+    if (originalFilename) {
+      let decodedFilename = originalFilename;
+      try { decodedFilename = decodeURIComponent(originalFilename); } catch { /* keep original */ }
+      const ext = path.extname(decodedFilename);
+      const baseName = path.basename(decodedFilename, ext);
+      const timestamp = Date.now();
+      finalFilename = `${baseName}_${timestamp}${ext}`;
+    } else {
+      finalFilename = `${crypto.randomBytes(16).toString("hex")}.bin`;
+    }
+
+    const filePath = path.join(destDir, finalFilename);
+    fs.writeFileSync(filePath, buffer);
+    console.log(`[file-utils] Downloaded file: ${filePath}`);
+
+    return filePath;
+  } catch (err) {
+    console.error(`[file-utils] Download error:`, err);
+    return null;
+  }
 }

@@ -68,6 +68,23 @@ export function getQQBotDataDir(...subPaths: string[]): string {
   return dir;
 }
 
+/**
+ * 获取 .openclaw/media/qqbot 下的子目录路径，并自动创建
+ *
+ * 与 getQQBotDataDir 不同，此目录位于 OpenClaw 核心的媒体安全白名单
+ * (~/.openclaw/media) 之下，下载到这里的文件可以被框架的 image/media
+ * 工具直接访问，不会触发 "Local media path is not under an allowed directory" 错误。
+ *
+ * 用于存放从 QQ 下载的图片、语音等需要被框架处理的媒体文件。
+ */
+export function getQQBotMediaDir(...subPaths: string[]): string {
+  const dir = path.join(getHomeDir(), ".openclaw", "media", "qqbot", ...subPaths);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  return dir;
+}
+
 // ============ 临时目录 ============
 
 /**

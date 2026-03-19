@@ -22,7 +22,7 @@ import {
   sendGroupFileMessage,
 } from "./api.js";
 import { isAudioFile, audioFileToSilkBase64, waitForFile } from "./utils/audio-convert.js";
-import { normalizeMediaTags } from "./utils/media-tags.js";
+import { normalizeMediaTags, detectMediaType } from "./utils/media-tags.js";
 import { checkFileSize, readFileAsync, fileExistsAsync, isLargeFile, formatFileSize } from "./utils/file-utils.js";
 import { isLocalPath as isLocalFilePath, normalizePath, sanitizeFileName } from "./utils/platform.js";
 
@@ -241,7 +241,7 @@ function parseTarget(to: string): { type: "c2c" | "group" | "channel"; id: strin
  * 注意：
  * 1. 主动消息（无 replyToId）必须有消息内容，不支持流式发送
  * 2. 当被动回复不可用（超期或超过次数）时，自动降级为主动消息
- * 3. 支持 <qqimg>路径</qqimg> 或 <qqimg>路径</img> 格式发送图片
+ * 3. 支持 <qqmedia>路径</qqmedia> 格式发送富媒体（自动检测类型）
  */
 export async function sendText(ctx: OutboundContext): Promise<OutboundResult> {
   const { to, account } = ctx;
@@ -275,39 +275,26 @@ export async function sendText(ctx: OutboundContext): Promise<OutboundResult> {
   }
 
   // ============ 媒体标签检测与处理 ============
-  // 支持四种标签:
-  //   <qqimg>路径</qqimg> 或 <qqimg>路径</img>  — 图片
-  //   <qqvoice>路径</qqvoice>                   — 语音
-  //   <qqvideo>路径或URL</qqvideo>                — 视频
-  //   <qqfile>路径</qqfile>                     — 文件
+  // 统一使用 <qqmedia> 标签，后端根据后缀 / Content-Type 自动判断类型
   
   // 预处理：纠正小模型常见的标签拼写错误和格式问题
   text = normalizeMediaTags(text);
   
-  const mediaTagRegex = /<(qqimg|qqvoice|qqvideo|qqfile)>([^<>]+)<\/(?:qqimg|qqvoice|qqvideo|qqfile|img)>/gi;
+  const mediaTagRegex = /<qqmedia>([^<>]+)<\/qqmedia>/gi;
   const mediaTagMatches = text.match(mediaTagRegex);
   
   if (mediaTagMatches && mediaTagMatches.length > 0) {
-    console.log(`[qqbot] sendText: Detected ${mediaTagMatches.length} media tag(s), processing...`);
+    console.log(`[qqbot] sendText: Detected ${mediaTagMatches.length} <qqmedia> tag(s), processing...`);
     
-    // 构建发送队列：根据内容在原文中的实际位置顺序发送
-    const sendQueue: Array<{ type: "text" | "image" | "voice" | "video" | "file"; content: string }> = [];
+    // 构建发送队列：先收集所有媒体路径并做路径清理
+    const mediaEntries: Array<{ index: number; length: number; path: string }> = [];
     
-    let lastIndex = 0;
-    const mediaTagRegexWithIndex = /<(qqimg|qqvoice|qqvideo|qqfile)>([^<>]+)<\/(?:qqimg|qqvoice|qqvideo|qqfile|img)>/gi;
+    const mediaTagRegexWithIndex = /<qqmedia>([^<>]+)<\/qqmedia>/gi;
     let match;
     
     while ((match = mediaTagRegexWithIndex.exec(text)) !== null) {
-      // 添加标签前的文本
-      const textBefore = text.slice(lastIndex, match.index).replace(/\n{3,}/g, "\n\n").trim();
-      if (textBefore) {
-        sendQueue.push({ type: "text", content: textBefore });
-      }
-      
-      const tagName = match[1]!.toLowerCase(); // "qqimg" or "qqvoice" or "qqfile"
-      
       // 剥离 MEDIA: 前缀（框架可能注入），展开 ~ 路径
-      let mediaPath = match[2]?.trim() ?? "";
+      let mediaPath = match[1]?.trim() ?? "";
       if (mediaPath.startsWith("MEDIA:")) {
         mediaPath = mediaPath.slice("MEDIA:".length);
       }
@@ -356,22 +343,32 @@ export async function sendText(ctx: OutboundContext): Promise<OutboundResult> {
       }
 
       if (mediaPath) {
-        if (tagName === "qqvoice") {
-          sendQueue.push({ type: "voice", content: mediaPath });
-          console.log(`[qqbot] sendText: Found voice path in <qqvoice>: ${mediaPath}`);
-        } else if (tagName === "qqvideo") {
-          sendQueue.push({ type: "video", content: mediaPath });
-          console.log(`[qqbot] sendText: Found video URL in <qqvideo>: ${mediaPath}`);
-        } else if (tagName === "qqfile") {
-          sendQueue.push({ type: "file", content: mediaPath });
-          console.log(`[qqbot] sendText: Found file path in <qqfile>: ${mediaPath}`);
-        } else {
-          sendQueue.push({ type: "image", content: mediaPath });
-          console.log(`[qqbot] sendText: Found image path in <qqimg>: ${mediaPath}`);
-        }
+        mediaEntries.push({ index: match.index, length: match[0].length, path: mediaPath });
+      }
+    }
+    
+    // 并行检测所有媒体类型
+    const detectedTypes = await Promise.all(
+      mediaEntries.map(entry => detectMediaType(entry.path))
+    );
+    
+    // 按出现位置构建发送队列
+    const sendQueue: Array<{ type: "text" | "image" | "voice" | "video" | "file"; content: string }> = [];
+    let lastIndex = 0;
+    for (let i = 0; i < mediaEntries.length; i++) {
+      const entry = mediaEntries[i];
+      const mediaType = detectedTypes[i];
+      
+      // 添加标签前的文本
+      const textBefore = text.slice(lastIndex, entry.index).replace(/\n{3,}/g, "\n\n").trim();
+      if (textBefore) {
+        sendQueue.push({ type: "text", content: textBefore });
       }
       
-      lastIndex = match.index + match[0].length;
+      sendQueue.push({ type: mediaType, content: entry.path });
+      console.log(`[qqbot] sendText: <qqmedia> → ${mediaType}: ${entry.path.slice(0, 80)}`);
+      
+      lastIndex = entry.index + entry.length;
     }
     
     // 添加最后一个标签后的文本
@@ -380,7 +377,7 @@ export async function sendText(ctx: OutboundContext): Promise<OutboundResult> {
       sendQueue.push({ type: "text", content: textAfter });
     }
     
-    console.log(`[qqbot] sendText: Send queue: ${sendQueue.map(item => item.type).join(" -> ")}`);
+    console.log(`[qqbot] sendText: Send queue: ${sendQueue.map(item => `${item.type}`).join(" -> ")}`);
     
     // 按顺序发送
     if (!account.appId || !account.clientSecret) {
@@ -470,7 +467,7 @@ export async function sendText(ctx: OutboundContext): Promise<OutboundResult> {
             const result = await sendChannelMessage(accessToken, target.id, `![](${imagePath})`, replyToId ?? undefined);
             lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
           }
-          console.log(`[qqbot] sendText: Sent image via <qqimg> tag: ${imagePath.slice(0, 60)}...`);
+          console.log(`[qqbot] sendText: Sent image: ${imagePath.slice(0, 60)}...`);
         } else if (item.type === "voice") {
           // 发送语音文件
           const voicePath = item.content;
@@ -516,7 +513,7 @@ export async function sendText(ctx: OutboundContext): Promise<OutboundResult> {
             const result = await sendChannelMessage(accessToken, target.id, `[语音消息暂不支持频道发送]`, replyToId ?? undefined);
             lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
           }
-          console.log(`[qqbot] sendText: Sent voice via <qqvoice> tag: ${voicePath.slice(0, 60)}...`);
+          console.log(`[qqbot] sendText: Sent voice: ${voicePath.slice(0, 60)}...`);
         } else if (item.type === "video") {
           // 发送视频（支持公网 URL 和本地文件）
           const videoPath = item.content;
@@ -571,7 +568,7 @@ export async function sendText(ctx: OutboundContext): Promise<OutboundResult> {
               lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
             }
           }
-          console.log(`[qqbot] sendText: Sent video via <qqvideo> tag: ${videoPath.slice(0, 60)}...`);
+          console.log(`[qqbot] sendText: Sent video: ${videoPath.slice(0, 60)}...`);
         } else if (item.type === "file") {
           // 发送文件
           const filePath = item.content;
@@ -627,7 +624,7 @@ export async function sendText(ctx: OutboundContext): Promise<OutboundResult> {
               lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
             }
           }
-          console.log(`[qqbot] sendText: Sent file via <qqfile> tag: ${filePath.slice(0, 60)}...`);
+          console.log(`[qqbot] sendText: Sent file: ${filePath.slice(0, 60)}...`);
         }
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
