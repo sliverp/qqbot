@@ -1035,13 +1035,17 @@ ${mediaSection}
 
         // 命令直接透传，不注入上下文
         const userMessage = `${quotePart}${userContent}`;
+        // 如果启用了原生工具，则不注入提示词上下文；否则使用提示词注入方式
+        const useNativeTools = account.config?.enableNativeTools === true;
         const agentBody = userContent.startsWith("/")
           ? userContent
-          : systemPrompts.length > 0 
-            ? `${contextInfo}\n\n${systemPrompts.join("\n")}\n\n${userMessage}`
-            : `${contextInfo}\n\n${userMessage}`;
+          : useNativeTools
+            ? userMessage
+            : systemPrompts.length > 0
+              ? `${contextInfo}\n\n${systemPrompts.join("\n")}\n\n${userMessage}`
+              : `${contextInfo}\n\n${userMessage}`;
         
-        log?.info(`[qqbot:${account.accountId}] agentBody length: ${agentBody.length}`);
+        log?.info(`[qqbot:${account.accountId}] agentBody length: ${agentBody.length}, useNativeTools: ${useNativeTools}`);
         // 日志：输出送给大模型的完整 JSON
         log?.info(`[qqbot:${account.accountId}] ▶ AGENT BODY FULL: ${agentBody}`);
 
