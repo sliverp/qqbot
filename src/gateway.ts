@@ -724,7 +724,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
           systemPrompts.push(account.systemPrompt);
         }
         
-        // 处理附件（图片等）- 下载到本地供 clawdbot 访问
+        // 处理附件（图片等）- 下载到本地供 openclaw 访问
         let attachmentInfo = "";
         const imageUrls: string[] = [];
         const imageMediaTypes: string[] = [];

@@ -10,20 +10,8 @@
     "skills",
     "index.ts",
     "tsconfig.json",
-    "openclaw.plugin.json",
-    "clawdbot.plugin.json",
-    "moltbot.plugin.json"
+    "openclaw.plugin.json"
   ],
-  "clawdbot": {
-    "extensions": [
-      "./index.ts"
-    ]
-  },
-  "moltbot": {
-    "extensions": [
-      "./index.ts"
-    ]
-  },
   "openclaw": {
     "extensions": [
       "./index.ts"
@@ -52,9 +40,12 @@
     "typescript": "^5.9.3"
   },
   "peerDependencies": {
-    "clawdbot": "*",
-    "moltbot": "*",
     "openclaw": "*"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
   },
   "homepage": "https://github.com/sliverp/qqbot",
   "bundleDependencies": [
