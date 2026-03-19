@@ -6,6 +6,7 @@ import * as path from "path";
 import type { ResolvedQQBotAccount } from "./types.js";
 import { decodeCronPayload } from "./utils/payload.js";
 import {
+  initApiConfig,
   getAccessToken, 
   sendC2CMessage, 
   sendChannelMessage, 
@@ -38,6 +39,17 @@ interface MessageReplyRecord {
 
 const messageReplyTracker = new Map<string, MessageReplyRecord>();
 
+function makeReplyLimitKey(accountId: string, messageId: string): string {
+  return `${accountId}:${messageId}`;
+}
+
+function ensureApiConfig(account: ResolvedQQBotAccount): void {
+  initApiConfig({
+    appId: account.appId,
+    markdownSupport: account.markdownSupport,
+  });
+}
+
 /** 限流检查结果 */
 export interface ReplyLimitResult {
   /** 是否允许被动回复 */
@@ -57,9 +69,10 @@ export interface ReplyLimitResult {
  * @param messageId 消息ID
  * @returns ReplyLimitResult 限流检查结果
  */
-export function checkMessageReplyLimit(messageId: string): ReplyLimitResult {
+export function checkMessageReplyLimit(accountId: string, messageId: string): ReplyLimitResult {
   const now = Date.now();
-  const record = messageReplyTracker.get(messageId);
+  const key = makeReplyLimitKey(accountId, messageId);
+  const record = messageReplyTracker.get(key);
   
   // 清理过期记录（定期清理，避免内存泄漏）
   if (messageReplyTracker.size > 10000) {
@@ -114,21 +127,22 @@ export function checkMessageReplyLimit(messageId: string): ReplyLimitResult {
  * 记录一次消息回复
  * @param messageId 消息ID
  */
-export function recordMessageReply(messageId: string): void {
+export function recordMessageReply(accountId: string, messageId: string): void {
   const now = Date.now();
-  const record = messageReplyTracker.get(messageId);
+  const key = makeReplyLimitKey(accountId, messageId);
+  const record = messageReplyTracker.get(key);
   
   if (!record) {
-    messageReplyTracker.set(messageId, { count: 1, firstReplyAt: now });
+    messageReplyTracker.set(key, { count: 1, firstReplyAt: now });
   } else {
     // 检查是否过期，过期则重新计数
     if (now - record.firstReplyAt > MESSAGE_REPLY_TTL) {
-      messageReplyTracker.set(messageId, { count: 1, firstReplyAt: now });
+      messageReplyTracker.set(key, { count: 1, firstReplyAt: now });
     } else {
       record.count++;
     }
   }
-  console.log(`[qqbot] recordMessageReply: ${messageId}, count=${messageReplyTracker.get(messageId)?.count}`);
+  console.log(`[qqbot] recordMessageReply: ${key}, count=${messageReplyTracker.get(key)?.count}`);
 }
 
 /**
@@ -249,11 +263,12 @@ export async function sendText(ctx: OutboundContext): Promise<OutboundResult> {
   let fallbackToProactive = false;
 
   console.log("[qqbot] sendText ctx:", JSON.stringify({ to, text: text?.slice(0, 50), replyToId, accountId: account.accountId }, null, 2));
+  ensureApiConfig(account);
 
   // ============ 消息回复限流检查 ============
   // 如果有 replyToId，检查是否可以被动回复
   if (replyToId) {
-    const limitCheck = checkMessageReplyLimit(replyToId);
+    const limitCheck = checkMessageReplyLimit(account.accountId, replyToId);
     
     if (!limitCheck.allowed) {
       // 检查是否需要降级为主动消息
@@ -396,15 +411,15 @@ export async function sendText(ctx: OutboundContext): Promise<OutboundResult> {
             // 被动回复
             if (target.type === "c2c") {
               const result = await sendC2CMessage(accessToken, target.id, item.content, replyToId);
-              recordMessageReply(replyToId);
+              recordMessageReply(account.accountId, replyToId);
               lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp, refIdx: result.ext_info?.ref_idx };
             } else if (target.type === "group") {
               const result = await sendGroupMessage(accessToken, target.id, item.content, replyToId);
-              recordMessageReply(replyToId);
+              recordMessageReply(account.accountId, replyToId);
               lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp, refIdx: result.ext_info?.ref_idx };
             } else {
               const result = await sendChannelMessage(accessToken, target.id, item.content, replyToId);
-              recordMessageReply(replyToId);
+              recordMessageReply(account.accountId, replyToId);
               lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp, refIdx: (result as any).ext_info?.ref_idx };
             }
           } else {
@@ -683,17 +698,17 @@ export async function sendText(ctx: OutboundContext): Promise<OutboundResult> {
     if (target.type === "c2c") {
       const result = await sendC2CMessage(accessToken, target.id, text, replyToId);
       // 记录回复次数
-      recordMessageReply(replyToId);
+      recordMessageReply(account.accountId, replyToId);
       return { channel: "qqbot", messageId: result.id, timestamp: result.timestamp, refIdx: result.ext_info?.ref_idx };
     } else if (target.type === "group") {
       const result = await sendGroupMessage(accessToken, target.id, text, replyToId);
       // 记录回复次数
-      recordMessageReply(replyToId);
+      recordMessageReply(account.accountId, replyToId);
       return { channel: "qqbot", messageId: result.id, timestamp: result.timestamp, refIdx: result.ext_info?.ref_idx };
     } else {
       const result = await sendChannelMessage(accessToken, target.id, text, replyToId);
       // 记录回复次数
-      recordMessageReply(replyToId);
+      recordMessageReply(account.accountId, replyToId);
       return { channel: "qqbot", messageId: result.id, timestamp: result.timestamp, refIdx: (result as any).ext_info?.ref_idx };
     }
   } catch (err) {
@@ -715,6 +730,7 @@ export async function sendProactiveMessage(
   text: string
 ): Promise<OutboundResult> {
   const timestamp = new Date().toISOString();
+  ensureApiConfig(account);
   
   if (!account.appId || !account.clientSecret) {
     const errorMsg = "QQBot not configured (missing appId or clientSecret)";
@@ -802,6 +818,7 @@ export async function sendProactiveMessage(
  */
 export async function sendMedia(ctx: MediaOutboundContext): Promise<OutboundResult> {
   const { to, text, replyToId, account } = ctx;
+  ensureApiConfig(account);
   // 展开波浪线路径：~/Desktop/file.png → /Users/xxx/Desktop/file.png
   const mediaUrl = normalizePath(ctx.mediaUrl);
 

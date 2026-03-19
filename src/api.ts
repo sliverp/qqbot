@@ -9,8 +9,8 @@ import { sanitizeFileName } from "./utils/platform.js";
 const API_BASE = "https://api.sgroup.qq.com";
 const TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken";
 
-// 运行时配置
-let currentMarkdownSupport = false;
+const markdownSupportByAppId = new Map<string, boolean>();
+const tokenToAppId = new Map<string, string>();
 
 // 出站消息回调钩子：消息发送成功且回包含 ext_info.ref_idx 时触发
 // 由外层（gateway/outbound）注册，用于统一缓存 bot 出站消息的 refIdx
@@ -45,15 +45,26 @@ export function onMessageSent(callback: OnMessageSentCallback): void {
  * 初始化 API 配置
  * @param options.markdownSupport - 是否支持 markdown 消息（默认 false，需要机器人具备该权限才能启用）
  */
-export function initApiConfig(options: { markdownSupport?: boolean }): void {
-  currentMarkdownSupport = options.markdownSupport === true;
+export function initApiConfig(options: { appId?: string; markdownSupport?: boolean }): void {
+  if (!options.appId) return;
+  markdownSupportByAppId.set(options.appId, options.markdownSupport === true);
 }
 
 /**
  * 获取当前是否支持 markdown
  */
-export function isMarkdownSupport(): boolean {
-  return currentMarkdownSupport;
+export function isMarkdownSupport(appId?: string): boolean {
+  if (!appId) return false;
+  return markdownSupportByAppId.get(appId) === true;
+}
+
+function getAppIdFromAccessToken(accessToken: string): string | null {
+  return tokenToAppId.get(accessToken) ?? null;
+}
+
+function resolveMarkdownSupport(accessToken: string): boolean {
+  const appId = getAppIdFromAccessToken(accessToken);
+  return appId ? markdownSupportByAppId.get(appId) === true : false;
 }
 
 // =========================================================================
@@ -148,12 +159,17 @@ async function doFetchToken(appId: string, clientSecret: string): Promise<string
   }
 
   const expiresAt = Date.now() + (data.expires_in ?? 7200) * 1000;
+  const previous = tokenCacheMap.get(appId);
+  if (previous && previous.token !== data.access_token) {
+    tokenToAppId.delete(previous.token);
+  }
   
   tokenCacheMap.set(appId, {
     token: data.access_token,
     expiresAt,
     appId,
   });
+  tokenToAppId.set(data.access_token, appId);
 
   console.log(`[qqbot-api:${appId}] Token cached, expires at: ${new Date(expiresAt).toISOString()}`);
   return data.access_token;
@@ -166,9 +182,14 @@ async function doFetchToken(appId: string, clientSecret: string): Promise<string
 export function clearTokenCache(appId?: string): void {
   if (appId) {
     const normalizedAppId = String(appId).trim();
+    const cached = tokenCacheMap.get(normalizedAppId);
+    if (cached) {
+      tokenToAppId.delete(cached.token);
+    }
     tokenCacheMap.delete(normalizedAppId);
     console.log(`[qqbot-api:${normalizedAppId}] Token cache cleared manually.`);
   } else {
+    tokenToAppId.clear();
     tokenCacheMap.clear();
     console.log(`[qqbot-api] All token caches cleared.`);
   }
@@ -368,9 +389,10 @@ function buildMessageBody(
   content: string,
   msgId: string | undefined,
   msgSeq: number,
+  markdownSupport: boolean,
   messageReference?: string
 ): Record<string, unknown> {
-  const body: Record<string, unknown> = currentMarkdownSupport
+  const body: Record<string, unknown> = markdownSupport
     ? {
         markdown: { content },
         msg_type: 2,
@@ -385,7 +407,7 @@ function buildMessageBody(
   if (msgId) {
     body.msg_id = msgId;
   }
-  if (messageReference && !currentMarkdownSupport) {
+  if (messageReference && !markdownSupport) {
     body.message_reference = { message_id: messageReference };
   }
   return body;
@@ -399,7 +421,7 @@ export async function sendC2CMessage(
   messageReference?: string
 ): Promise<MessageResponse> {
   const msgSeq = msgId ? getNextMsgSeq(msgId) : 1;
-  const body = buildMessageBody(content, msgId, msgSeq, messageReference);
+  const body = buildMessageBody(content, msgId, msgSeq, resolveMarkdownSupport(accessToken), messageReference);
   return sendAndNotify(accessToken, "POST", `/v2/users/${openid}/messages`, body, { text: content });
 }
 
@@ -448,15 +470,15 @@ export async function sendGroupMessage(
   messageReference?: string
 ): Promise<MessageResponse> {
   const msgSeq = msgId ? getNextMsgSeq(msgId) : 1;
-  const body = buildMessageBody(content, msgId, msgSeq, messageReference);
+  const body = buildMessageBody(content, msgId, msgSeq, resolveMarkdownSupport(accessToken), messageReference);
   return sendAndNotify(accessToken, "POST", `/v2/groups/${groupOpenid}/messages`, body, { text: content });
 }
 
-function buildProactiveMessageBody(content: string): Record<string, unknown> {
+function buildProactiveMessageBody(content: string, markdownSupport: boolean): Record<string, unknown> {
   if (!content || content.trim().length === 0) {
     throw new Error("主动消息内容不能为空 (markdown.content is empty)");
   }
-  if (currentMarkdownSupport) {
+  if (markdownSupport) {
     return { markdown: { content }, msg_type: 2 };
   } else {
     return { content, msg_type: 0 };
@@ -468,7 +490,7 @@ export async function sendProactiveC2CMessage(
   openid: string,
   content: string
 ): Promise<MessageResponse> {
-  const body = buildProactiveMessageBody(content);
+  const body = buildProactiveMessageBody(content, resolveMarkdownSupport(accessToken));
   return sendAndNotify(accessToken, "POST", `/v2/users/${openid}/messages`, body, { text: content });
 }
 
@@ -477,7 +499,7 @@ export async function sendProactiveGroupMessage(
   groupOpenid: string,
   content: string
 ): Promise<{ id: string; timestamp: string }> {
-  const body = buildProactiveMessageBody(content);
+  const body = buildProactiveMessageBody(content, resolveMarkdownSupport(accessToken));
   return apiRequest(accessToken, "POST", `/v2/groups/${groupOpenid}/messages`, body);
 }
 
@@ -510,7 +532,8 @@ export async function uploadC2CMedia(
   
   if (fileData) {
     const contentHash = computeFileHash(fileData);
-    const cachedInfo = getCachedFileInfo(contentHash, "c2c", openid, fileType);
+    const accountScope = getAppIdFromAccessToken(accessToken) ?? "unknown-app";
+    const cachedInfo = getCachedFileInfo(accountScope, contentHash, "c2c", openid, fileType);
     if (cachedInfo) {
       return { file_uuid: "", file_info: cachedInfo, ttl: 0 };
     }
@@ -527,7 +550,8 @@ export async function uploadC2CMedia(
   
   if (fileData && result.file_info && result.ttl > 0) {
     const contentHash = computeFileHash(fileData);
-    setCachedFileInfo(contentHash, "c2c", openid, fileType, result.file_info, result.file_uuid, result.ttl);
+    const accountScope = getAppIdFromAccessToken(accessToken) ?? "unknown-app";
+    setCachedFileInfo(accountScope, contentHash, "c2c", openid, fileType, result.file_info, result.file_uuid, result.ttl);
   }
   return result;
 }
@@ -545,7 +569,8 @@ export async function uploadGroupMedia(
   
   if (fileData) {
     const contentHash = computeFileHash(fileData);
-    const cachedInfo = getCachedFileInfo(contentHash, "group", groupOpenid, fileType);
+    const accountScope = getAppIdFromAccessToken(accessToken) ?? "unknown-app";
+    const cachedInfo = getCachedFileInfo(accountScope, contentHash, "group", groupOpenid, fileType);
     if (cachedInfo) {
       return { file_uuid: "", file_info: cachedInfo, ttl: 0 };
     }
@@ -562,7 +587,8 @@ export async function uploadGroupMedia(
   
   if (fileData && result.file_info && result.ttl > 0) {
     const contentHash = computeFileHash(fileData);
-    setCachedFileInfo(contentHash, "group", groupOpenid, fileType, result.file_info, result.file_uuid, result.ttl);
+    const accountScope = getAppIdFromAccessToken(accessToken) ?? "unknown-app";
+    setCachedFileInfo(accountScope, contentHash, "group", groupOpenid, fileType, result.file_info, result.file_uuid, result.ttl);
   }
   return result;
 }
