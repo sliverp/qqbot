@@ -280,7 +280,9 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
     listActions: ({ cfg }: { cfg: OpenClawConfig }) => {
       // 插件级配置：检查 channels.qqbot.enableNativeTools
       const qqbot = cfg.channels?.qqbot as Record<string, unknown> | undefined;
-      return qqbot?.enableNativeTools === true ? ["send"] : [];
+      const enabled = qqbot?.enableNativeTools;
+      console.log(`[qqbot] listActions called: enableNativeTools=${enabled}, type=${typeof enabled}, cfg.channels.qqbot=${JSON.stringify(qqbot)}`);
+      return enabled === true ? ["send"] : [];
     },
     handleAction: async ({ action, params, cfg, accountId }: { action: string; params: Record<string, unknown>; cfg: OpenClawConfig; accountId?: string }) => {
       if (action === "send") {
