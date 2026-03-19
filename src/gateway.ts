@@ -2,9 +2,11 @@ import WebSocket from "ws";
 import path from "node:path";
 import * as fs from "node:fs";
 import type { ResolvedQQBotAccount, WSPayload, C2CMessageEvent, GuildMessageEvent, GroupMessageEvent } from "./types.js";
-import { getAccessToken, getGatewayUrl, sendC2CMessage, sendChannelMessage, sendGroupMessage, clearTokenCache, sendC2CImageMessage, sendGroupImageMessage, sendC2CVoiceMessage, sendGroupVoiceMessage, sendC2CVideoMessage, sendGroupVideoMessage, sendC2CFileMessage, sendGroupFileMessage, initApiConfig, startBackgroundTokenRefresh, stopBackgroundTokenRefresh, sendC2CInputNotify, onMessageSent } from "./api.js";
+import { getAccessToken, getGatewayUrl, sendC2CMessage, sendChannelMessage, sendGroupMessage, clearTokenCache, sendC2CImageMessage, sendGroupImageMessage, sendC2CVoiceMessage, sendGroupVoiceMessage, sendC2CVideoMessage, sendGroupVideoMessage, sendC2CFileMessage, sendGroupFileMessage, initApiConfig, startBackgroundTokenRefresh, stopBackgroundTokenRefresh, sendC2CInputNotify, onMessageSent, sendProactiveC2CMessage } from "./api.js";
 import { loadSession, saveSession, clearSession, type SessionState } from "./session-store.js";
-import { recordKnownUser, flushKnownUsers } from "./known-users.js";
+import { recordKnownUser, flushKnownUsers, listKnownUsers } from "./known-users.js";
+import { matchSlashCommand, getPluginVersion, type SlashCommandContext, type SlashCommandFileResult, type QueueSnapshot } from "./slash-commands.js";
+import { triggerUpdateCheck } from "./update-checker.js";
 import { getQQBotRuntime } from "./runtime.js";
 import { getImageSize, formatQQBotMarkdownImage, hasQQBotImageSize, DEFAULT_IMAGE_SIZE } from "./utils/image-size.js";
 import { parseQQBotPayload, encodePayloadForCron, isCronReminderPayload, isMediaPayload, type CronReminderPayload, type MediaPayload } from "./utils/payload.js";
@@ -345,6 +347,53 @@ function buildAttachmentSummaries(
   });
 }
 
+// ============ 启动问候语（首次安装/版本更新 vs 普通重启） ============
+
+// 模块级变量：进程生命周期内只有首次为 true
+// 区分 gateway restart（进程重启）和 health-monitor 断线重连
+let isFirstReadyGlobal = true;
+
+const STARTUP_MARKER_FILE = path.join(getQQBotDataDir("data"), "startup-marker.json");
+
+/**
+ * 判断是否为首次安装或版本更新，返回对应的问候语。
+ * - 首次安装 / 版本变更 → "Haha，我的'灵魂'已上线，随时等你吩咐。"
+ * - 普通重启（同版本） → null（不发送）
+ */
+function getStartupGreeting(): string | null {
+  const currentVersion = getPluginVersion();
+  let isFirstOrUpdated = true;
+
+  try {
+    if (fs.existsSync(STARTUP_MARKER_FILE)) {
+      const data = JSON.parse(fs.readFileSync(STARTUP_MARKER_FILE, "utf8"));
+      if (data.version === currentVersion) {
+        isFirstOrUpdated = false;
+      }
+    }
+  } catch {
+    // 文件损坏或不存在，视为首次
+  }
+
+  // 普通重启（同版本）不发送问候语
+  if (!isFirstOrUpdated) {
+    return null;
+  }
+
+  // 更新 marker 文件
+  try {
+    fs.writeFileSync(STARTUP_MARKER_FILE, JSON.stringify({
+      version: currentVersion,
+      startedAt: new Date().toISOString(),
+      greetedAt: new Date().toISOString(),
+    }) + "\n");
+  } catch {
+    // ignore
+  }
+
+  return `Haha，我的'灵魂'已上线，随时等你吩咐。`;
+}
+
 /**
  * 启动 Gateway WebSocket 连接（带自动重连）
  * 支持流式消息发送
@@ -369,6 +418,9 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
     markdownSupport: account.markdownSupport,
   });
   log?.info(`[qqbot:${account.accountId}] API config: markdownSupport=${account.markdownSupport === true}`);
+
+  // 后台版本检查（供 /bot-version、/bot-upgrade 指令被动查询）
+  triggerUpdateCheck(log);
 
   // TTS 配置验证
   const ttsCfg = resolveTTSConfig(cfg as Record<string, unknown>);
@@ -438,6 +490,70 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
     lastSuccessfulIntentLevel = savedSession.intentLevelIndex;
     log?.info(`[qqbot:${account.accountId}] Restored session from storage: sessionId=${sessionId}, lastSeq=${lastSeq}, intentLevel=${intentLevelIndex}`);
   }
+
+  // ============ 管理员识别 + 启动问候 ============
+
+  const ADMIN_MARKER_FILE = path.join(getQQBotDataDir("data"), `admin-${account.accountId}.json`);
+
+  const loadAdminOpenId = (): string | undefined => {
+    try {
+      if (fs.existsSync(ADMIN_MARKER_FILE)) {
+        const data = JSON.parse(fs.readFileSync(ADMIN_MARKER_FILE, "utf8"));
+        if (data.openid) return data.openid;
+      }
+    } catch { /* 文件损坏视为无 */ }
+    return undefined;
+  };
+
+  const saveAdminOpenId = (openid: string): void => {
+    try {
+      fs.writeFileSync(ADMIN_MARKER_FILE, JSON.stringify({ openid, savedAt: new Date().toISOString() }));
+    } catch { /* ignore */ }
+  };
+
+  /**
+   * 解析管理员 openid：
+   * 1. 优先读持久化文件（稳定）
+   * 2. fallback 取第一个私聊用户，并写入文件锁定
+   */
+  const resolveAdminOpenId = (): string | undefined => {
+    const saved = loadAdminOpenId();
+    if (saved) return saved;
+    const first = listKnownUsers({ accountId: account.accountId, type: "c2c", sortBy: "firstSeenAt", sortOrder: "asc", limit: 1 })[0]?.openid;
+    if (first) {
+      saveAdminOpenId(first);
+      log?.info(`[qqbot:${account.accountId}] Auto-detected admin openid: ${first} (persisted)`);
+    }
+    return first;
+  };
+
+  /** 异步发送启动问候语（仅发给管理员） */
+  const sendStartupGreetings = (trigger: "READY" | "RESUMED") => {
+    (async () => {
+      try {
+        const greeting = getStartupGreeting();
+        if (!greeting) {
+          log?.info(`[qqbot:${account.accountId}] Skipping startup greeting (debounced, trigger=${trigger})`);
+          return;
+        }
+        const adminId = resolveAdminOpenId();
+        if (!adminId) {
+          log?.info(`[qqbot:${account.accountId}] Skipping startup greeting (no admin or known user)`);
+          return;
+        }
+        log?.info(`[qqbot:${account.accountId}] Sending startup greeting to admin (trigger=${trigger}): "${greeting}"`);
+        const token = await getAccessToken(account.appId, account.clientSecret);
+        const GREETING_TIMEOUT_MS = 10_000;
+        await Promise.race([
+          sendProactiveC2CMessage(token, adminId, greeting),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("Startup greeting send timeout (10s)")), GREETING_TIMEOUT_MS)),
+        ]);
+        log?.info(`[qqbot:${account.accountId}] Sent startup greeting to admin: ${adminId}`);
+      } catch (err) {
+        log?.error(`[qqbot:${account.accountId}] Failed to send startup greeting: ${err}`);
+      }
+    })();
+  };
 
   // ============ 按用户并发的消息队列（同用户串行，跨用户并行） ============
   // 每个用户有独立队列，同一用户的消息串行处理（保持时序），
@@ -557,6 +673,99 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
   const startMessageProcessor = (handleMessageFn: (msg: QueuedMessage) => Promise<void>): void => {
     handleMessageFnRef = handleMessageFn;
     log?.info(`[qqbot:${account.accountId}] Message processor started (per-user concurrency, max ${MAX_CONCURRENT_USERS} users)`);
+  };
+
+  // 获取队列状态快照（供斜杠指令使用）
+  const getQueueSnapshot = (senderPeerId: string): QueueSnapshot => {
+    let totalPending = 0;
+    for (const [, q] of userQueues) {
+      totalPending += q.length;
+    }
+    const senderQueue = userQueues.get(senderPeerId);
+    return {
+      totalPending,
+      activeUsers: activeUsers.size,
+      maxConcurrentUsers: MAX_CONCURRENT_USERS,
+      senderPending: senderQueue ? senderQueue.length : 0,
+    };
+  };
+
+  // 斜杠指令拦截：在入队前匹配插件级指令，命中则直接回复，不入队
+  const trySlashCommandOrEnqueue = async (msg: QueuedMessage): Promise<void> => {
+    const content = (msg.content ?? "").trim();
+    if (!content.startsWith("/")) {
+      enqueueMessage(msg);
+      return;
+    }
+
+    const receivedAt = Date.now();
+    const peerId = getMessagePeerId(msg);
+
+    const cmdCtx: SlashCommandContext = {
+      type: msg.type,
+      senderId: msg.senderId,
+      senderName: msg.senderName,
+      messageId: msg.messageId,
+      eventTimestamp: msg.timestamp,
+      receivedAt,
+      rawContent: content,
+      args: "",
+      channelId: msg.channelId,
+      groupOpenid: msg.groupOpenid,
+      accountId: account.accountId,
+      accountConfig: account.config,
+      queueSnapshot: getQueueSnapshot(peerId),
+    };
+
+    try {
+      const reply = await matchSlashCommand(cmdCtx);
+      if (reply === null) {
+        // 不是插件级指令，正常入队交给框架
+        enqueueMessage(msg);
+        return;
+      }
+
+      // 命中插件级指令，直接回复
+      log?.info(`[qqbot:${account.accountId}] Slash command matched: ${content}, replying directly`);
+      const token = await getAccessToken(account.appId, account.clientSecret);
+
+      // 解析回复：纯文本 or 带文件的结果
+      const isFileResult = typeof reply === "object" && reply !== null && "filePath" in reply;
+      const replyText = isFileResult ? (reply as SlashCommandFileResult).text : reply as string;
+      const replyFile = isFileResult ? (reply as SlashCommandFileResult).filePath : null;
+
+      // 先发送文本回复
+      if (msg.type === "c2c") {
+        await sendC2CMessage(token, msg.senderId, replyText, msg.messageId);
+      } else if (msg.type === "group" && msg.groupOpenid) {
+        await sendGroupMessage(token, msg.groupOpenid, replyText, msg.messageId);
+      } else if (msg.channelId) {
+        await sendChannelMessage(token, msg.channelId, replyText, msg.messageId);
+      } else if (msg.type === "dm") {
+        await sendC2CMessage(token, msg.senderId, replyText, msg.messageId);
+      }
+
+      // 如果有文件需要发送
+      if (replyFile) {
+        try {
+          const fileBuffer = fs.readFileSync(replyFile);
+          const fileBase64 = fileBuffer.toString("base64");
+          const fileName = path.basename(replyFile);
+          if (msg.type === "c2c") {
+            await sendC2CFileMessage(token, msg.senderId, fileBase64, undefined, msg.messageId, fileName);
+          } else if (msg.type === "group" && msg.groupOpenid) {
+            await sendGroupFileMessage(token, msg.groupOpenid, fileBase64, undefined, msg.messageId, fileName);
+          }
+          log?.info(`[qqbot:${account.accountId}] Slash command file sent: ${replyFile}`);
+        } catch (fileErr) {
+          log?.error(`[qqbot:${account.accountId}] Failed to send slash command file: ${fileErr}`);
+        }
+      }
+    } catch (err) {
+      log?.error(`[qqbot:${account.accountId}] Slash command error: ${err}`);
+      // 出错时回退到正常入队
+      enqueueMessage(msg);
+    }
   };
 
   abortSignal.addEventListener("abort", () => {
@@ -2406,8 +2615,23 @@ ${mediaSection}
                   appId: account.appId,
                 });
                 onReady?.(d);
+
+                // 仅 startGateway 后的首次 READY 才发送上线通知
+                // ws 断线重连（resume 失败后重新 Identify）产生的 READY 不发送
+                if (!isFirstReadyGlobal) {
+                  log?.info(`[qqbot:${account.accountId}] Skipping startup greeting (reconnect READY, not first startup)`);
+                } else {
+                  isFirstReadyGlobal = false;
+                  sendStartupGreetings("READY");
+                }
               } else if (t === "RESUMED") {
                 log?.info(`[qqbot:${account.accountId}] Session resumed`);
+                onReady?.(d); // 通知框架连接已恢复
+                // RESUMED 也属于首次启动（gateway restart 通常走 resume）
+                if (isFirstReadyGlobal) {
+                  isFirstReadyGlobal = false;
+                  sendStartupGreetings("RESUMED");
+                }
                 // P1-2: 更新 Session 连接时间
                 if (sessionId) {
                   saveSession({
@@ -2433,7 +2657,8 @@ ${mediaSection}
                 // 日志：输出用户输入完整 JSON
                 log?.info(`[qqbot:${account.accountId}] ▶ INBOUND C2C RAW: ${JSON.stringify(event)}`);
                 // 使用消息队列异步处理，防止阻塞心跳
-                enqueueMessage({
+                // 斜杠指令拦截 → 不匹配则入队
+                trySlashCommandOrEnqueue({
                   type: "c2c",
                   senderId: event.author.user_openid,
                   content: event.content,
@@ -2454,7 +2679,7 @@ ${mediaSection}
                 });
                 const guildRefs = parseRefIndices((event as any).message_scene?.ext);
                 log?.info(`[qqbot:${account.accountId}] ▶ INBOUND GUILD RAW: ${JSON.stringify(event)}`);
-                enqueueMessage({
+                trySlashCommandOrEnqueue({
                   type: "guild",
                   senderId: event.author.id,
                   senderName: event.author.username,
@@ -2478,7 +2703,7 @@ ${mediaSection}
                 });
                 const dmRefs = parseRefIndices((event as any).message_scene?.ext);
                 log?.info(`[qqbot:${account.accountId}] ▶ INBOUND DM RAW: ${JSON.stringify(event)}`);
-                enqueueMessage({
+                trySlashCommandOrEnqueue({
                   type: "dm",
                   senderId: event.author.id,
                   senderName: event.author.username,
@@ -2501,7 +2726,7 @@ ${mediaSection}
                 });
                 const groupRefs = parseRefIndices(event.message_scene?.ext);
                 log?.info(`[qqbot:${account.accountId}] ▶ INBOUND GROUP RAW: ${JSON.stringify(event)}`);
-                enqueueMessage({
+                trySlashCommandOrEnqueue({
                   type: "group",
                   senderId: event.author.member_openid,
                   content: event.content,

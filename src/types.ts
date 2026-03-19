@@ -49,6 +49,8 @@ export interface QQBotAccountConfig {
    * 统一管理入站（STT）和出站（上传）的音频格式转换行为
    */
   audioFormatPolicy?: AudioFormatPolicy;
+  /** /bot-upgrade 指令返回的自定义升级指引网址 */
+  upgradeUrl?: string;
 }
 
 /**

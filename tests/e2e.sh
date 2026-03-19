@@ -398,6 +398,429 @@ MSG_NOEXT_URL=$(assert_success "detect.url_no_extension" \
 assert_http_ok "detect.url_no_extension_http" "$MSG_NOEXT_URL" || true
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# TEST SUITE 7: 斜杠指令系统 — 单元级验证 (Slash Commands)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+log_section "Suite 7: Slash Commands — Unit-Level Verification"
+
+# 斜杠指令是 inbound 功能（用户 → Bot），gateway 内拦截后直接回复。
+# E2E 框架中 `openclaw message send` 是 Bot → 用户（outbound），无法模拟用户发消息给 Bot。
+# 因此这里用 Node.js 直接 import 编译后的模块，调用 matchSlashCommand() 验证逻辑正确性。
+
+# 确定编译产物路径
+SLASH_CMD_JS=""
+PLUGIN_DIR_7=$(openclaw plugins dir 2>/dev/null || echo "")
+if [ -n "$PLUGIN_DIR_7" ] && [ -f "${PLUGIN_DIR_7}/node_modules/@sliverp/qqbot/dist/slash-commands.js" ]; then
+  SLASH_CMD_JS="${PLUGIN_DIR_7}/node_modules/@sliverp/qqbot/dist/slash-commands.js"
+elif [ -f "dist/slash-commands.js" ]; then
+  SLASH_CMD_JS="$(pwd)/dist/slash-commands.js"
+fi
+
+if [ -n "$SLASH_CMD_JS" ]; then
+  log "Using slash-commands.js: $SLASH_CMD_JS"
+
+  # 生成临时测试脚本（Node ESM）
+  SLASH_TEST_SCRIPT="/tmp/e2e-slash-test-$$.mjs"
+  cat > "$SLASH_TEST_SCRIPT" << 'SLASH_EOF'
+import { matchSlashCommand, getPluginVersion } from "$SLASH_CMD_MODULE";
+
+const results = [];
+
+// 构造最小化的 SlashCommandContext
+function makeCtx(rawContent) {
+  return {
+    type: "c2c",
+    senderId: "test-user-001",
+    senderName: "TestUser",
+    messageId: "msg-001",
+    eventTimestamp: new Date(Date.now() - 100).toISOString(),
+    receivedAt: Date.now(),
+    rawContent,
+    args: "",
+    accountId: "test-account",
+    accountConfig: { upgradeUrl: "https://example.com/upgrade" },
+    queueSnapshot: { totalPending: 0, activeUsers: 0, maxConcurrentUsers: 5, senderPending: 0 },
+  };
+}
+
+async function test(name, fn) {
+  try {
+    const ok = await fn();
+    results.push({ name, ok, detail: ok ? "" : "assertion failed" });
+  } catch (e) {
+    results.push({ name, ok: false, detail: String(e.message || e) });
+  }
+}
+
+// T1: /bot-ping 应返回包含 "pong" 的字符串
+await test("slash.ping_returns_pong", async () => {
+  const r = await matchSlashCommand(makeCtx("/bot-ping"));
+  return typeof r === "string" && r.toLowerCase().includes("pong");
+});
+
+// T2: /bot-version 应返回包含版本号的字符串
+await test("slash.version_returns_version", async () => {
+  const r = await matchSlashCommand(makeCtx("/bot-version"));
+  return typeof r === "string" && r.includes("插件版本");
+});
+
+// T3: /bot-help 应返回包含所有指令的列表
+await test("slash.help_lists_commands", async () => {
+  const r = await matchSlashCommand(makeCtx("/bot-help"));
+  return typeof r === "string"
+    && r.includes("/bot-ping")
+    && r.includes("/bot-version")
+    && r.includes("/bot-help")
+    && r.includes("/bot-upgrade")
+    && r.includes("/bot-logs");
+});
+
+// T4: /bot-upgrade 应返回包含升级指引 URL 的字符串
+await test("slash.upgrade_returns_url", async () => {
+  const r = await matchSlashCommand(makeCtx("/bot-upgrade"));
+  return typeof r === "string" && r.includes("https://example.com/upgrade");
+});
+
+// T5: /bot-logs 应返回 string 或 { text, filePath } 对象
+await test("slash.logs_returns_result", async () => {
+  const r = await matchSlashCommand(makeCtx("/bot-logs"));
+  if (r === null) return false;
+  // 可能无日志文件返回警告文本，也算正常
+  if (typeof r === "string") return r.length > 0;
+  if (typeof r === "object" && r.text && r.filePath) return true;
+  return false;
+});
+
+// T6: 非插件指令应返回 null（透传给 AI 框架）
+await test("slash.unknown_returns_null", async () => {
+  const r = await matchSlashCommand(makeCtx("/unknown-command"));
+  return r === null;
+});
+
+// T7: 普通文本（不以 / 开头）应返回 null
+await test("slash.plain_text_returns_null", async () => {
+  const r = await matchSlashCommand(makeCtx("hello world"));
+  return r === null;
+});
+
+// T8: /bot-ping 带参数也能正常工作
+await test("slash.ping_with_args", async () => {
+  const r = await matchSlashCommand(makeCtx("/bot-ping extra args"));
+  return typeof r === "string" && r.toLowerCase().includes("pong");
+});
+
+// T9: 指令名大小写不敏感
+await test("slash.case_insensitive", async () => {
+  const r = await matchSlashCommand(makeCtx("/BOT-PING"));
+  return typeof r === "string" && r.toLowerCase().includes("pong");
+});
+
+// T10: getPluginVersion 返回非空版本号
+await test("slash.plugin_version_defined", async () => {
+  const v = getPluginVersion();
+  return typeof v === "string" && v !== "unknown" && v.length > 0;
+});
+
+// 输出 JSON 结果
+console.log(JSON.stringify(results));
+SLASH_EOF
+
+  # 替换模块路径占位符
+  sed -i "s|\$SLASH_CMD_MODULE|${SLASH_CMD_JS}|g" "$SLASH_TEST_SCRIPT"
+
+  # 执行测试
+  SLASH_RESULT=$(node "$SLASH_TEST_SCRIPT" 2>/dev/null) || SLASH_RESULT="[]"
+  rm -f "$SLASH_TEST_SCRIPT"
+
+  # 解析结果并逐条记录
+  SLASH_COUNT=$(echo "$SLASH_RESULT" | jq 'length' 2>/dev/null || echo "0")
+  if [ "$SLASH_COUNT" -gt 0 ]; then
+    for i in $(seq 0 $((SLASH_COUNT - 1))); do
+      T_NAME=$(echo "$SLASH_RESULT" | jq -r ".[$i].name")
+      T_OK=$(echo "$SLASH_RESULT" | jq -r ".[$i].ok")
+      T_DETAIL=$(echo "$SLASH_RESULT" | jq -r ".[$i].detail")
+      if [ "$T_OK" = "true" ]; then
+        record_result "$T_NAME" "pass"
+      else
+        record_result "$T_NAME" "fail" "$T_DETAIL"
+      fi
+    done
+  else
+    record_result "slash.node_test_runner" "fail" "Node test script produced no results: ${SLASH_RESULT}"
+  fi
+else
+  log "⚠️ 未找到编译后的 slash-commands.js，跳过斜杠指令单元测试"
+  for name in slash.ping_returns_pong slash.version_returns_version slash.help_lists_commands \
+              slash.upgrade_returns_url slash.logs_returns_result slash.unknown_returns_null \
+              slash.plain_text_returns_null slash.ping_with_args slash.case_insensitive \
+              slash.plugin_version_defined; do
+    record_result "$name" "skip" "slash-commands.js not found"
+  done
+fi
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# TEST SUITE 8: 编译完整性 & 新模块验证
+#   验证 update-checker / slash-commands 模块编译产物存在、
+#   gateway 日志中出现版本检查 & 问候相关日志、
+#   upgradeUrl 配置可写入
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+log_section "Suite 8: Build Integrity & New Module Verification"
+
+# 8.1 编译产物存在：slash-commands.js
+PLUGIN_DIR=$(openclaw plugins dir 2>/dev/null || echo "")
+if [ -n "$PLUGIN_DIR" ]; then
+  QQBOT_DIST="${PLUGIN_DIR}/node_modules/@sliverp/qqbot/dist"
+  if [ -f "${QQBOT_DIST}/slash-commands.js" ]; then
+    record_result "build.slash_commands_js_exists" "pass"
+  else
+    record_result "build.slash_commands_js_exists" "fail" "slash-commands.js not found in ${QQBOT_DIST}"
+  fi
+
+  # 8.2 编译产物存在：update-checker.js
+  if [ -f "${QQBOT_DIST}/update-checker.js" ]; then
+    record_result "build.update_checker_js_exists" "pass"
+  else
+    record_result "build.update_checker_js_exists" "fail" "update-checker.js not found in ${QQBOT_DIST}"
+  fi
+else
+  # 如果无法获取插件目录，尝试从项目 dist/ 检查
+  if [ -f "dist/slash-commands.js" ]; then
+    record_result "build.slash_commands_js_exists" "pass"
+  else
+    record_result "build.slash_commands_js_exists" "skip" "cannot determine plugin dist directory"
+  fi
+  if [ -f "dist/update-checker.js" ]; then
+    record_result "build.update_checker_js_exists" "pass"
+  else
+    record_result "build.update_checker_js_exists" "skip" "cannot determine plugin dist directory"
+  fi
+fi
+
+# 8.3 源文件存在性检查
+if [ -f "src/slash-commands.ts" ]; then
+  record_result "build.slash_commands_ts_exists" "pass"
+else
+  record_result "build.slash_commands_ts_exists" "fail" "src/slash-commands.ts not found"
+fi
+
+if [ -f "src/update-checker.ts" ]; then
+  record_result "build.update_checker_ts_exists" "pass"
+else
+  record_result "build.update_checker_ts_exists" "fail" "src/update-checker.ts not found"
+fi
+
+# 8.4 TypeScript 编译检查（增量编译验证新模块无类型错误）
+if command -v npx &>/dev/null; then
+  TSC_OUT=$(npx tsc --noEmit 2>&1) || TSC_EXIT=$?
+  TSC_EXIT=${TSC_EXIT:-0}
+  if [ "$TSC_EXIT" -eq 0 ]; then
+    record_result "build.tsc_no_errors" "pass"
+  else
+    # 提取前 5 行错误信息作为 detail
+    TSC_SUMMARY=$(echo "$TSC_OUT" | head -5 | tr '\n' ' ')
+    record_result "build.tsc_no_errors" "fail" "$TSC_SUMMARY"
+  fi
+else
+  record_result "build.tsc_no_errors" "skip" "npx not available"
+fi
+
+# 8.5 package.json 中包含新文件的导出条目（验证不遗漏）
+PKG_CONTENT=$(cat package.json 2>/dev/null || echo "{}")
+# 仅验证 exports/files 中是否包含相关条目；若 package.json 用 files 白名单
+if echo "$PKG_CONTENT" | grep -q "slash-commands"; then
+  record_result "build.pkg_slash_commands_ref" "pass"
+else
+  # 并非所有 package.json 都显式列出每个文件，非阻塞
+  record_result "build.pkg_slash_commands_ref" "skip" "slash-commands not referenced in package.json (may use wildcard)"
+fi
+
+# 8.6 upgradeUrl 配置可注入验证
+#     在 openclaw.json 中为 qqbot channel 添加 upgradeUrl 配置，重启后验证不报错
+OPENCLAW_CONFIG="$HOME/.openclaw/openclaw.json"
+if [ -f "$OPENCLAW_CONFIG" ]; then
+  # 备份配置
+  cp "$OPENCLAW_CONFIG" "${OPENCLAW_CONFIG}.bak"
+
+  # 尝试注入 upgradeUrl 到 qqbot 通道配置（使用 jq 安全修改）
+  UPDATED_CONFIG=$(jq '
+    if .channels.qqbot then
+      .channels.qqbot |= (
+        if type == "object" then
+          if .accounts then
+            .accounts |= map_values(.upgradeUrl = "https://example.com/upgrade-test")
+          else
+            .upgradeUrl = "https://example.com/upgrade-test"
+          end
+        else .
+        end
+      )
+    else .
+    end
+  ' "$OPENCLAW_CONFIG" 2>/dev/null) || UPDATED_CONFIG=""
+
+  if [ -n "$UPDATED_CONFIG" ]; then
+    echo "$UPDATED_CONFIG" > "$OPENCLAW_CONFIG"
+    log "已注入 upgradeUrl 测试配置"
+
+    # 重启 gateway 验证不会因新配置项崩溃
+    RESTART_OUT=$(openclaw gateway restart 2>&1) || RESTART_EXIT=$?
+    RESTART_EXIT=${RESTART_EXIT:-0}
+    sleep 3
+
+    if [ "$RESTART_EXIT" -eq 0 ]; then
+      record_result "config.upgrade_url_inject" "pass"
+    else
+      record_result "config.upgrade_url_inject" "fail" "gateway restart failed after injecting upgradeUrl"
+    fi
+
+    # 恢复配置
+    cp "${OPENCLAW_CONFIG}.bak" "$OPENCLAW_CONFIG"
+    rm -f "${OPENCLAW_CONFIG}.bak"
+
+    # 再次重启恢复原始状态
+    openclaw gateway restart &>/dev/null || true
+    sleep 3
+  else
+    record_result "config.upgrade_url_inject" "skip" "jq failed to modify config"
+    rm -f "${OPENCLAW_CONFIG}.bak"
+  fi
+else
+  record_result "config.upgrade_url_inject" "skip" "openclaw.json not found"
+fi
+
+# 8.7 验证 gateway 日志中出现版本检查相关输出
+#     Gateway 启动后应触发 triggerUpdateCheck，日志中出现 "update-checker" 关键字
+GATEWAY_LOG="$HOME/.openclaw/logs/gateway.log"
+if [ -f "$GATEWAY_LOG" ]; then
+  # 检查最近 200 行日志中是否有版本检查相关日志
+  RECENT_LOG=$(tail -200 "$GATEWAY_LOG" 2>/dev/null || echo "")
+  if echo "$RECENT_LOG" | grep -qi "update-checker\|version.*check\|triggerUpdate"; then
+    record_result "runtime.update_checker_logged" "pass"
+  else
+    record_result "runtime.update_checker_logged" "skip" "update-checker log not found in recent gateway.log (may not have run yet)"
+  fi
+
+  # 8.8 验证启动问候相关日志（首次安装 or debounced skip 均可）
+  if echo "$RECENT_LOG" | grep -qi "startup greeting\|Skipping startup greeting\|Sent startup greeting"; then
+    record_result "runtime.startup_greeting_logged" "pass"
+  else
+    record_result "runtime.startup_greeting_logged" "skip" "startup greeting log not found in recent gateway.log"
+  fi
+
+  # 8.9 验证斜杠指令拦截日志（需要真实用户发送过 /bot-* 指令才会出现）
+  if echo "$RECENT_LOG" | grep -qi "Slash command matched"; then
+    record_result "runtime.slash_command_intercepted" "pass"
+  else
+    record_result "runtime.slash_command_intercepted" "skip" "slash command interception log not found (requires real user to send /bot-* commands)"
+  fi
+else
+  record_result "runtime.update_checker_logged" "skip" "gateway.log not found"
+  record_result "runtime.startup_greeting_logged" "skip" "gateway.log not found"
+  record_result "runtime.slash_command_intercepted" "skip" "gateway.log not found"
+fi
+
+# 8.10 startup-marker.json 文件验证
+MARKER_FILE="$HOME/.openclaw/qqbot/data/startup-marker.json"
+if [ -f "$MARKER_FILE" ]; then
+  MARKER_CONTENT=$(cat "$MARKER_FILE" 2>/dev/null || echo "{}")
+  if echo "$MARKER_CONTENT" | jq -e '.version' &>/dev/null; then
+    record_result "runtime.startup_marker_valid" "pass"
+  else
+    record_result "runtime.startup_marker_valid" "fail" "startup-marker.json exists but has no 'version' field"
+  fi
+else
+  record_result "runtime.startup_marker_valid" "skip" "startup-marker.json not yet created (first run may not have completed)"
+fi
+
+# 8.11 update-checker 模块单元验证（Node.js import 测试）
+UPDATE_CHK_JS=""
+if [ -n "$PLUGIN_DIR" ] && [ -f "${PLUGIN_DIR}/node_modules/@sliverp/qqbot/dist/update-checker.js" ]; then
+  UPDATE_CHK_JS="${PLUGIN_DIR}/node_modules/@sliverp/qqbot/dist/update-checker.js"
+elif [ -f "dist/update-checker.js" ]; then
+  UPDATE_CHK_JS="$(pwd)/dist/update-checker.js"
+fi
+
+if [ -n "$UPDATE_CHK_JS" ]; then
+  UC_TEST_SCRIPT="/tmp/e2e-uc-test-$$.mjs"
+  cat > "$UC_TEST_SCRIPT" << 'UC_EOF'
+import { getUpdateInfo, triggerUpdateCheck } from "$UC_MODULE";
+
+const results = [];
+
+function test(name, fn) {
+  try {
+    const ok = fn();
+    results.push({ name, ok, detail: ok ? "" : "assertion failed" });
+  } catch (e) {
+    results.push({ name, ok: false, detail: String(e.message || e) });
+  }
+}
+
+// T1: getUpdateInfo 初始状态应返回合理结构
+test("uc.get_info_structure", () => {
+  const info = getUpdateInfo();
+  return info !== null
+    && typeof info === "object"
+    && typeof info.current === "string"
+    && typeof info.hasUpdate === "boolean"
+    && typeof info.checkedAt === "number";
+});
+
+// T2: getUpdateInfo().current 应等于 package.json 版本
+test("uc.current_version_set", () => {
+  const info = getUpdateInfo();
+  return info.current !== "unknown" && info.current.length > 0;
+});
+
+// T3: triggerUpdateCheck 是函数且可无参调用不报错
+test("uc.trigger_callable", () => {
+  triggerUpdateCheck(); // 无 log 参数也不应报错
+  return true;
+});
+
+// T4: 初始状态 hasUpdate = false（尚未完成检查）
+test("uc.initial_no_update", () => {
+  const info = getUpdateInfo();
+  return info.hasUpdate === false;
+});
+
+// T5: getUpdateInfo 返回独立副本（修改不影响内部状态）
+test("uc.returns_copy", () => {
+  const a = getUpdateInfo();
+  a.current = "tampered";
+  const b = getUpdateInfo();
+  return b.current !== "tampered";
+});
+
+console.log(JSON.stringify(results));
+UC_EOF
+
+  sed -i "s|\$UC_MODULE|${UPDATE_CHK_JS}|g" "$UC_TEST_SCRIPT"
+
+  UC_RESULT=$(node "$UC_TEST_SCRIPT" 2>/dev/null) || UC_RESULT="[]"
+  rm -f "$UC_TEST_SCRIPT"
+
+  UC_COUNT=$(echo "$UC_RESULT" | jq 'length' 2>/dev/null || echo "0")
+  if [ "$UC_COUNT" -gt 0 ]; then
+    for i in $(seq 0 $((UC_COUNT - 1))); do
+      T_NAME=$(echo "$UC_RESULT" | jq -r ".[$i].name")
+      T_OK=$(echo "$UC_RESULT" | jq -r ".[$i].ok")
+      T_DETAIL=$(echo "$UC_RESULT" | jq -r ".[$i].detail")
+      if [ "$T_OK" = "true" ]; then
+        record_result "$T_NAME" "pass"
+      else
+        record_result "$T_NAME" "fail" "$T_DETAIL"
+      fi
+    done
+  else
+    record_result "uc.node_test_runner" "fail" "Node test script produced no results: ${UC_RESULT}"
+  fi
+else
+  for name in uc.get_info_structure uc.current_version_set uc.trigger_callable uc.initial_no_update uc.returns_copy; do
+    record_result "$name" "skip" "update-checker.js not found"
+  done
+fi
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 生成报告
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 log_section "测试报告 / Test Report"
