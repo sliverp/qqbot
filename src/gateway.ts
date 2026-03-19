@@ -1036,7 +1036,9 @@ ${mediaSection}
         // 命令直接透传，不注入上下文
         const userMessage = `${quotePart}${userContent}`;
         // 如果启用了原生工具，则不注入提示词上下文；否则使用提示词注入方式
-        const useNativeTools = account.config?.enableNativeTools === true;
+        // enableNativeTools 是插件级配置，从 cfg.channels.qqbot.enableNativeTools 读取
+        const qqbotCfg = (cfg as { channels?: { qqbot?: { enableNativeTools?: boolean } } })?.channels?.qqbot;
+        const useNativeTools = qqbotCfg?.enableNativeTools === true;
         const agentBody = userContent.startsWith("/")
           ? userContent
           : useNativeTools

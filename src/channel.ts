@@ -278,20 +278,22 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
   },
   actions: {
     listActions: ({ cfg }: { cfg: OpenClawConfig }) => {
-      const account = resolveQQBotAccount(cfg, undefined);
-      if (!account.enableNativeTools) {
-        return [];
-      }
-      return ["send"];
+      // 插件级配置：检查 channels.qqbot.enableNativeTools
+      const qqbot = cfg.channels?.qqbot as Record<string, unknown> | undefined;
+      return qqbot?.enableNativeTools === true ? ["send"] : [];
     },
     handleAction: async ({ action, params, cfg, accountId }: { action: string; params: Record<string, unknown>; cfg: OpenClawConfig; accountId?: string }) => {
       if (action === "send") {
+        const qqbot = cfg.channels?.qqbot as Record<string, unknown> | undefined;
+        if (qqbot?.enableNativeTools !== true) {
+          throw new Error(`Native tools are not enabled for qqbot`);
+        }
+        const account = resolveQQBotAccount(cfg, accountId);
         const to = readStringParam(params, "to", { required: true });
         const media = readStringParam(params, "media");
         const message = readStringParam(params, "message");
         const replyTo = readStringParam(params, "replyTo");
 
-        const account = resolveQQBotAccount(cfg, accountId);
         initApiConfig({ markdownSupport: account.markdownSupport });
 
         if (media) {
