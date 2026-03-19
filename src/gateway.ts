@@ -349,9 +349,9 @@ function buildAttachmentSummaries(
 
 // ============ 启动问候语（首次安装/版本更新 vs 普通重启） ============
 
-// 模块级变量：进程生命周期内只有首次为 true
+// Per-account 首次 READY 标记：进程生命周期内每个账号只发送一次启动问候
 // 区分 gateway restart（进程重启）和 health-monitor 断线重连
-let isFirstReadyGlobal = true;
+const accountFirstReadySet = new Set<string>();
 
 const STARTUP_MARKER_FILE = path.join(getQQBotDataDir("data"), "startup-marker.json");
 
@@ -2616,20 +2616,20 @@ ${mediaSection}
                 });
                 onReady?.(d);
 
-                // 仅 startGateway 后的首次 READY 才发送上线通知
+                // 仅 startGateway 后的首次 READY 才发送上线通知（per-account）
                 // ws 断线重连（resume 失败后重新 Identify）产生的 READY 不发送
-                if (!isFirstReadyGlobal) {
+                if (accountFirstReadySet.has(account.accountId)) {
                   log?.info(`[qqbot:${account.accountId}] Skipping startup greeting (reconnect READY, not first startup)`);
                 } else {
-                  isFirstReadyGlobal = false;
+                  accountFirstReadySet.add(account.accountId);
                   sendStartupGreetings("READY");
                 }
               } else if (t === "RESUMED") {
                 log?.info(`[qqbot:${account.accountId}] Session resumed`);
                 onReady?.(d); // 通知框架连接已恢复
                 // RESUMED 也属于首次启动（gateway restart 通常走 resume）
-                if (isFirstReadyGlobal) {
-                  isFirstReadyGlobal = false;
+                if (!accountFirstReadySet.has(account.accountId)) {
+                  accountFirstReadySet.add(account.accountId);
                   sendStartupGreetings("RESUMED");
                 }
                 // P1-2: 更新 Session 连接时间

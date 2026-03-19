@@ -186,7 +186,7 @@ registerCommand({
   },
 });
 
-const DEFAULT_UPGRADE_URL = "https://github.com/nicepkg/openclaw-qqbot";
+const DEFAULT_UPGRADE_URL = "https://github.com/sliverp/qqbot";
 
 /**
  * /bot-upgrade — 查看版本更新状态 + 升级指引
