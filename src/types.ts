@@ -21,6 +21,8 @@ export interface ResolvedQQBotAccount {
   systemPrompt?: string;
   /** 是否支持 markdown 消息（默认 true） */
   markdownSupport: boolean;
+  /** 启用原生 message 工具 */
+  enableNativeTools?: boolean;
   config: QQBotAccountConfig;
 }
 
@@ -39,6 +41,8 @@ export interface QQBotAccountConfig {
   systemPrompt?: string;
   /** 是否支持 markdown 消息（默认 true，设为 false 可禁用） */
   markdownSupport?: boolean;
+  /** 启用原生 message 工具（让 AI 可以通过 message 工具发送媒体，否则使用 <qqmedia> 提示词方式） */
+  enableNativeTools?: boolean;
   /**
    * @deprecated 请使用 audioFormatPolicy.uploadDirectFormats
    * 可直接上传的音频格式（不转换为 SILK），向后兼容

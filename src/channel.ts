@@ -6,6 +6,21 @@ import {
   setAccountEnabledInConfigSection,
 } from "openclaw/plugin-sdk";
 
+// 简单工具函数（从 openclaw/dist/agents/tools/common.js 简化而来）
+function readStringParam(params: Record<string, unknown>, key: string, options: { required?: boolean; trim?: boolean; allowEmpty?: boolean } = {}) {
+  const { required = false, trim = true } = options;
+  const raw = params[key];
+  if (typeof raw !== "string") {
+    if (required) throw new Error(`${key} is required`);
+    return undefined;
+  }
+  return trim ? raw.trim() : raw;
+}
+
+function jsonResult(data: Record<string, unknown>) {
+  return { ok: true, ...data };
+}
+
 import type { ResolvedQQBotAccount } from "./types.js";
 import { DEFAULT_ACCOUNT_ID, listQQBotAccountIds, resolveQQBotAccount, applyQQBotAccountConfig, resolveDefaultQQBotAccountId } from "./config.js";
 import { sendText, sendMedia } from "./outbound.js";
@@ -259,6 +274,39 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
         messageId: result.messageId,
         error: result.error ? new Error(result.error) : undefined,
       };
+    },
+  },
+  actions: {
+    listActions: ({ cfg }: { cfg: OpenClawConfig }) => {
+      // 插件级配置：检查 channels.qqbot.enableNativeTools
+      const qqbot = cfg.channels?.qqbot as Record<string, unknown> | undefined;
+      const enabled = qqbot?.enableNativeTools;
+      console.log(`[qqbot] listActions called: enableNativeTools=${enabled}, type=${typeof enabled}, cfg.channels.qqbot=${JSON.stringify(qqbot)}`);
+      return enabled === true ? ["send"] : [];
+    },
+    handleAction: async ({ action, params, cfg, accountId }: { action: string; params: Record<string, unknown>; cfg: OpenClawConfig; accountId?: string }) => {
+      if (action === "send") {
+        const qqbot = cfg.channels?.qqbot as Record<string, unknown> | undefined;
+        if (qqbot?.enableNativeTools !== true) {
+          throw new Error(`Native tools are not enabled for qqbot`);
+        }
+        const account = resolveQQBotAccount(cfg, accountId);
+        const to = readStringParam(params, "to", { required: true });
+        const media = readStringParam(params, "media");
+        const message = readStringParam(params, "message");
+        const replyTo = readStringParam(params, "replyTo");
+
+        initApiConfig({ markdownSupport: account.markdownSupport });
+
+        if (media) {
+          const result = await sendMedia({ to: to!, text: message ?? "", mediaUrl: media, replyToId: replyTo ?? null, account });
+          return jsonResult({ channel: "qqbot", messageId: result.messageId, error: result.error ?? undefined });
+        } else {
+          const result = await sendText({ to: to!, text: message ?? "", replyToId: replyTo ?? null, account });
+          return jsonResult({ channel: "qqbot", messageId: result.messageId, error: result.error ?? undefined });
+        }
+      }
+      throw new Error(`Action ${action} is not supported for provider qqbot.`);
     },
   },
   gateway: {
