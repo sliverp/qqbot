@@ -32,6 +32,10 @@ interface STTConfig {
   baseUrl: string;
   apiKey: string;
   model: string;
+  cliMode?: boolean;
+  command?: string;
+  args?: string[];
+  timeoutSeconds?: number;
 }
 
 function resolveSTTConfig(cfg: Record<string, unknown>): STTConfig | null {
@@ -53,6 +57,19 @@ function resolveSTTConfig(cfg: Record<string, unknown>): STTConfig | null {
   // 回退到 tools.media.audio.models[0]（框架级配置）
   const audioModelEntry = c?.tools?.media?.audio?.models?.[0];
   if (audioModelEntry) {
+    // CLI 模式
+    if (audioModelEntry.type === "cli") {
+      return {
+        baseUrl: "",
+        apiKey: "",
+        model: "",
+        cliMode: true,
+        command: audioModelEntry.command,
+        args: audioModelEntry.args,
+        timeoutSeconds: audioModelEntry.timeoutSeconds ?? 60,
+      };
+    }
+    // Provider 模式
     const providerId: string = audioModelEntry?.provider || "openai";
     const providerCfg = c?.models?.providers?.[providerId];
     const baseUrl: string | undefined = audioModelEntry?.baseUrl || providerCfg?.baseUrl;
@@ -69,6 +86,27 @@ function resolveSTTConfig(cfg: Record<string, unknown>): STTConfig | null {
 async function transcribeAudio(audioPath: string, cfg: Record<string, unknown>): Promise<string | null> {
   const sttCfg = resolveSTTConfig(cfg);
   if (!sttCfg) return null;
+
+  // CLI 模式：调用本地 whisper 命令
+  if (sttCfg.cliMode && sttCfg.command) {
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const execFileAsync = promisify(execFile);
+    const args = (sttCfg.args ?? []).map((a: string) =>
+      a.replace("{{MediaPath}}", audioPath)
+    );
+    const timeoutMs = (sttCfg.timeoutSeconds ?? 60) * 1000;
+    try {
+      const { stdout } = await execFileAsync(sttCfg.command, args, { timeout: timeoutMs });
+      // whisper CLI 输出格式：[00:00.000 --> 00:02.000] 文字内容
+      const lines = stdout.split("\n")
+        .map((l: string) => l.replace(/^\[[\d:.]+\s*-->\s*[\d:.]+\]\s*/, "").trim())
+        .filter(Boolean);
+      return lines.join(" ") || null;
+    } catch (err: any) {
+      throw new Error(`STT CLI failed: ${String(err?.message ?? err).slice(0, 300)}`);
+    }
+  }
 
   const fileBuffer = fs.readFileSync(audioPath);
   const fileName = sanitizeFileName(path.basename(audioPath));
@@ -442,15 +480,42 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
   // ============ 按用户并发的消息队列（同用户串行，跨用户并行） ============
   // 每个用户有独立队列，同一用户的消息串行处理（保持时序），
   // 不同用户的消息并行处理（互不阻塞）。
-  
-  // 紧急命令列表：这些命令会立即执行，不进入队列
+
+    // 紧急命令列表：这些命令会立即执行，不进入队列
   const URGENT_COMMANDS = ["/stop"];
-  
+
   const userQueues = new Map<string, QueuedMessage[]>(); // peerId → 消息队列
   const activeUsers = new Set<string>(); // 正在处理中的用户
   let messagesProcessed = 0;
   let handleMessageFnRef: ((msg: QueuedMessage) => Promise<void>) | null = null;
   let totalEnqueued = 0; // 全局已入队总数（用于溢出保护）
+
+  // ============ 消息去重（防止 WebSocket resume 时消息被重复处理） ============
+  const processedMessageIds = new Set<string>();
+  const DEDUP_MAX_SIZE = 1000;
+  const DEDUP_TTL_MS = 10 * 60 * 1000; // 10 分钟
+  const processedMessageTimestamps = new Map<string, number>();
+
+  const isDuplicateMessage = (messageId: string): boolean => {
+    const now = Date.now();
+    for (const [id, ts] of processedMessageTimestamps) {
+      if (now - ts > DEDUP_TTL_MS) {
+        processedMessageIds.delete(id);
+        processedMessageTimestamps.delete(id);
+      }
+    }
+    if (processedMessageIds.has(messageId)) return true;
+    if (processedMessageIds.size >= DEDUP_MAX_SIZE) {
+      const oldest = processedMessageTimestamps.entries().next().value;
+      if (oldest) {
+        processedMessageIds.delete(oldest[0]);
+        processedMessageTimestamps.delete(oldest[0]);
+      }
+    }
+    processedMessageIds.add(messageId);
+    processedMessageTimestamps.set(messageId, now);
+    return false;
+  };
 
   // 获取消息的路由 key（决定并发隔离粒度）
   const getMessagePeerId = (msg: QueuedMessage): string => {
@@ -459,7 +524,88 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
     return `dm:${msg.senderId}`;
   };
 
+  // ============ Inbound 防抖（合并短时间内连续消息） ============
+  // 读取 cfg.messages.inbound.debounceMs，默认 0（不防抖）
+  // 在 debounceMs 时间窗口内连续收到的消息将合并为一条（内容换行拼接），
+  // 以最后一条消息的 ID/时间戳为准，减少模型被多次打断的问题。
+  const inboundDebounceMs: number = (() => {
+    const v = (cfg as any)?.messages?.inbound?.debounceMs;
+    return typeof v === "number" && v > 0 ? v : 0;
+  })();
+  const debounceBuffers = new Map<string, { msgs: QueuedMessage[]; timer: ReturnType<typeof setTimeout> }>();
+  const flushDebounceBuffer = (peerId: string) => {
+    const buf = debounceBuffers.get(peerId);
+    if (!buf) return;
+    debounceBuffers.delete(peerId);
+    if (buf.msgs.length === 0) return;
+    if (buf.msgs.length === 1) {
+      enqueueMessage(buf.msgs[0]);
+      return;
+    }
+    // 合并多条消息：以最后一条为基准，content 换行拼接
+    // refMsgIdx 取第一条非空值（避免引用被后续无引用消息覆盖）
+    const firstRefMsgIdx = buf.msgs.find(m => m.refMsgIdx)?.refMsgIdx;
+    const merged: QueuedMessage = {
+      ...buf.msgs[buf.msgs.length - 1],
+      content: buf.msgs.map(m => m.content).filter(Boolean).join("\n"),
+      ...(firstRefMsgIdx ? { refMsgIdx: firstRefMsgIdx } : {}),
+    };
+    enqueueMessage(merged);
+  };
+  const enqueueWithDebounce = (msg: QueuedMessage): void => {
+    if (inboundDebounceMs <= 0) {
+      enqueueMessage(msg);
+      return;
+    }
+
+    const content = (msg.content ?? "").trim();
+
+    // 紧急命令（/stop 等）或斜杠命令：跳过 debounce，立即入队
+    const isUrgentOrSlash =
+      URGENT_COMMANDS.some(cmd => content.toLowerCase().startsWith(cmd.toLowerCase())) ||
+      content.startsWith("/");
+    if (isUrgentOrSlash) {
+      // 若当前 peer 有缓冲中的消息，先 flush 再处理本条
+      const peerId = getMessagePeerId(msg);
+      if (debounceBuffers.has(peerId)) {
+        const buf = debounceBuffers.get(peerId)!;
+        clearTimeout(buf.timer);
+        flushDebounceBuffer(peerId);
+      }
+      enqueueMessage(msg);
+      return;
+    }
+
+    // 带引用的消息：立即 flush 缓冲区并直接入队，不再等待防抖
+    if (msg.refMsgIdx) {
+      const peerId = getMessagePeerId(msg);
+      if (debounceBuffers.has(peerId)) {
+        const buf = debounceBuffers.get(peerId)!;
+        clearTimeout(buf.timer);
+        flushDebounceBuffer(peerId);
+      }
+      enqueueMessage(msg);
+      return;
+    }
+
+    const peerId = getMessagePeerId(msg);
+    const existing = debounceBuffers.get(peerId);
+    if (existing) {
+      clearTimeout(existing.timer);
+      existing.msgs.push(msg);
+      existing.timer = setTimeout(() => flushDebounceBuffer(peerId), inboundDebounceMs);
+    } else {
+      const timer = setTimeout(() => flushDebounceBuffer(peerId), inboundDebounceMs);
+      debounceBuffers.set(peerId, { msgs: [msg], timer });
+    }
+  };
+
   const enqueueMessage = (msg: QueuedMessage): void => {
+    // 去重：防止 WebSocket resume 重放同一条消息
+    if (isDuplicateMessage(msg.messageId)) {
+      log?.info?.(`[qqbot:${account.accountId}] Duplicate messageId ${msg.messageId} skipped`);
+      return;
+    }
     const peerId = getMessagePeerId(msg);
     const content = (msg.content ?? "").trim().toLowerCase();
     
@@ -684,7 +830,8 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
               token = await getAccessToken(account.appId, account.clientSecret);
               await sendC2CInputNotify(token, event.senderId, event.messageId, 60);
             } else {
-              throw notifyErr;
+              // 网络抖动等非 token 错误，仅打印日志，不抛出异常导致消息处理链崩溃
+              log?.info(`[qqbot:${account.accountId}] InputNotify failed (non-fatal), continuing: ${errMsg}`);
             }
           }
           log?.info(`[qqbot:${account.accountId}] Sent input notify to ${event.senderId}`);
@@ -758,8 +905,10 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
             let localPath: string | null = null;
             let audioPath: string | null = null; // 用于 STT 的音频路径
 
-            if (isVoice && wavUrl) {
-              const wavLocalPath = await downloadFile(wavUrl, downloadDir);
+            if (isVoice && att.voice_wav_url) {
+              const wavUrl = att.voice_wav_url.startsWith("//") ? `https:${att.voice_wav_url}` : att.voice_wav_url;
+              const wavFilename = att.filename ? `${att.filename}.wav` : `voice_${Date.now()}.wav`;
+              const wavLocalPath = await downloadFile(wavUrl, downloadDir, wavFilename);
               if (wavLocalPath) {
                 localPath = wavLocalPath;
                 audioPath = wavLocalPath;
@@ -1137,7 +1286,8 @@ ${mediaSection}
               const newToken = await getAccessToken(account.appId, account.clientSecret);
               await sendFn(newToken);
             } else {
-              throw err;
+              // 网络抖动等非 token 错误，仅打印日志，不抛出异常导致消息处理崩溃
+              log?.info(`[qqbot:${account.accountId}] Send failed (non-fatal), skipping: ${errMsg}`);
             }
           }
         };
@@ -1203,7 +1353,6 @@ ${mediaSection}
             const toolBlock = recentTools.join("\n---\n");
             return `🔧 调用工具中…\n\`\`\`\n${toolBlock}\n\`\`\``;
           };
-
           const timeoutPromise = new Promise<void>((_, reject) => {
             timeoutId = setTimeout(() => {
               if (!hasResponse) {
@@ -1416,9 +1565,14 @@ ${mediaSection}
                   if (textAfter) {
                     sendQueue.push({ type: "text", content: filterInternalMarkers(textAfter) });
                   }
+                  
+                  log?.info(`[qqbot:${account.accountId}] Send queue: ${sendQueue.map(item => item.type).join(" -> ")}`);
 
-
-                  log?.info(`[qqbot:${account.accountId}] Send queue: ${sendQueue.map(item => `${item.type}`).join(" -> ")}`);
+                  // 发送第一条消息前停止 typing 心跳
+                  if (typingIntervalId) {
+                    clearInterval(typingIntervalId);
+                    typingIntervalId = null;
+                  }
                   
                   // 按顺序发送
                   for (const item of sendQueue) {
@@ -2301,6 +2455,11 @@ ${mediaSection}
               const fallback = formatToolFallback();
               await sendErrorMessage(fallback);
             }
+            // 确保心跳被清除
+            if (typingIntervalId) {
+              clearInterval(typingIntervalId);
+              typingIntervalId = null;
+            }
           }
         } catch (err) {
           log?.error(`[qqbot:${account.accountId}] Message processing failed: ${err}`);
@@ -2433,7 +2592,7 @@ ${mediaSection}
                 // 日志：输出用户输入完整 JSON
                 log?.info(`[qqbot:${account.accountId}] ▶ INBOUND C2C RAW: ${JSON.stringify(event)}`);
                 // 使用消息队列异步处理，防止阻塞心跳
-                enqueueMessage({
+                enqueueWithDebounce({
                   type: "c2c",
                   senderId: event.author.user_openid,
                   content: event.content,
@@ -2453,8 +2612,7 @@ ${mediaSection}
                   accountId: account.accountId,
                 });
                 const guildRefs = parseRefIndices((event as any).message_scene?.ext);
-                log?.info(`[qqbot:${account.accountId}] ▶ INBOUND GUILD RAW: ${JSON.stringify(event)}`);
-                enqueueMessage({
+                enqueueWithDebounce({
                   type: "guild",
                   senderId: event.author.id,
                   senderName: event.author.username,
@@ -2477,8 +2635,7 @@ ${mediaSection}
                   accountId: account.accountId,
                 });
                 const dmRefs = parseRefIndices((event as any).message_scene?.ext);
-                log?.info(`[qqbot:${account.accountId}] ▶ INBOUND DM RAW: ${JSON.stringify(event)}`);
-                enqueueMessage({
+                enqueueWithDebounce({
                   type: "dm",
                   senderId: event.author.id,
                   senderName: event.author.username,
@@ -2499,9 +2656,8 @@ ${mediaSection}
                   groupOpenid: event.group_openid,
                   accountId: account.accountId,
                 });
-                const groupRefs = parseRefIndices(event.message_scene?.ext);
-                log?.info(`[qqbot:${account.accountId}] ▶ INBOUND GROUP RAW: ${JSON.stringify(event)}`);
-                enqueueMessage({
+                const groupRefs = parseRefIndices((event as any).message_scene?.ext);
+                enqueueWithDebounce({
                   type: "group",
                   senderId: event.author.member_openid,
                   content: event.content,
