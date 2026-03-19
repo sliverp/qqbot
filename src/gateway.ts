@@ -1291,8 +1291,12 @@ ${mediaSection}
                   return;
                 }
 
-                // 收到 block 回复，清除所有超时定时器
+                // 收到 block 回复，清除 typing 心跳和所有超时定时器
                 hasBlockResponse = true;
+                if (typingIntervalId) {
+                  clearInterval(typingIntervalId);
+                  typingIntervalId = null;
+                }
                 if (timeoutId) {
                   clearTimeout(timeoutId);
                   timeoutId = null;
@@ -1414,11 +1418,6 @@ ${mediaSection}
                   }
 
 
-                  // 发送第一条消息前停止 typing 心跳，多段回复之间保持气泡显示
-                  if (typingIntervalId) {
-                    clearInterval(typingIntervalId);
-                    typingIntervalId = null;
-                  }
                   log?.info(`[qqbot:${account.accountId}] Send queue: ${sendQueue.map(item => `${item.type}`).join(" -> ")}`);
                   
                   // 按顺序发送
@@ -2250,6 +2249,10 @@ ${mediaSection}
               onError: async (err: unknown) => {
                 log?.error(`[qqbot:${account.accountId}] Dispatch error: ${err}`);
                 hasResponse = true;
+                if (typingIntervalId) {
+                  clearInterval(typingIntervalId);
+                  typingIntervalId = null;
+                }
                 if (timeoutId) {
                   clearTimeout(timeoutId);
                   timeoutId = null;
@@ -2281,6 +2284,11 @@ ${mediaSection}
               await sendErrorMessage("⏳ 已收到，正在处理中…");
             }
           } finally {
+            // 兜底清除 typing 心跳（防止异常路径泄漏）
+            if (typingIntervalId) {
+              clearInterval(typingIntervalId);
+              typingIntervalId = null;
+            }
             // 清理 tool-only 兜底定时器
             if (toolOnlyTimeoutId) {
               clearTimeout(toolOnlyTimeoutId);

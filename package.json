@@ -1,6 +1,6 @@
 {
   "name": "@sliverp/qqbot",
-  "version": "1.6.1",
+  "version": "1.6.2",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -34,7 +34,7 @@
     "dev": "tsc --watch",
     "test": "bash tests/run-tests.sh",
     "test:local": "bash tests/e2e.sh",
-    "prepack": "npm install --omit=dev"
+    "prepack": "npm run build"
   },
   "dependencies": {
     "mpg123-decoder": "^1.0.3",
