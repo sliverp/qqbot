@@ -81,6 +81,7 @@ export function resolveQQBotAccount(
       allowFrom: qqbot?.allowFrom,
       systemPrompt: qqbot?.systemPrompt,
       markdownSupport: qqbot?.markdownSupport ?? true,
+      enableNativeTools: qqbot?.enableNativeTools,
     };
     appId = normalizeAppId(qqbot?.appId);
   } else {
@@ -116,6 +117,7 @@ export function resolveQQBotAccount(
     secretSource,
     systemPrompt: accountConfig.systemPrompt,
     markdownSupport: accountConfig.markdownSupport !== false,
+    enableNativeTools: accountConfig.enableNativeTools,
     config: accountConfig,
   };
 }
