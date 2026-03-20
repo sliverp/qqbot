@@ -700,7 +700,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                      : event.type === "group" ? (event.groupOpenid ?? "unknown")
                      : event.senderId;
 
-        const route = pluginRuntime.channel.routing.resolveAgentRoute({
+        let route = pluginRuntime.channel.routing.resolveAgentRoute({
           cfg,
           channel: "qqbot",
           accountId: account.accountId,
@@ -709,6 +709,34 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
             id: peerId,
           },
         });
+
+        // ACP persistent binding resolution — routes conversations to paid
+        // agent CLIs (Claude Code, Codex, etc.) when a matching ACP binding
+        // is configured. Dynamic import + try/catch for backward compat with
+        // openclaw versions that don't export these helpers yet.
+        try {
+          const { resolveConfiguredAcpRoute, ensureConfiguredAcpRouteReady } = await import("openclaw/plugin-sdk");
+          const configuredRoute = resolveConfiguredAcpRoute({
+            cfg,
+            route,
+            channel: "qqbot",
+            accountId: account.accountId,
+            conversationId: peerId,
+          });
+          const configuredBinding = configuredRoute.configuredBinding;
+          route = configuredRoute.route;
+          if (configuredBinding) {
+            const ensured = await ensureConfiguredAcpRouteReady({
+              cfg,
+              configuredBinding,
+            });
+            if (!ensured.ok) {
+              log?.error(`[qqbot:${account.accountId}] acp binding session init failed: ${ensured.error}`);
+            }
+          }
+        } catch {
+          // ACP route helpers not available in this openclaw version
+        }
 
         const envelopeOptions = pluginRuntime.channel.reply.resolveEnvelopeFormatOptions(cfg);
 
