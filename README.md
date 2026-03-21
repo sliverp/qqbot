@@ -25,7 +25,7 @@
 
 Scan to join the QQ group chat
 
-<img width="300" height="540" alt="Clipboard_Screenshot_1773047715" src="https://github.com/user-attachments/assets/4d2d2337-229a-42ad-97ab-8a6d0607f296" />
+<img width="400" alt="QQ QR Code" src="./docs/images/developer_group.png" />
 
 
 </div>
@@ -447,6 +447,26 @@ STT supports two-level configuration with priority fallback:
 - [Upgrade Guide](docs/UPGRADE_GUIDE.md) — full upgrade paths and migration notes
 - [Command Reference](docs/commands.md) — OpenClaw CLI commands
 - [Changelog](CHANGELOG.md) — release notes
+
+## 🤝 Contributors
+
+Thanks to all the developers who have contributed to this project!
+
+<a href="https://github.com/tencent-connect/openclaw-qqbot/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=tencent-connect/openclaw-qqbot" />
+</a>
+
+## 💖 Acknowledgements
+
+Special thanks to [@sliverp](https://github.com/sliverp) for outstanding contributions to the project!
+
+<a href="https://github.com/sliverp"><img src="https://avatars.githubusercontent.com/u/38134380?v=4" width="48" height="48" alt="sliverp" title="sliverp"/></a>
+
+Thanks to [Tencent Cloud Lighthouse](https://cloud.tencent.com/product/lighthouse) for the deep collaboration. For raising crawfish, choose Tencent Cloud Lighthouse!
+
+<a href="https://cloud.tencent.com/product/lighthouse">
+  <img alt="Tencent Cloud Lighthouse" src="./docs/images/lighthouse_head.png" height="500" style="max-width:80%; height:auto;"/>
+</a>
 
 ## ⭐ Star History
 

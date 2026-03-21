@@ -21,7 +21,7 @@
 
 扫描二维码加入群聊，一起交流
 
-<img width="316" height="410" alt="QQ 群二维码" src="https://github.com/user-attachments/assets/d079ba89-ecd0-437f-9e66-92319801a325" />
+<img width="400" alt="QQ 群二维码" src="./docs/images/developer_group.png" />
 
 </div>
 
@@ -442,6 +442,26 @@ STT 支持两级配置，按优先级查找：
 - [升级指南](docs/UPGRADE_GUIDE.zh.md) — 完整升级路径与迁移说明
 - [命令参考](docs/commands.md) — OpenClaw CLI 常用命令
 - [更新日志](CHANGELOG.md) — 各版本变更记录
+
+## 🤝 贡献者
+
+感谢所有为本项目做出贡献的开发者！
+
+<a href="https://github.com/tencent-connect/openclaw-qqbot/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=tencent-connect/openclaw-qqbot" />
+</a>
+
+## 💖 致谢
+
+特别感谢 [@sliverp](https://github.com/sliverp) 对项目的核心贡献！
+
+<a href="https://github.com/sliverp"><img src="https://avatars.githubusercontent.com/u/38134380?v=4" width="48" height="48" alt="sliverp" title="sliverp"/></a>
+
+感谢[腾讯云Lighthouse](https://cloud.tencent.com/product/lighthouse)的深度合作，养小龙虾，首选腾讯云Lighthouse！
+
+<a href="https://cloud.tencent.com/product/lighthouse">
+  <img alt="腾讯云 Lighthouse" src="./docs/images/lighthouse_head.png" height="500" style="max-width:80%; height:auto;"/>
+</a>
 
 ## ⭐ Star History
 
