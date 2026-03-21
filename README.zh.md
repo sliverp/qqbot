@@ -118,6 +118,18 @@ AI 通过 `<qqvoice>路径</qqvoice>` 发送语音消息。格式：mp3/wav/silk
 
 <img width="360" src="docs/images/reminder.jpg" alt="定时提醒演示" />
 
+### 🔄 热更新（Hot Update）
+
+> **你**：/bot-upgrade
+>
+> **QQBot**：检测到新版本，提示确认升级；确认后自动完成升级并通知
+
+在 QQ 聊天中直接使用 `/bot-upgrade` 指令即可检查并执行热更新，无需登录服务器。
+
+> ⚠️ **注意**：热更新指令暂不支持 Windows 平台，Windows 用户使用该指令时会返回手动升级指引。
+
+<img width="360" src="docs/images/hot-update.jpg" alt="热更新演示" />
+
 ### 📎 文件发送
 
 > **你**：战争与和平的第一章截取一下发文件给我

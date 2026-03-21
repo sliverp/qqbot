@@ -123,6 +123,18 @@ This capability depends on OpenClaw cron scheduling and proactive messaging. If 
 
 <img width="360" src="docs/images/reminder.jpg" alt="Scheduled Reminder Demo" />
 
+### 🔄 Hot Update
+
+> **You**: /bot-upgrade
+>
+> **QQBot**: Detects a new version, prompts for confirmation; after confirming, automatically upgrades and notifies you
+
+Use the `/bot-upgrade` command directly in QQ chat to check for and perform hot updates — no need to SSH into the server.
+
+> ⚠️ **Note**: The hot update command is not yet supported on Windows. Windows users will receive manual upgrade instructions instead.
+
+<img width="360" src="docs/images/hot-update.jpg" alt="Hot Update Demo" />
+
 ### 📎 File Sending
 
 > **You**: Extract chapter 1 of War and Peace and send it as a file
