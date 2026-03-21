@@ -26,7 +26,12 @@ export interface AdminResolverContext {
 
 // ---- 文件路径 ----
 
-function getAdminMarkerFile(accountId: string): string {
+function getAdminMarkerFile(accountId: string, appId?: string): string {
+  if (appId) {
+    const safeAccountId = accountId.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const safeAppId = appId.replace(/[^a-zA-Z0-9._-]/g, "_");
+    return path.join(getQQBotDataDir("data"), `admin-${safeAccountId}-${safeAppId}.json`);
+  }
   return path.join(getQQBotDataDir("data"), `admin-${accountId}.json`);
 }
 
@@ -38,20 +43,35 @@ function getUpgradeGreetingTargetFile(accountId: string, appId: string): string 
 
 // ---- 管理员 openid 持久化 ----
 
-export function loadAdminOpenId(accountId: string): string | undefined {
+export function loadAdminOpenId(accountId: string, appId?: string): string | undefined {
   try {
-    const file = getAdminMarkerFile(accountId);
-    if (fs.existsSync(file)) {
-      const data = JSON.parse(fs.readFileSync(file, "utf8"));
+    // 优先读带 appId 的文件（精确匹配）
+    if (appId) {
+      const file = getAdminMarkerFile(accountId, appId);
+      if (fs.existsSync(file)) {
+        const data = JSON.parse(fs.readFileSync(file, "utf8"));
+        if (data.openid) return data.openid;
+      }
+    }
+    // fallback：兼容旧格式（无 appId 的文件）
+    const legacyFile = getAdminMarkerFile(accountId);
+    if (fs.existsSync(legacyFile)) {
+      const data = JSON.parse(fs.readFileSync(legacyFile, "utf8"));
       if (data.openid) return data.openid;
     }
   } catch { /* 文件损坏视为无 */ }
   return undefined;
 }
 
-export function saveAdminOpenId(accountId: string, openid: string): void {
+export function saveAdminOpenId(accountId: string, openid: string, appId?: string): void {
   try {
-    fs.writeFileSync(getAdminMarkerFile(accountId), JSON.stringify({ openid, savedAt: new Date().toISOString() }));
+    const payload = { openid, appId, savedAt: new Date().toISOString() };
+    // 始终写入带 appId 的文件
+    if (appId) {
+      fs.writeFileSync(getAdminMarkerFile(accountId, appId), JSON.stringify(payload));
+    }
+    // 同时写旧格式兼容文件
+    fs.writeFileSync(getAdminMarkerFile(accountId), JSON.stringify(payload));
   } catch { /* ignore */ }
 }
 
@@ -84,16 +104,16 @@ export function clearUpgradeGreetingTargetOpenId(accountId: string, appId: strin
 
 /**
  * 解析管理员 openid：
- * 1. 优先读持久化文件（稳定）
+ * 1. 优先读持久化文件（按 accountId+appId 精确匹配）
  * 2. fallback 取第一个私聊用户，并写入文件锁定
  */
-export function resolveAdminOpenId(ctx: Pick<AdminResolverContext, "accountId" | "log">): string | undefined {
-  const saved = loadAdminOpenId(ctx.accountId);
+export function resolveAdminOpenId(ctx: Pick<AdminResolverContext, "accountId" | "appId" | "log">): string | undefined {
+  const saved = loadAdminOpenId(ctx.accountId, ctx.appId);
   if (saved) return saved;
   const first = listKnownUsers({ accountId: ctx.accountId, type: "c2c", sortBy: "firstSeenAt", sortOrder: "asc", limit: 1 })[0]?.openid;
   if (first) {
-    saveAdminOpenId(ctx.accountId, first);
-    ctx.log?.info(`[qqbot:${ctx.accountId}] Auto-detected admin openid: ${first} (persisted)`);
+    saveAdminOpenId(ctx.accountId, first, ctx.appId);
+    ctx.log?.info(`[qqbot:${ctx.accountId}] Auto-detected admin openid: ${first} (persisted, appId=${ctx.appId})`);
   }
   return first;
 }
