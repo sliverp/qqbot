@@ -29,9 +29,18 @@ export interface KnownUser {
 
 import { getQQBotDataDir } from "./utils/platform.js";
 
-// 存储文件路径
-const KNOWN_USERS_DIR = getQQBotDataDir("data");
-const KNOWN_USERS_FILE = path.join(KNOWN_USERS_DIR, "known-users.json");
+// 存储文件路径 - lazy 求值，避免在 setOpenClawStateDir() 调用前就被求值
+let _knownUsersDir: string | null = null;
+function getKnownUsersDir(): string {
+  if (!_knownUsersDir) {
+    _knownUsersDir = getQQBotDataDir("data");
+  }
+  return _knownUsersDir;
+}
+
+function getKnownUsersFilePath(): string {
+  return path.join(getKnownUsersDir(), "known-users.json");
+}
 
 // 内存缓存
 let usersCache: Map<string, KnownUser> | null = null;
@@ -45,8 +54,9 @@ let isDirty = false;
  * 确保目录存在
  */
 function ensureDir(): void {
-  if (!fs.existsSync(KNOWN_USERS_DIR)) {
-    fs.mkdirSync(KNOWN_USERS_DIR, { recursive: true });
+  const dir = getKnownUsersDir();
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
   }
 }
 
@@ -59,10 +69,11 @@ function loadUsersFromFile(): Map<string, KnownUser> {
   }
   
   usersCache = new Map();
+  const knownUsersFile = getKnownUsersFilePath();
   
   try {
-    if (fs.existsSync(KNOWN_USERS_FILE)) {
-      const data = fs.readFileSync(KNOWN_USERS_FILE, "utf-8");
+    if (fs.existsSync(knownUsersFile)) {
+      const data = fs.readFileSync(knownUsersFile, "utf-8");
       const users = JSON.parse(data) as KnownUser[];
       
       for (const user of users) {
@@ -106,7 +117,7 @@ function doSaveUsersToFile(): void {
   try {
     ensureDir();
     const users = Array.from(usersCache.values());
-    fs.writeFileSync(KNOWN_USERS_FILE, JSON.stringify(users, null, 2), "utf-8");
+    fs.writeFileSync(getKnownUsersFilePath(), JSON.stringify(users, null, 2), "utf-8");
     isDirty = false;
   } catch (err) {
     console.error(`[known-users] Failed to save users: ${err}`);
