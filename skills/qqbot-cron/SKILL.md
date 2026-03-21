@@ -161,7 +161,7 @@ exec({ command: 'openclaw cron rm <job-id>' })
       "message": "你是一个暖心的提醒助手。请用温暖、有趣的方式提醒用户：{提醒内容}。要求：(1) 不要回复HEARTBEAT_OK (2) 不要解释你是谁 (3) 直接输出一条暖心的提醒消息 (4) 可以加一句简短的鸡汤或关怀的话 (5) 控制在2-3句话以内 (6) 用emoji点缀",
       "deliver": true,
       "channel": "qqbot",
-      "to": "{openid}"
+      "to": "qqbot:c2c:{openid}"
     }
   }
 }
@@ -185,7 +185,7 @@ exec({ command: 'openclaw cron rm <job-id>' })
       "message": "你是一个暖心的提醒助手。请用温暖、有趣的方式提醒用户：{提醒内容}。要求：(1) 不要回复HEARTBEAT_OK (2) 不要解释你是谁 (3) 直接输出一条暖心的提醒消息 (4) 可以加一句简短的鸡汤或关怀的话 (5) 控制在2-3句话以内 (6) 用emoji点缀",
       "deliver": true,
       "channel": "qqbot",
-      "to": "{openid}"
+      "to": "qqbot:c2c:{openid}"
     }
   }
 }
@@ -344,7 +344,7 @@ exec({ command: 'openclaw cron rm <job-id>' })
       "message": "你是一个暖心的提醒助手。请用温暖、有趣的方式提醒用户：该喝水了。要求：(1) 不要回复HEARTBEAT_OK (2) 不要解释你是谁 (3) 直接输出一条暖心的提醒消息 (4) 可以加一句简短的鸡汤或关怀的话 (5) 控制在2-3句话以内 (6) 用emoji点缀",
       "deliver": true,
       "channel": "qqbot",
-      "to": "{openid}"
+      "to": "qqbot:c2c:{openid}"
     }
   }
 }
@@ -373,7 +373,7 @@ exec({ command: 'openclaw cron rm <job-id>' })
       "message": "[直接输出] 🌅 打卡时间到！",
       "deliver": true,
       "channel": "qqbot",
-      "to": "{openid}"
+      "to": "qqbot:c2c:{openid}"
     }
   }
 }
@@ -402,7 +402,7 @@ exec({ command: 'openclaw cron rm <job-id>' })
       "message": "你是一个暖心的提醒助手。请用温暖、有趣的方式提醒用户：该写日报了。要求：(1) 不要回复HEARTBEAT_OK (2) 不要解释你是谁 (3) 直接输出一条暖心的提醒消息 (4) 可以加一句简短的鸡汤或关怀的话 (5) 控制在2-3句话以内 (6) 用emoji点缀",
       "deliver": true,
       "channel": "qqbot",
-      "to": "{openid}"
+      "to": "qqbot:c2c:{openid}"
     }
   }
 }
@@ -431,7 +431,7 @@ exec({ command: 'openclaw cron rm <job-id>' })
       "message": "[直接输出] 📅 开会时间到！",
       "deliver": true,
       "channel": "qqbot",
-      "to": "{openid}"
+      "to": "qqbot:c2c:{openid}"
     }
   }
 }
@@ -460,12 +460,12 @@ exec({ command: 'openclaw cron rm <job-id>' })
       "message": "你是一个暖心的提醒助手。请用温暖、有趣的方式提醒用户：站会时间到了。要求：(1) 不要回复HEARTBEAT_OK (2) 不要解释你是谁 (3) 直接输出一条暖心的提醒消息 (4) 可以加一句简短的鸡汤或关怀的话 (5) 控制在2-3句话以内 (6) 用emoji点缀",
       "deliver": true,
       "channel": "qqbot",
-      "to": "group:{group_openid}"
+      "to": "qqbot:group:{group_openid}"
     }
   }
 }
 ```
-> 群组使用 `"group:{group_openid}"` 格式
+> 群组使用 `"qqbot:group:{group_openid}"` 格式
 
 ---
 
@@ -522,7 +522,7 @@ exec({ command: 'openclaw cron rm <job-id>' })
 ┌─────────────────────┐
 │ deliver=true 投递    │
 │ channel="qqbot"     │
-│ to="{openid}"       │
+│ to="qqbot:c2c:{openid}" │
 └──────────┬──────────┘
            ↓
     ✅ 用户收到提醒
