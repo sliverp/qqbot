@@ -4,6 +4,7 @@ import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
 import { qqbotPlugin } from "./src/channel.js";
 import { setQQBotRuntime } from "./src/runtime.js";
 import { registerChannelTool } from "./src/tools/channel.js";
+import { registerRemindTool } from "./src/tools/remind.js";
 
 const plugin = {
   id: "openclaw-qqbot",
@@ -14,6 +15,7 @@ const plugin = {
     setQQBotRuntime(api.runtime);
     api.registerChannel({ plugin: qqbotPlugin });
     registerChannelTool(api);
+    registerRemindTool(api);
   },
 };
 
