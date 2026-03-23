@@ -26,6 +26,26 @@ export interface ResolvedQQBotAccount {
   config: QQBotAccountConfig;
 }
 
+/** 群消息策略：open=全响应 | allowlist=白名单 | disabled=不响应 */
+export type GroupPolicy = "open" | "allowlist" | "disabled";
+
+/** 工具策略：full=全部 | restricted=限制敏感工具 | none=禁止 */
+export type ToolPolicy = "full" | "restricted" | "none";
+
+/** 单个群的配置 */
+export interface GroupConfig {
+  /** 是否需要 @机器人才响应（默认 true） */
+  requireMention?: boolean;
+  /** 群聊中 AI 可使用的工具范围（默认 restricted） */
+  toolPolicy?: ToolPolicy;
+  /** 群名称（QQ Bot 无 API 获取群名，需手动配置或自动累积） */
+  name?: string;
+  /** 群消息行为 PE（未配置时使用内置默认值） */
+  prompt?: string;
+  /** 群历史消息缓存条数（0 禁用，默认 20） */
+  historyLimit?: number;
+}
+
 /**
  * QQ Bot 账户配置
  */
@@ -37,6 +57,12 @@ export interface QQBotAccountConfig {
   clientSecretFile?: string;
   dmPolicy?: "open" | "pairing" | "allowlist";
   allowFrom?: string[];
+  /** 群消息策略（默认 allowlist） */
+  groupPolicy?: GroupPolicy;
+  /** 群白名单（groupPolicy 为 allowlist 时生效） */
+  groupAllowFrom?: string[];
+  /** 群配置映射（按 groupOpenid 索引，"*" 为默认） */
+  groups?: Record<string, GroupConfig>;
   /** 系统提示词，会添加在用户消息前面 */
   systemPrompt?: string;
   /** 图床服务器公网地址，用于发送图片，例如 http://your-ip:18765 */
@@ -199,6 +225,8 @@ export interface GroupMessageEvent {
   author: {
     id: string;
     member_openid: string;
+    username?: string;
+    bot?: boolean;
   };
   content: string;
   id: string;
@@ -210,6 +238,17 @@ export interface GroupMessageEvent {
     ext?: string[];
   };
   attachments?: MessageAttachment[];
+  /** @提及列表 */
+  mentions?: Array<{
+    scope?: "all" | "single";
+    id?: string;
+    user_openid?: string;
+    member_openid?: string;
+    nickname?: string;
+    bot?: boolean;
+    /** 是否 @机器人自身 */
+    is_you?: boolean;
+  }>;
 }
 
 /**

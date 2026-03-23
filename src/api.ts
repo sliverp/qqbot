@@ -678,11 +678,12 @@ export async function sendGroupMessage(
   accessToken: string,
   groupOpenid: string,
   content: string,
-  msgId?: string
+  msgId?: string,
+  messageReference?: string
 ): Promise<MessageResponse> {
   const msgSeq = msgId ? getNextMsgSeq(msgId) : 1;
-  const body = buildMessageBody(content, msgId, msgSeq);
-  return apiRequest(accessToken, "POST", `/v2/groups/${groupOpenid}/messages`, body);
+  const body = buildMessageBody(content, msgId, msgSeq, messageReference);
+  return sendAndNotify(accessToken, "POST", `/v2/groups/${groupOpenid}/messages`, body, { text: content });
 }
 
 function buildProactiveMessageBody(content: string): Record<string, unknown> {

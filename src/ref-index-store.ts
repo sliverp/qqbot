@@ -16,6 +16,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { getQQBotDataDir } from "./utils/platform.js";
+import { formatAttachmentTags } from "./group-history.js";
 
 // ============ 存储的消息摘要 ============
 
@@ -297,33 +298,10 @@ export function formatRefEntryForAgent(entry: RefIndexEntry): string {
     parts.push(entry.content);
   }
 
-  // 附件描述
-  if (entry.attachments?.length) {
-    for (const att of entry.attachments) {
-      const sourceHint = att.localPath ? ` (${att.localPath})` : att.url ? ` (${att.url})` : "";
-      switch (att.type) {
-        case "image":
-          parts.push(`[图片${att.filename ? `: ${att.filename}` : ""}${sourceHint}]`);
-          break;
-        case "voice":
-          if (att.transcript) {
-            const sourceMap = { stt: "本地识别", asr: "官方识别", tts: "TTS原文", fallback: "兜底文案" };
-            const sourceTag = att.transcriptSource ? ` - ${sourceMap[att.transcriptSource] || att.transcriptSource}` : "";
-            parts.push(`[语音消息（内容: "${att.transcript}"${sourceTag}）${sourceHint}]`);
-          } else {
-            parts.push(`[语音消息${sourceHint}]`);
-          }
-          break;
-        case "video":
-          parts.push(`[视频${att.filename ? `: ${att.filename}` : ""}${sourceHint}]`);
-          break;
-        case "file":
-          parts.push(`[文件${att.filename ? `: ${att.filename}` : ""}${sourceHint}]`);
-          break;
-        default:
-          parts.push(`[附件${att.filename ? `: ${att.filename}` : ""}${sourceHint}]`);
-      }
-    }
+  // 附件描述（委托 formatAttachmentTags 统一格式化）
+  const attachmentDesc = formatAttachmentTags(entry.attachments);
+  if (attachmentDesc) {
+    parts.push(attachmentDesc);
   }
 
   return parts.join(" ") || "[空消息]";
