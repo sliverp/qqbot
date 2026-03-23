@@ -95,7 +95,7 @@ const SELF_CLOSING_TAG_REGEX = new RegExp(
  * 构建一个宽容的正则，能匹配各种畸形标签写法：
  *
  * 常见错误模式：
- *  1. 标签名拼错：<qq_img>, <qqimage>, 庵, <img>, <pic> ...
+ *  1. 标签名拼错：<qq_img>, <qqimage>, <image>, <img>, <pic> ...
  *  2. 标签内多余空格：<qqimg >, < qqimg>, <qqimg >
  *  3. 闭合标签不匹配：<qqimg>url</qqvoice>, <qqimg>url</img>
  *  4. 闭合标签缺失斜杠：<qqimg>url<qqimg> (用开头标签代替闭合标签)
