@@ -70,6 +70,37 @@ export interface QQBotAccountConfig {
    * - "hot-reload"：检测到新版本时直接执行 npm 升级脚本进行热更新
    */
   upgradeMode?: "doc" | "hot-reload";
+  /**
+   * 出站消息合并回复（debounce）配置
+   * 当短时间内收到多次 deliver 时，将文本合并为一条消息发送，避免消息轰炸
+   */
+  deliverDebounce?: DeliverDebounceConfig;
+}
+
+/**
+ * 出站消息合并回复配置
+ */
+export interface DeliverDebounceConfig {
+  /**
+   * 是否启用合并回复（默认 true）
+   */
+  enabled?: boolean;
+  /**
+   * 合并窗口时长（毫秒），在此时间内的连续 deliver 会被合并
+   * 默认 1500ms
+   */
+  windowMs?: number;
+  /**
+   * 最大等待时长（毫秒），从第一条 deliver 开始计算，超过此时间强制发送
+   * 防止持续有新 deliver 导致一直不发送
+   * 默认 8000ms
+   */
+  maxWaitMs?: number;
+  /**
+   * 合并文本之间的分隔符
+   * 默认 "\n\n---\n\n"
+   */
+  separator?: string;
 }
 
 /**

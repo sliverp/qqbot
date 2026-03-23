@@ -20,6 +20,7 @@ import { sendStartupGreetings, type AdminResolverContext } from "./admin-resolve
 import { sendWithTokenRetry, sendErrorToTarget, handleStructuredPayload, type ReplyContext, type MessageTarget } from "./reply-dispatcher.js";
 import { TypingKeepAlive, TYPING_INPUT_SECOND } from "./typing-keepalive.js";
 import { parseAndSendMediaTags, sendPlainReply, type DeliverEventContext, type DeliverAccountContext } from "./outbound-deliver.js";
+import { createDeliverDebouncer, type DeliverDebouncer } from "./deliver-debounce.js";
 
 // QQ Bot intents - 按权限级别分组
 const INTENTS = {
@@ -774,6 +775,10 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
           let timeoutId: ReturnType<typeof setTimeout> | null = null;
           let toolOnlyTimeoutId: ReturnType<typeof setTimeout> | null = null;
 
+          // ============ Deliver Debouncer：合并短时间内连续到达的 block deliver ============
+          const debounceConfig = account.config?.deliverDebounce;
+          let debouncer: DeliverDebouncer | null = null as DeliverDebouncer | null;
+
           // tool-only 兜底：转发工具产生的实际内容（媒体/文本），而非生硬的提示语
           const sendToolFallback = async (): Promise<void> => {
             // 优先发送工具产出的媒体文件（TTS 语音、生成图片等）
@@ -924,63 +929,82 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                   log?.info(`[qqbot:${account.accountId}] Block deliver after ${toolDeliverCount} tool deliver(s)`);
                 }
 
-                // ============ 引用回复 ============
-                const quoteRef = event.msgIdx;
-                let quoteRefUsed = false;
-                const consumeQuoteRef = (): string | undefined => {
-                  if (quoteRef && !quoteRefUsed) {
-                    quoteRefUsed = true;
-                    return quoteRef;
+                // ============ 实际发送逻辑（可被 debouncer 包裹） ============
+                const executeDeliver = async (deliverPayload: { text?: string; mediaUrls?: string[]; mediaUrl?: string }, _deliverInfo: { kind: string }) => {
+                  // ============ 引用回复 ============
+                  const quoteRef = event.msgIdx;
+                  let quoteRefUsed = false;
+                  const consumeQuoteRef = (): string | undefined => {
+                    if (quoteRef && !quoteRefUsed) {
+                      quoteRefUsed = true;
+                      return quoteRef;
+                    }
+                    return undefined;
+                  };
+
+                  let replyText = deliverPayload.text ?? "";
+
+                  // ============ 媒体标签解析 + 发送 ============
+                  const deliverEvent: DeliverEventContext = {
+                    type: event.type,
+                    senderId: event.senderId,
+                    messageId: event.messageId,
+                    channelId: event.channelId,
+                    groupOpenid: event.groupOpenid,
+                    msgIdx: event.msgIdx,
+                  };
+                  const deliverActx: DeliverAccountContext = { account, qualifiedTarget, log };
+
+                  const mediaResult = await parseAndSendMediaTags(
+                    replyText, deliverEvent, deliverActx, sendWithRetry, consumeQuoteRef,
+                  );
+                  if (mediaResult.handled) {
+                    pluginRuntime.channel.activity.record({
+                      channel: "qqbot",
+                      accountId: account.accountId,
+                      direction: "outbound",
+                    });
+                    return;
                   }
-                  return undefined;
-                };
+                  replyText = mediaResult.normalizedText;
 
-                let replyText = payload.text ?? "";
+                  // ============ 结构化载荷检测与分发 ============
+                  const recordOutboundActivity = () => pluginRuntime.channel.activity.record({
+                    channel: "qqbot",
+                    accountId: account.accountId,
+                    direction: "outbound",
+                  });
+                  const handled = await handleStructuredPayload(replyCtx, replyText, recordOutboundActivity);
+                  if (handled) return;
 
-                // ============ 媒体标签解析 + 发送 ============
-                const deliverEvent: DeliverEventContext = {
-                  type: event.type,
-                  senderId: event.senderId,
-                  messageId: event.messageId,
-                  channelId: event.channelId,
-                  groupOpenid: event.groupOpenid,
-                  msgIdx: event.msgIdx,
-                };
-                const deliverActx: DeliverAccountContext = { account, qualifiedTarget, log };
+                  // ============ 非结构化消息发送 ============
+                  await sendPlainReply(
+                    deliverPayload, replyText, deliverEvent, deliverActx,
+                    sendWithRetry, consumeQuoteRef, toolMediaUrls,
+                  );
 
-                const mediaResult = await parseAndSendMediaTags(
-                  replyText, deliverEvent, deliverActx, sendWithRetry, consumeQuoteRef,
-                );
-                if (mediaResult.handled) {
                   pluginRuntime.channel.activity.record({
                     channel: "qqbot",
                     accountId: account.accountId,
                     direction: "outbound",
                   });
-                  return;
+                };
+
+                // ============ Debounce 合并回复 ============
+                if (!debouncer) {
+                  debouncer = createDeliverDebouncer(
+                    debounceConfig,
+                    executeDeliver,
+                    log,
+                    `[qqbot:${account.accountId}:debounce]`,
+                  );
                 }
-                replyText = mediaResult.normalizedText;
 
-                // ============ 结构化载荷检测与分发 ============
-                const recordOutboundActivity = () => pluginRuntime.channel.activity.record({
-                  channel: "qqbot",
-                  accountId: account.accountId,
-                  direction: "outbound",
-                });
-                const handled = await handleStructuredPayload(replyCtx, replyText, recordOutboundActivity);
-                if (handled) return;
-
-                // ============ 非结构化消息发送 ============
-                await sendPlainReply(
-                  payload, replyText, deliverEvent, deliverActx,
-                  sendWithRetry, consumeQuoteRef, toolMediaUrls,
-                );
-
-                pluginRuntime.channel.activity.record({
-                  channel: "qqbot",
-                  accountId: account.accountId,
-                  direction: "outbound",
-                });
+                if (debouncer) {
+                  await debouncer.deliver(payload, info);
+                } else {
+                  await executeDeliver(payload, info);
+                }
               },
               onError: async (err: unknown) => {
                 log?.error(`[qqbot:${account.accountId}] Dispatch error: ${err}`);
@@ -1025,6 +1049,11 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
               toolFallbackSent = true;
               log?.error(`[qqbot:${account.accountId}] Dispatch completed with ${toolDeliverCount} tool deliver(s) but no block deliver, sending fallback`);
               await sendToolFallback();
+            }
+            // 销毁 debouncer，flush 剩余缓冲的文本
+            if (debouncer) {
+              await debouncer.dispose();
+              debouncer = null;
             }
           }
         } catch (err) {
