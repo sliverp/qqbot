@@ -1,10 +1,22 @@
 import WebSocket from "ws";
 import path from "node:path";
+import fs from "node:fs";
 import type { ResolvedQQBotAccount, WSPayload, C2CMessageEvent, GuildMessageEvent, GroupMessageEvent } from "./types.js";
-import { getAccessToken, getGatewayUrl, sendC2CMessage, sendChannelMessage, sendGroupMessage, clearTokenCache, initApiConfig, startBackgroundTokenRefresh, stopBackgroundTokenRefresh, sendC2CInputNotify, onMessageSent, PLUGIN_USER_AGENT } from "./api.js";
+import { getAccessToken, getGatewayUrl, sendC2CMessage, sendChannelMessage, sendGroupMessage, clearTokenCache, initApiConfig, startBackgroundTokenRefresh, stopBackgroundTokenRefresh, sendC2CInputNotify, onMessageSent, PLUGIN_USER_AGENT, sendProactiveGroupMessage } from "./api.js";
 import { loadSession, saveSession, clearSession } from "./session-store.js";
 import { recordKnownUser, flushKnownUsers } from "./known-users.js";
 import { getQQBotRuntime } from "./runtime.js";
+import { isGroupAllowed, resolveGroupName, resolveGroupPrompt, resolveHistoryLimit } from "./config.js";
+import { qqbotPlugin } from "./channel.js";
+import {
+  recordPendingHistoryEntry,
+  buildPendingHistoryContext,
+  clearPendingHistory,
+  formatAttachmentTags,
+  type HistoryEntry,
+  type AttachmentSummary,
+} from "./group-history.js";
+
 import { setRefIndex, getRefIndex, formatRefEntryForAgent, flushRefIndex, type RefAttachmentSummary } from "./ref-index-store.js";
 import { matchSlashCommand, type SlashCommandContext, type SlashCommandFileResult } from "./slash-commands.js";
 import { createMessageQueue, type QueuedMessage } from "./message-queue.js";
@@ -23,6 +35,70 @@ import { parseAndSendMediaTags, sendPlainReply, type DeliverEventContext, type D
 import { createDeliverDebouncer, type DeliverDebouncer } from "./deliver-debounce.js";
 import { runWithRequestContext } from "./request-context.js";
 import { StreamingController, shouldUseStreaming } from "./streaming.js";
+
+// /activation 命令支持：读取 session store 中的 groupActivation 值
+// plugin-sdk 未导出 loadSessionStore，插件侧内联实现（只读）
+
+type GroupActivationMode = "mention" | "always";
+
+/** 解析 session store 文件路径（对齐核心框架 resolveStorePath） */
+function resolveSessionStorePath(cfg: Record<string, unknown>, agentId?: string): string {
+  const sessionCfg = (cfg as any)?.session;
+  const store: string | undefined = sessionCfg?.store;
+  const resolvedAgentId = agentId || "default";
+
+  if (store) {
+    let expanded = store;
+    if (expanded.includes("{agentId}")) {
+      expanded = expanded.replaceAll("{agentId}", resolvedAgentId);
+    }
+    if (expanded.startsWith("~")) {
+      const home = process.env.HOME || process.env.USERPROFILE || "";
+      expanded = expanded.replace(/^~/, home);
+    }
+    return path.resolve(expanded);
+  }
+
+  // 默认路径: ~/.openclaw/agents/{agentId}/sessions/sessions.json
+  const stateDir = process.env.OPENCLAW_STATE_DIR?.trim()
+    || process.env.CLAWDBOT_STATE_DIR?.trim()
+    || path.join(process.env.HOME || process.env.USERPROFILE || "", ".openclaw");
+  return path.join(stateDir, "agents", resolvedAgentId, "sessions", "sessions.json");
+}
+
+/**
+ * 解析 groupActivation（session store > 配置 requireMention > 默认值）
+ * @returns "mention" | "always"
+ */
+function resolveGroupActivation(params: {
+  cfg: Record<string, unknown>;
+  agentId: string;
+  sessionKey: string;
+  configRequireMention: boolean;
+}): GroupActivationMode {
+  const defaultActivation: GroupActivationMode = params.configRequireMention ? "mention" : "always";
+
+  try {
+    const storePath = resolveSessionStorePath(params.cfg, params.agentId);
+    if (!fs.existsSync(storePath)) {
+      return defaultActivation;
+    }
+    const raw = fs.readFileSync(storePath, "utf-8");
+    const store = JSON.parse(raw) as Record<string, { groupActivation?: string }>;
+    const entry = store[params.sessionKey];
+    if (!entry?.groupActivation) {
+      return defaultActivation;
+    }
+    const normalized = entry.groupActivation.trim().toLowerCase();
+    if (normalized === "mention" || normalized === "always") {
+      return normalized;
+    }
+    return defaultActivation;
+  } catch {
+    // session store 读取失败时 fallback 到配置文件
+    return defaultActivation;
+  }
+}
 
 // QQ Bot intents - 按权限级别分组
 const INTENTS = {
@@ -220,7 +296,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
     log?.info(`[qqbot:${account.accountId}] Restored session from storage: sessionId=${sessionId}, lastSeq=${lastSeq}`);
   }
 
-  // ============ 按用户并发的消息队列 ============
+  // ============ 消息队列（复用 createMessageQueue，内置群消息合并/淘汰策略） ============
   const msgQueue = createMessageQueue({
     accountId: account.accountId,
     log,
@@ -409,11 +485,16 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 
       const pluginRuntime = getQQBotRuntime();
 
+      // 群历史消息缓存（对齐 Discord 的 guildHistories）
+      // 非@消息写入此 Map，被@时一次性注入上下文后清空
+      const groupHistories = new Map<string, HistoryEntry[]>();
+
       // 处理收到的消息
       const handleMessage = async (event: {
         type: "c2c" | "guild" | "dm" | "group";
         senderId: string;
         senderName?: string;
+        senderIsBot?: boolean;
         content: string;
         messageId: string;
         timestamp: string;
@@ -423,6 +504,9 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         attachments?: Array<{ content_type: string; url: string; filename?: string; voice_wav_url?: string; asr_refer_text?: string }>;
         refMsgIdx?: string;
         msgIdx?: string;
+        eventType?: string;
+        mentions?: Array<{ scope?: "all" | "single"; id?: string; user_openid?: string; member_openid?: string; username?: string; bot?: boolean; is_you?: boolean }>;
+        messageScene?: { source?: string; ext?: string[] };
       }) => {
 
         log?.debug?.(`[qqbot:${account.accountId}] Received message: ${JSON.stringify(event)}`);
@@ -530,7 +614,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 
         // 解析 QQ 表情标签，将 <faceType=...,ext="base64"> 替换为 【表情: 中文名】
         const parsedContent = parseFaceTags(event.content);
-        const userContent = voiceText
+        let userContent = voiceText
           ? (parsedContent.trim() ? `${parsedContent}\n${voiceText}` : voiceText) + attachmentInfo
           : parsedContent + attachmentInfo;
 
@@ -662,24 +746,193 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         }
 
         // --- 动态上下文（仅框架信封未覆盖的附件信息） ---
+        // 标签风格对齐 openclaw 框架的 MEDIA: 标签
         const dynLines: string[] = [];
         if (imageUrls.length > 0) {
-          dynLines.push(`- 图片: ${imageUrls.join(", ")}`);
+          dynLines.push(imageUrls.map((u) => `MEDIA:${u}`).join("\n"));
         }
         if (uniqueVoicePaths.length > 0 || uniqueVoiceUrls.length > 0) {
-          dynLines.push(`- 语音: ${[...uniqueVoicePaths, ...uniqueVoiceUrls].join(", ")}`);
+          dynLines.push([...uniqueVoicePaths, ...uniqueVoiceUrls].map((u) => `MEDIA:${u}`).join("\n"));
         }
         if (uniqueVoiceAsrReferTexts.length > 0) {
-          dynLines.push(`- ASR: ${uniqueVoiceAsrReferTexts.join(" | ")}`);
+          dynLines.push(uniqueVoiceAsrReferTexts.map((t) => `[语音消息（内容: "${t}"）]`).join("\n"));
         }
         const dynamicCtx = dynLines.length > 0 ? dynLines.join("\n") + "\n" : "";
 
+        // --- 群消息上下文（对齐 Discord 标准路径：插件只提供策略，框架自动组装 hint） ---
+        let groupSystemPrompt = "";
+        let wasMentioned = false;
+        let groupSubject = "";
+        let senderLabel = "";
+
+        if (event.type === "group" && event.groupOpenid) {
+          // 1. 群策略检查（直接用 config 工具函数，与 Discord 的 allow-list.ts 同理）
+          if (!isGroupAllowed(cfg as any, event.groupOpenid, account.accountId)) {
+            log?.info(`[qqbot:${account.accountId}] Group ${event.groupOpenid} not allowed by groupPolicy, skipping`);
+            return;
+          }
+
+          // 2. @检测（委托 mentions 适配器）
+          wasMentioned = qqbotPlugin.mentions?.detectWasMentioned?.({
+            eventType: event.eventType,
+            mentions: event.mentions,
+            content: event.content,
+          }) ?? false;
+
+          // 3. requireMention 门控（对齐核心框架 resolveGroupActivationFor 逻辑）
+          // 优先级：session store 中的 /activation 命令 > 配置文件 requireMention > 默认值
+          // 未被 @ 时：消息仍写入上下文（让 bot 拥有完整对话记忆），但不触发 AI 回复
+          const configRequireMention = qqbotPlugin.groups?.resolveRequireMention?.({
+            cfg: cfg as any,
+            accountId: account.accountId,
+            groupId: event.groupOpenid,
+          }) ?? true;
+
+          const activation = resolveGroupActivation({
+            cfg: cfg as any,
+            agentId: route.agentId,
+            sessionKey: route.sessionKey,
+            configRequireMention,
+          });
+          const requireMention = activation === "mention";
+
+          // 斜杠命令（如 /activation always）即使在 mention 模式下也必须放行，
+          // 否则用户无法通过命令切换 activation 模式。
+          // 对齐核心框架 group-gating.ts 的 shouldBypassMention 逻辑。
+          const isSlashCommand = event.content?.trim().startsWith("/");
+
+          if (requireMention && !wasMentioned && !isSlashCommand) {
+            // 非@消息：记录到群历史缓存后直接返回，不调用 AI 模型（对齐 Discord/WhatsApp 方案）
+            // 下次被@时，累积的历史消息会通过 buildPendingHistoryContext 注入上下文
+            const historyLimit = resolveHistoryLimit(cfg as any, event.groupOpenid, account.accountId);
+            const senderForHistory = event.senderName
+              ? `${event.senderName} (${event.senderId})`
+              : event.senderId;
+
+            // 构建轻量附件摘要，保留富媒体上下文（图片/语音/视频/文件）
+            let historyAttachments: AttachmentSummary[] | undefined;
+            if (event.attachments?.length) {
+              historyAttachments = event.attachments.map((att) => {
+                const ct = (att.content_type ?? "").toLowerCase();
+                let type: AttachmentSummary["type"] = "unknown";
+                if (ct.startsWith("image/")) type = "image";
+                else if (ct === "voice" || ct.startsWith("audio/") || ct.includes("silk") || ct.includes("amr")) type = "voice";
+                else if (ct.startsWith("video/")) type = "video";
+                else if (ct.startsWith("application/") || ct.startsWith("text/")) type = "file";
+                return {
+                  type,
+                  filename: att.filename,
+                  // 语音 ASR 识别文本（QQ 事件内置）
+                  transcript: att.asr_refer_text || undefined,
+                  // 附件 URL（群历史上下文注入时需要）
+                  url: att.url || undefined,
+                };
+              });
+            }
+
+            recordPendingHistoryEntry({
+              historyMap: groupHistories,
+              historyKey: event.groupOpenid,
+              limit: historyLimit,
+              entry: {
+                sender: senderForHistory,
+                body: event.content,
+                timestamp: new Date(event.timestamp).getTime(),
+                messageId: event.messageId,
+                attachments: historyAttachments,
+              },
+            });
+            log?.info(`[qqbot:${account.accountId}] Group ${event.groupOpenid}: activation=${activation} (configRequireMention=${configRequireMention}) not mentioned, recorded to history (limit=${historyLimit}, cached=${(groupHistories.get(event.groupOpenid) ?? []).length}${historyAttachments ? `, attachments=${historyAttachments.length}` : ""})`);
+            return;
+          }
+
+          // 4. 发送者标签
+          senderLabel = event.senderName
+            ? `${event.senderName} (${event.senderId})`
+            : event.senderId;
+
+          // 5. 群名称（从 config 中读取，fallback 为 openid 前 8 位）
+          groupSubject = resolveGroupName(cfg as any, event.groupOpenid, account.accountId);
+
+          // 6. GroupSystemPrompt — 根据消息来源（机器人/人类）和 @状态 注入差异化 PE
+          //    基础提示从 resolveGroupIntroHint 获取（群名称、平台限制等静态信息），
+          //    然后根据运行时状态追加针对性行为指引。
+          const baseHint = qqbotPlugin.groups?.resolveGroupIntroHint?.({
+            cfg: cfg as any,
+            accountId: account.accountId,
+            groupId: event.groupOpenid,
+          }) ?? "";
+
+          let behaviorPrompt = "";
+
+          // 从配置读取群行为 PE
+          behaviorPrompt = resolveGroupPrompt(cfg as any, event.groupOpenid, account.accountId);
+
+          groupSystemPrompt = [baseHint, behaviorPrompt].filter(Boolean).join("\n");
+        }
+
+        // 合并消息额外提示：告知模型这是多条排队消息的合并
+        const mergedCount = (event as QueuedMessage)._mergedCount;
+        if (mergedCount && mergedCount > 1) {
+          groupSystemPrompt += `\n注意：以下内容是群里${mergedCount}条排队消息的合并，请一次性针对所有相关内容统一回复，不需要逐条回复。`;
+        }
+
+        // 将 <@member_openid> 替换为 @username（使用 mentions 适配器）
+        if (event.type === "group" && event.mentions?.length) {
+          userContent = qqbotPlugin.mentions?.stripMentionText?.(userContent, event.mentions as any) ?? userContent;
+        } else if (event.mentions?.length) {
+          for (const m of event.mentions) {
+            if (m.member_openid && m.username) {
+              userContent = userContent.replace(new RegExp(`<@${m.member_openid}>`, "g"), `@${m.username}`);
+            }
+          }
+        }
+
+        // 群消息 user prompt 带上发送者昵称（合并消息已内嵌发送者前缀，不再重复添加）
+        const isMergedMsg = mergedCount && mergedCount > 1;
+        const senderPrefix = (event.type === "group" && !isMergedMsg) ? `[${event.senderName ?? event.senderId}]: ` : "";
+        const isAtYouTag = event.type === "group"
+          ? (wasMentioned ? " (@你)" : "")
+          : "";
         // 命令直接透传，不注入上下文
-        const userMessage = `${quotePart}${userContent}`;
-        const agentBody = userContent.startsWith("/")
+        const userMessage = senderPrefix ? `${senderPrefix}${quotePart}${userContent}${isAtYouTag}` : `${quotePart}${userContent}`;
+        // BodyForAgent 只包含动态上下文 + 用户消息，不拼入 systemPrompts。
+        // systemPrompts（[QQBot] to=...、TTS 能力声明等）通过 GroupSystemPrompt 注入到
+        // 框架的 extraSystemPrompt 中，不会存入 transcript 的 user turn content，
+        // 避免 Web UI 不显示用户 query 的问题。
+        let agentBody = userContent.startsWith("/")
           ? userContent
-          : `${systemPrompts.join("\n")}\n\n${dynamicCtx}${userMessage}`;
-        
+          : `${dynamicCtx}${userMessage}`;
+
+        // 被@时：将累积的非@历史消息注入上下文（对齐 Discord/WhatsApp 的 history 方案）
+        // 消息格式使用 formatInboundEnvelope 与正常消息保持一致
+        if (event.type === "group" && event.groupOpenid) {
+          const historyLimit = resolveHistoryLimit(cfg as any, event.groupOpenid, account.accountId);
+          const envelopeOpts = pluginRuntime.channel.reply.resolveEnvelopeFormatOptions(cfg);
+          agentBody = buildPendingHistoryContext({
+            historyMap: groupHistories,
+            historyKey: event.groupOpenid,
+            limit: historyLimit,
+            currentMessage: agentBody,
+            formatEntry: (entry) => {
+              // 将附件描述追加到消息 body 末尾，确保富媒体上下文不丢失
+              const attachmentDesc = formatAttachmentTags(entry.attachments);
+              const bodyWithAttachments = attachmentDesc
+                ? `${entry.body} ${attachmentDesc}`
+                : entry.body;
+              return pluginRuntime.channel.reply.formatInboundEnvelope({
+                channel: "qqbot",
+                from: entry.sender,
+                timestamp: entry.timestamp,
+                body: bodyWithAttachments,
+                chatType: "group",
+                senderLabel: entry.sender,
+                envelope: envelopeOpts,
+              });
+            },
+          });
+        }
+
         log?.info(`[qqbot:${account.accountId}] agentBody length: ${agentBody.length}`);
 
         const fromAddress = event.type === "guild" ? `qqbot:channel:${event.channelId}`
@@ -712,6 +965,12 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
           }
         }
 
+        // QQBot 静态系统提示（投递地址、TTS 能力等）合并到 GroupSystemPrompt，
+        // 通过框架的 extraSystemPrompt 机制注入 AI system prompt，
+        // 不会存入 transcript 的 user turn content。
+        const qqbotSystemInstruction = systemPrompts.length > 0 ? systemPrompts.join("\n") : "";
+        const mergedGroupSystemPrompt = [qqbotSystemInstruction, groupSystemPrompt].filter(Boolean).join("\n") || undefined;
+
         const ctxPayload = pluginRuntime.channel.reply.finalizeInboundContext({
           Body: body,
           BodyForAgent: agentBody,
@@ -722,6 +981,11 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
           SessionKey: route.sessionKey,
           AccountId: route.accountId,
           ChatType: isGroupChat ? "group" : "direct",
+          GroupSystemPrompt: mergedGroupSystemPrompt,
+          // 群消息元数据（框架级字段）
+          WasMentioned: isGroupChat ? wasMentioned : undefined,
+          SenderLabel: isGroupChat ? senderLabel : undefined,
+          GroupSubject: isGroupChat ? groupSubject : undefined,
           SenderId: event.senderId,
           SenderName: event.senderName,
           Provider: "qqbot",
@@ -1020,6 +1284,16 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                     log?.error(`[qqbot:${account.accountId}] Streaming deliver error: ${err}`);
                   }
 
+                let replyText = payload.text ?? "";
+                
+                // 群消息：模型回复 NO_REPLY 表示无需回复，跳过发送（对齐核心框架 SILENT_REPLY_TOKEN）
+                // 注意：核心框架的 reply-delivery 已会拦截 NO_REPLY，此处为双重保险
+                const trimmedReply = replyText.trim();
+                if (event.type === "group" && (trimmedReply === "NO_REPLY" || trimmedReply === "[SKIP]")) {
+                  log?.info(`[qqbot:${account.accountId}] Model decided to skip group message (token=${trimmedReply}) from ${event.senderId}: ${event.content?.slice(0, 50)}`);
+                  return;
+                }
+
                   // 检查是否因流式 API 不可用而需要降级（ensureStreamingStarted 全部失败）
                   // 如果需要降级，不 return，让本次 deliver 的 payload.text（全量文本）继续走普通发送逻辑
                   if (streamingController.shouldFallbackToStatic) {
@@ -1228,6 +1502,16 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
             if (streamingController?.shouldFallbackToStatic) {
               log?.debug?.(`[qqbot:${account.accountId}] Streaming was degraded to static mode (no chunk sent successfully)`);
             }
+
+            // 回复完成后清空群历史缓存（对齐 Discord：每次回复后重新累积）
+            if (event.type === "group" && event.groupOpenid) {
+              const historyLimit = resolveHistoryLimit(cfg as any, event.groupOpenid, account.accountId);
+              clearPendingHistory({
+                historyMap: groupHistories,
+                historyKey: event.groupOpenid,
+                limit: historyLimit,
+              });
+            }
           }
         } catch (err) {
           const errStr = String(err);
@@ -1435,10 +1719,11 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                 });
               } else if (t === "GROUP_AT_MESSAGE_CREATE") {
                 const event = d as GroupMessageEvent;
-                // P1-3: 记录已知用户（群组用户）
+                // 被 @ 的消息，直接入队回复
                 recordKnownUser({
                   openid: event.author.member_openid,
                   type: "group",
+                  nickname: event.author.username,
                   groupOpenid: event.group_openid,
                   accountId: account.accountId,
                 });
@@ -1446,6 +1731,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                 trySlashCommandOrEnqueue({
                   type: "group",
                   senderId: event.author.member_openid,
+                  senderName: event.author.username,
                   content: event.content,
                   messageId: event.id,
                   timestamp: event.timestamp,
@@ -1453,7 +1739,65 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                   attachments: event.attachments,
                   refMsgIdx: groupRefs.refMsgIdx,
                   msgIdx: groupRefs.msgIdx,
+                  eventType: "GROUP_AT_MESSAGE_CREATE",
+                  mentions: event.mentions,
+                  messageScene: event.message_scene,
                 });
+              } else if (t === "GROUP_MESSAGE_CREATE") {
+                const event = d as GroupMessageEvent;
+                recordKnownUser({
+                  openid: event.author.member_openid,
+                  type: "group",
+                  nickname: event.author.username,
+                  groupOpenid: event.group_openid,
+                  accountId: account.accountId,
+                });
+                const groupRefs = parseRefIndices(event.message_scene?.ext);
+                trySlashCommandOrEnqueue({
+                  type: "group",
+                  senderId: event.author.member_openid,
+                  senderName: event.author.username,
+                  senderIsBot: event.author.bot,
+                  content: event.content,
+                  messageId: event.id,
+                  timestamp: event.timestamp,
+                  groupOpenid: event.group_openid,
+                  attachments: event.attachments,
+                  refMsgIdx: groupRefs.refMsgIdx,
+                  msgIdx: groupRefs.msgIdx,
+                  eventType: "GROUP_MESSAGE_CREATE",
+                  mentions: event.mentions,
+                  messageScene: event.message_scene,
+                });
+              } else if (t === "GROUP_ADD_ROBOT") {
+                const event = d as { timestamp: string; group_openid: string; op_member_openid: string };
+                log?.info(`[qqbot:${account.accountId}] Bot added to group: ${event.group_openid} by ${event.op_member_openid}`);
+                recordKnownUser({
+                  openid: event.op_member_openid,
+                  type: "group",
+                  groupOpenid: event.group_openid,
+                  accountId: account.accountId,
+                });
+                // 发送入群欢迎
+                (async () => {
+                  try {
+                    const token = await getAccessToken(account.appId, account.clientSecret);
+                    const greeting = `嗨～我来啦！有事随时喊我就好 😄`;
+                    await sendProactiveGroupMessage(token, event.group_openid, greeting);
+                    log?.info(`[qqbot:${account.accountId}] Sent welcome message to group: ${event.group_openid}`);
+                  } catch (err) {
+                    log?.debug?.(`[qqbot:${account.accountId}] Failed to send welcome message to group ${event.group_openid}: ${err}`);
+                  }
+                })();
+              } else if (t === "GROUP_DEL_ROBOT") {
+                const event = d as { timestamp: string; group_openid: string; op_member_openid: string };
+                log?.info(`[qqbot:${account.accountId}] Bot removed from group: ${event.group_openid} by ${event.op_member_openid}`);
+              } else if (t === "GROUP_MSG_REJECT") {
+                const event = d as { timestamp: number; group_openid: string; op_member_openid: string };
+                log?.info(`[qqbot:${account.accountId}] Group ${event.group_openid} rejected bot proactive messages (by ${event.op_member_openid})`);
+              } else if (t === "GROUP_MSG_RECEIVE") {
+                const event = d as { timestamp: number; group_openid: string; op_member_openid: string };
+                log?.info(`[qqbot:${account.accountId}] Group ${event.group_openid} accepted bot proactive messages (by ${event.op_member_openid})`);
               }
               break;
 

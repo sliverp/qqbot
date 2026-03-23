@@ -7,7 +7,7 @@ import {
 } from "openclaw/plugin-sdk/core";
 
 import type { ResolvedQQBotAccount } from "./types.js";
-import { DEFAULT_ACCOUNT_ID, listQQBotAccountIds, resolveQQBotAccount, applyQQBotAccountConfig, resolveDefaultQQBotAccountId } from "./config.js";
+import { DEFAULT_ACCOUNT_ID, listQQBotAccountIds, resolveQQBotAccount, applyQQBotAccountConfig, resolveDefaultQQBotAccountId, resolveRequireMention, resolveToolPolicy, resolveGroupConfig } from "./config.js";
 import { sendText, sendMedia } from "./outbound.js";
 import { startGateway } from "./gateway.js";
 import { qqbotOnboardingAdapter } from "./onboarding.js";
@@ -50,6 +50,68 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
     blockStreaming: true,
   },
   reload: { configPrefixes: ["channels.qqbot"] },
+
+  // ============ 群消息策略适配器 ============
+  groups: {
+    /** 是否需要 @机器人才响应 */
+    resolveRequireMention: ({ cfg, accountId, groupId }) => {
+      return resolveRequireMention(cfg, groupId, accountId);
+    },
+
+    /** 群聊工具范围（默认 restricted） */
+    resolveToolPolicy: ({ cfg, accountId, groupId }) => {
+      return resolveToolPolicy(cfg, groupId, accountId);
+    },
+
+    /** QQ Bot 平台特有的群聊行为提示 */
+    resolveGroupIntroHint: ({ cfg, accountId, groupId }) => {
+      const groupCfg = resolveGroupConfig(cfg, groupId, accountId);
+      const hints: string[] = [];
+      if (groupCfg.name) {
+        hints.push(`当前群: ${groupCfg.name}`);
+      }
+      // bot 互聊防护、@状态行为指引在 gateway.ts 动态注入
+      return hints.join(" ");
+    },
+  },
+
+  // ============ @mention 检测与清理 ============
+  mentions: {
+    /** 清理 @mention：替换 <@openid> 为 @用户名，去除 @机器人自身 */
+    stripMentionText: (text, mentions) => {
+      if (!text || !mentions?.length) return text;
+      let cleaned = text;
+      for (const m of mentions) {
+        const openid = (m as any).member_openid ?? (m as any).id ?? (m as any).user_openid;
+        if (!openid) continue;
+        if (m.is_you) {
+          cleaned = cleaned.replace(new RegExp(`<@!?${openid}>`, "g"), "").trim();
+        } else {
+          const displayName = m.nickname ?? (m as any).username;
+          if (displayName) {
+            cleaned = cleaned.replace(new RegExp(`<@!?${openid}>`, "g"), `@${displayName}`);
+          }
+        }
+      }
+      return cleaned;
+    },
+
+    /** 检测消息是否 @了机器人（mentions > eventType > mentionPatterns） */
+    detectWasMentioned: ({ eventType, mentions, content, mentionPatterns }) => {
+      if (mentions?.some((m) => m.is_you)) return true;
+      if (eventType === "GROUP_AT_MESSAGE_CREATE") return true;
+      if (mentionPatterns?.length && content) {
+        for (const pattern of mentionPatterns) {
+          try {
+            if (new RegExp(pattern, "i").test(content)) return true;
+          } catch {
+            // 无效正则，跳过
+          }
+        }
+      }
+      return false;
+    },
+  },
   // CLI onboarding wizard
   // @ts-expect-error onboarding removed from ChannelPlugin type in 2026.3.23 but still supported at runtime
   onboarding: qqbotOnboardingAdapter,

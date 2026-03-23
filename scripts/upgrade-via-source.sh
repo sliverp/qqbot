@@ -92,30 +92,44 @@ echo "========================================="
 echo ""
 echo "[1/6] 备份已有配置..."
 SAVED_QQBOT_TOKEN=""
+SAVED_QQBOT_CONFIG_FILE=""  # 有 qqbot 配置的文件路径
+SAVED_QQBOT_CHANNEL_JSON="" # 完整 channels.qqbot JSON
+
+# 完整备份 channels.qqbot 对象（含 token / groups / env / allowFrom 等）
 for APP_NAME in openclaw clawdbot moltbot; do
     CONFIG_FILE="$HOME/.$APP_NAME/$APP_NAME.json"
     if [ -f "$CONFIG_FILE" ]; then
-        SAVED_QQBOT_TOKEN=$(node -e "
+        SAVED_QQBOT_CHANNEL_JSON=$(node -e "
             const cfg = JSON.parse(require('fs').readFileSync('$CONFIG_FILE', 'utf8'));
-            // 尝试所有可能的 channel key（原仓库 + 本仓库）
             const keys = ['qqbot', 'openclaw-qqbot', 'openclaw-qq'];
             for (const key of keys) {
                 const ch = cfg.channels && cfg.channels[key];
-                if (!ch) continue;
-                if (ch.token) { process.stdout.write(ch.token); process.exit(0); }
-                if (ch.appId && ch.clientSecret) { process.stdout.write(ch.appId + ':' + ch.clientSecret); process.exit(0); }
+                if (ch && Object.keys(ch).length > 0) {
+                    process.stdout.write(JSON.stringify(ch));
+                    process.exit(0);
+                }
             }
         " 2>/dev/null || true)
-        if [ -n "$SAVED_QQBOT_TOKEN" ]; then
-            echo "已备份 qqbot 通道 token: ${SAVED_QQBOT_TOKEN:0:10}..."
+        if [ -n "$SAVED_QQBOT_CHANNEL_JSON" ]; then
+            SAVED_QQBOT_CONFIG_FILE="$CONFIG_FILE"
+            # 提取 token 供 Step 4 fallback
+            SAVED_QQBOT_TOKEN=$(node -e "
+                const ch = JSON.parse(process.argv[1]);
+                if (ch.token) { process.stdout.write(ch.token); }
+                else if (ch.appId && ch.clientSecret) { process.stdout.write(ch.appId + ':' + ch.clientSecret); }
+            " "$SAVED_QQBOT_CHANNEL_JSON" 2>/dev/null || true)
+            echo "已备份完整 qqbot 通道配置"
+            if [ -n "$SAVED_QQBOT_TOKEN" ]; then
+                echo "  token: ${SAVED_QQBOT_TOKEN:0:10}..."
+            fi
             break
         fi
     fi
 done
 
-# 若当前配置中没有，再尝试从 openclaw 备份文件恢复
-if [ -z "$SAVED_QQBOT_TOKEN" ] && [ -d "$HOME/.openclaw" ]; then
-    SAVED_QQBOT_TOKEN=$(node -e "
+# 若当前配置中没有，从 openclaw 备份文件恢复
+if [ -z "$SAVED_QQBOT_CHANNEL_JSON" ] && [ -d "$HOME/.openclaw" ]; then
+    SAVED_QQBOT_CHANNEL_JSON=$(node -e "
       const fs = require('fs');
       const path = require('path');
       const dir = path.join(process.env.HOME, '.openclaw');
@@ -129,16 +143,25 @@ if [ -z "$SAVED_QQBOT_TOKEN" ] && [ -d "$HOME/.openclaw" ]; then
           const keys = ['qqbot', 'openclaw-qqbot', 'openclaw-qq'];
           for (const key of keys) {
             const ch = cfg.channels && cfg.channels[key];
-            if (!ch) continue;
-            if (ch.token) { process.stdout.write(ch.token); process.exit(0); }
-            if (ch.appId && ch.clientSecret) { process.stdout.write(ch.appId + ':' + ch.clientSecret); process.exit(0); }
+            if (ch && Object.keys(ch).length > 0) {
+              process.stdout.write(JSON.stringify(ch));
+              process.exit(0);
+            }
           }
         } catch {}
       }
     " 2>/dev/null || true)
 
-    if [ -n "$SAVED_QQBOT_TOKEN" ]; then
-        echo "已从 ~/.openclaw/openclaw.json.bak* 找到 qqbot 备份 token: ${SAVED_QQBOT_TOKEN:0:10}..."
+    if [ -n "$SAVED_QQBOT_CHANNEL_JSON" ]; then
+        SAVED_QQBOT_TOKEN=$(node -e "
+            const ch = JSON.parse(process.argv[1]);
+            if (ch.token) { process.stdout.write(ch.token); }
+            else if (ch.appId && ch.clientSecret) { process.stdout.write(ch.appId + ':' + ch.clientSecret); }
+        " "$SAVED_QQBOT_CHANNEL_JSON" 2>/dev/null || true)
+        echo "已从 ~/.openclaw/openclaw.json.bak* 恢复 qqbot 通道配置"
+        if [ -n "$SAVED_QQBOT_TOKEN" ]; then
+            echo "  token: ${SAVED_QQBOT_TOKEN:0:10}..."
+        fi
     fi
 fi
 
@@ -504,6 +527,30 @@ else
     # 清理 openclaw CLI install 留下的 backup 目录，
     # 避免 gateway 发现两个同 id 插件不断刷 duplicate plugin id 警告
     find "$HOME/.openclaw/extensions/" -maxdepth 1 -name ".openclaw-qqbot-backup-*" -exec rm -rf {} + 2>/dev/null || true
+
+    # 恢复 channels.qqbot 完整配置（防止 plugins install 意外覆盖）
+    # 策略：直接用备份完整覆盖回去，确保 groups / env / prompts / allowFrom 等所有用户配置不丢失。
+    if [ -n "$SAVED_QQBOT_CHANNEL_JSON" ]; then
+        node -e "
+          const fs = require('fs');
+          const path = require('path');
+          const saved = JSON.parse(process.argv[1]);
+          for (const app of ['openclaw', 'clawdbot', 'moltbot']) {
+            const f = path.join(process.env.HOME, '.' + app, app + '.json');
+            if (!fs.existsSync(f)) continue;
+            const cfg = JSON.parse(fs.readFileSync(f, 'utf8'));
+            if (!cfg.channels) { cfg.channels = {}; }
+            if (JSON.stringify(cfg.channels.qqbot) === JSON.stringify(saved)) {
+              process.stderr.write('  channels.qqbot 配置无变化，无需恢复\\n');
+            } else {
+              cfg.channels.qqbot = saved;
+              fs.writeFileSync(f, JSON.stringify(cfg, null, 4) + '\\n');
+              process.stderr.write('  已完整恢复 channels.qqbot 配置（' + Object.keys(saved).join(', ') + '）\\n');
+            }
+            break;
+          }
+        " "$SAVED_QQBOT_CHANNEL_JSON" 2>&1 || true
+    fi
 
     # 记录更新后的 qqbot 插件版本
     NEW_QQBOT_VERSION=$(node -e '
