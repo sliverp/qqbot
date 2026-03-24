@@ -412,7 +412,7 @@ const QQ_NATIVE_UPLOAD_FORMATS = [".wav", ".mp3", ".silk"];
  * 将本地音频文件转换为 QQ Bot 可上传的 Base64
  *
  * QQ Bot API 支持直传 WAV、MP3、SILK 三种格式，其他格式仍需转换。
- * 转换策略（参考 NapCat/go-cqhttp/Discord/Telegram 的做法）：
+ * 转换策略：
  *
  * 1. WAV / MP3 / SILK → 直传（跳过转换）
  * 2. 有 ffmpeg → ffmpeg 万能解码为 PCM → silk-wasm 编码

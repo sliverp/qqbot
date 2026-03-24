@@ -49,7 +49,8 @@ const DEFAULT_GROUP_POLICY: GroupPolicy = "open";
 const DEFAULT_GROUP_HISTORY_LIMIT = 50;
 
 const DEFAULT_GROUP_CONFIG: Omit<Required<GroupConfig>, "prompt"> = {
-  requireMention: false,
+  requireMention: true,
+  ignoreOtherMentions: false,
   toolPolicy: "restricted",
   name: "",
   historyLimit: DEFAULT_GROUP_HISTORY_LIMIT,
@@ -100,6 +101,7 @@ export function resolveGroupConfig(cfg: OpenClawConfig, groupOpenid: string, acc
 
   return {
     requireMention: specificCfg.requireMention ?? wildcardCfg.requireMention ?? DEFAULT_GROUP_CONFIG.requireMention,
+    ignoreOtherMentions: specificCfg.ignoreOtherMentions ?? wildcardCfg.ignoreOtherMentions ?? DEFAULT_GROUP_CONFIG.ignoreOtherMentions,
     toolPolicy: specificCfg.toolPolicy ?? wildcardCfg.toolPolicy ?? DEFAULT_GROUP_CONFIG.toolPolicy,
     name: specificCfg.name ?? wildcardCfg.name ?? DEFAULT_GROUP_CONFIG.name,
     prompt: specificCfg.prompt ?? wildcardCfg.prompt,
@@ -123,6 +125,11 @@ export function resolveGroupPrompt(cfg: OpenClawConfig, groupOpenid: string, acc
 /** 解析群是否需要 @机器人才响应 */
 export function resolveRequireMention(cfg: OpenClawConfig, groupOpenid: string, accountId?: string): boolean {
   return resolveGroupConfig(cfg, groupOpenid, accountId).requireMention;
+}
+
+/** 解析群是否忽略 @了其他人（非 bot）的消息 */
+export function resolveIgnoreOtherMentions(cfg: OpenClawConfig, groupOpenid: string, accountId?: string): boolean {
+  return resolveGroupConfig(cfg, groupOpenid, accountId).ignoreOtherMentions;
 }
 
 /** 解析群工具策略 */

@@ -6,7 +6,7 @@ import { getAccessToken, getGatewayUrl, sendC2CMessage, sendChannelMessage, send
 import { loadSession, saveSession, clearSession } from "./session-store.js";
 import { recordKnownUser, flushKnownUsers } from "./known-users.js";
 import { getQQBotRuntime } from "./runtime.js";
-import { isGroupAllowed, resolveGroupName, resolveGroupPrompt, resolveHistoryLimit, resolveGroupPolicy, resolveGroupConfig } from "./config.js";
+import { isGroupAllowed, resolveGroupName, resolveGroupPrompt, resolveHistoryLimit, resolveGroupPolicy, resolveGroupConfig, resolveIgnoreOtherMentions } from "./config.js";
 import { qqbotPlugin } from "./channel.js";
 import {
   recordPendingHistoryEntry,
@@ -37,6 +37,7 @@ import { parseAndSendMediaTags, sendPlainReply, type DeliverEventContext, type D
 import { createDeliverDebouncer, type DeliverDebouncer } from "./deliver-debounce.js";
 import { runWithRequestContext } from "./request-context.js";
 import { StreamingController, shouldUseStreaming } from "./streaming.js";
+import { resolveGroupMessageGate } from "./message-gating.js";
 
 // ============ Interaction 处理 ============
 
@@ -61,7 +62,7 @@ async function handleInteractionCreate(params: {
     const groupCfg = groupOpenid ? resolveGroupConfig(cfg as any, groupOpenid, account.accountId) : null;
     const groupPolicy = resolveGroupPolicy(cfg as any, account.accountId);
     // require_mention 协议：字符串 "mention" | "always"（mention=@机器人时激活，always=总是激活）
-    const configRequireMention = groupCfg?.requireMention ?? false;
+    const configRequireMention = groupCfg?.requireMention ?? true;
     const requireMentionMode: GroupActivationMode = configRequireMention ? "mention" : "always";
     const pluginVersion = getApiPluginVersion();
     const fwVersionRaw = getFrameworkVersion();
@@ -145,7 +146,7 @@ async function handleInteractionCreate(params: {
     const latestCfg = changed ? (configApi.loadConfig() as Record<string, unknown>) : currentCfg;
     const updatedGroupCfg = groupOpenid ? resolveGroupConfig(latestCfg as any, groupOpenid, account.accountId) : null;
     const updatedGroupPolicy = resolveGroupPolicy(latestCfg as any, account.accountId);
-    const updatedRequireMention = updatedGroupCfg?.requireMention ?? false;
+    const updatedRequireMention = updatedGroupCfg?.requireMention ?? true;
     const updatedRequireMentionMode: GroupActivationMode = updatedRequireMention ? "mention" : "always";
     const updatedMentionPatternsArr: string[] =
       (latestCfg?.messages as any)?.groupChat?.mentionPatterns ?? [];
@@ -179,7 +180,7 @@ async function handleInteractionCreate(params: {
 
 type GroupActivationMode = "mention" | "always";
 
-/** 解析 session store 文件路径（对齐核心框架 resolveStorePath） */
+/** 解析 session store 文件路径 */
 function resolveSessionStorePath(cfg: Record<string, unknown>, agentId?: string): string {
   const sessionCfg = (cfg as any)?.session;
   const store: string | undefined = sessionCfg?.store;
@@ -202,6 +203,78 @@ function resolveSessionStorePath(cfg: Record<string, unknown>, agentId?: string)
     || process.env.CLAWDBOT_STATE_DIR?.trim()
     || path.join(process.env.HOME || process.env.USERPROFILE || "", ".openclaw");
   return path.join(stateDir, "agents", resolvedAgentId, "sessions", "sessions.json");
+}
+
+// ============ Mention Gating — 已抽取到 message-gating.ts ============
+
+// ============ Command Detection（委托框架运行时 commands-registry） ============
+
+/**
+ * 检测消息是否包含框架控制命令（如 /activation、/status 等）。
+ *
+ * 不再使用静态 KNOWN_CONTROL_COMMANDS 列表，而是委托给框架运行时
+ * pluginRuntime.channel.text.hasControlCommand()，确保框架新增命令时
+ * 无需手动同步。
+ *
+ * 如果 pluginRuntime 尚未初始化（极端边界），回退到简单的 "/" 前缀检测。
+ */
+function hasControlCommand(text: string): boolean {
+  if (!text || !text.startsWith("/")) return false;
+  try {
+    const runtime = getQQBotRuntime();
+    const runtimeHasControlCommand = runtime?.channel?.text?.hasControlCommand;
+    if (typeof runtimeHasControlCommand === "function") {
+      return runtimeHasControlCommand(text);
+    }
+  } catch {
+    // runtime 未初始化，fallback
+  }
+  // fallback：简单的 "/" + word 检测（宁可误判为 true 也不漏掉命令）
+  return /^\/[a-z][a-z0-9_-]*/i.test(text);
+}
+
+// ============ Text Command Gating ============
+
+/**
+ * 判断文本命令是否启用。
+ * 当 cfg.commands.text === false 时禁用；QQ Bot 仅支持文本命令（无 native slash command）。
+ */
+function shouldHandleTextCommands(cfg: Record<string, unknown>): boolean {
+  const commands = cfg.commands as { text?: boolean } | undefined;
+  // 仅当显式设置为 false 时禁用（默认启用）
+  return commands?.text !== false;
+}
+
+// ============ hasAnyMention 检测 ============
+
+/**
+ * 检测消息中是否包含任何 @mention（不限于 @bot）。
+ * 如果消息 @ 了任何人，即使是控制命令也不应该 bypass mention 门控。
+ */
+function hasAnyMention(params: {
+  mentions?: Array<{ is_you?: boolean; bot?: boolean; [key: string]: unknown }>;
+  content?: string;
+}): boolean {
+  // QQ 事件中 mentions 数组包含了消息中所有被 @ 的用户（含 bot）
+  if (params.mentions && params.mentions.length > 0) return true;
+  // 兜底：检查文本中是否有 <@xxx> 格式的 mention
+  if (params.content && /<@!?\w+>/.test(params.content)) return true;
+  return false;
+}
+
+// ============ implicitMention 检测 ============
+
+/**
+ * 检测引用回复是否构成隐式 mention。
+ * 如果用户回复的是 bot 发出的消息，视为隐式 mention。
+ */
+function resolveImplicitMention(params: {
+  refMsgIdx?: string;
+  getRefEntry: (idx: string) => { isBot?: boolean } | null;
+}): boolean {
+  if (!params.refMsgIdx) return false;
+  const refEntry = params.getRefEntry(params.refMsgIdx);
+  return refEntry?.isBot === true;
 }
 
 /**
@@ -624,8 +697,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 
       const pluginRuntime = getQQBotRuntime();
 
-      // 群历史消息缓存（对齐 Discord 的 guildHistories）
-      // 非@消息写入此 Map，被@时一次性注入上下文后清空
+      // 群历史消息缓存：非@消息写入此 Map，被@时一次性注入上下文后清空
       const groupHistories = new Map<string, HistoryEntry[]>();
 
       // 处理收到的消息
@@ -863,8 +935,8 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         }
 
         // ============ 构建 contextInfo（静态/动态分离） ============
-        // 设计原则（参考 Telegram/Discord 做法）：
-        //   - 静态指引：每条消息不变的能力声明，
+        // 设计原则：
+        //   - 静态指引：每条消息不变的内容（场景锚定、投递地址、能力说明），
         //     注入 systemPrompts 前部，session 中虽重复出现但 AI 会自动降权，
         //     且保证长 session 窗口截断后仍可见。
         //   - 动态标签：每条消息变化的数据（时间、附件、ASR），
@@ -897,7 +969,15 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         }
         const dynamicCtx = dynLines.length > 0 ? dynLines.join("\n") + "\n" : "";
 
-        // --- 群消息上下文（对齐 Discord 标准路径：插件只提供策略，框架自动组装 hint） ---
+        // --- 命令授权（所有消息类型共用，群消息门控也需要） ---
+        // allowFrom: ["*"] 表示允许所有人，否则检查 senderId 是否在 allowFrom 列表中
+        const allowFromList = account.config?.allowFrom ?? [];
+        const allowAll = allowFromList.length === 0 || allowFromList.some((entry: string) => entry === "*");
+        const commandAuthorized = allowAll || allowFromList.some((entry: string) =>
+          entry.toUpperCase() === event.senderId.toUpperCase()
+        );
+
+        // --- 群消息上下文：插件只提供策略，框架自动组装 hint ---
         let groupSystemPrompt = "";
         let wasMentioned = false;
         let groupSubject = "";
@@ -921,7 +1001,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
             mentionPatterns: mentionPatternsForDetect,
           }) ?? false;
 
-          // 3. requireMention 门控（对齐核心框架 resolveGroupActivationFor 逻辑）
+          // 3. requireMention 门控
           // 优先级：session store 中的 /activation 命令 > 配置文件 requireMention > 默认值
           // 未被 @ 时：消息仍写入上下文（让 bot 拥有完整对话记忆），但不触发 AI 回复
           const configRequireMention = qqbotPlugin.groups?.resolveRequireMention?.({
@@ -938,22 +1018,64 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
           });
           const requireMention = activation === "mention";
 
-          // 斜杠命令（如 /activation always）即使在 mention 模式下也必须放行，
-          // 否则用户无法通过命令切换 activation 模式。
-          // 对齐核心框架 group-gating.ts 的 shouldBypassMention 逻辑。
-          const isSlashCommand = event.content?.trim().startsWith("/");
+          // 4. 隐式 mention：引用回复 bot 的消息视为隐式 mention
+          const implicitMention = resolveImplicitMention({
+            refMsgIdx: event.refMsgIdx,
+            getRefEntry: getRefIndex,
+          });
 
-          if (requireMention && !wasMentioned && !isSlashCommand) {
-            // 非@消息：记录到群历史缓存后直接返回，不调用 AI 模型（对齐 Discord/WhatsApp 方案）
-            // 下次被@时，累积的历史消息会通过 buildPendingHistoryContext 注入上下文
+          // 4.5 统一门控：ignoreOtherMentions → shouldBlock → mention 门控
+          // 三层判断收敛到 resolveGroupMessageGate()
+          const contentForCommand = event.content?.trim() ?? "";
+          const allowTextCommands = shouldHandleTextCommands(cfg as Record<string, unknown>);
+          const gate = resolveGroupMessageGate({
+            ignoreOtherMentions: resolveIgnoreOtherMentions(cfg as any, event.groupOpenid, account.accountId),
+            hasAnyMention: hasAnyMention({ mentions: event.mentions, content: event.content }),
+            wasMentioned,
+            implicitMention,
+            allowTextCommands,
+            isControlCommand: hasControlCommand(contentForCommand),
+            commandAuthorized,
+            requireMention,
+            canDetectMention: true,
+          });
+
+          if (gate.action === "drop_other_mention") {
+            // @了其他人但未 @bot：记录历史后丢弃
             const historyLimit = resolveHistoryLimit(cfg as any, event.groupOpenid, account.accountId);
             const senderForHistory = event.senderName
               ? `${event.senderName} (${event.senderId})`
               : event.senderId;
-
-            // 构建轻量附件摘要，保留富媒体上下文（图片/语音/视频/文件）
             const historyAttachments = toAttachmentSummaries(event.attachments);
+            recordPendingHistoryEntry({
+              historyMap: groupHistories,
+              historyKey: event.groupOpenid,
+              limit: historyLimit,
+              entry: {
+                sender: senderForHistory,
+                body: event.content,
+                timestamp: new Date(event.timestamp).getTime(),
+                messageId: event.messageId,
+                attachments: historyAttachments,
+              },
+            });
+            log?.info(`[qqbot:${account.accountId}] Group ${event.groupOpenid}: drop message (ignoreOtherMentions=true, other user mentioned, bot not mentioned)`);
+            return;
+          }
 
+          if (gate.action === "block_unauthorized_command") {
+            // 未授权控制命令：静默拦截，不交给 AI
+            log?.info(`[qqbot:${account.accountId}] Group ${event.groupOpenid}: blocked unauthorized control command from ${event.senderId}: ${contentForCommand.slice(0, 50)}`);
+            return;
+          }
+
+          if (gate.action === "skip_no_mention") {
+            // 非 @bot 消息：记录到群历史缓存后跳过 AI
+            const historyLimit = resolveHistoryLimit(cfg as any, event.groupOpenid, account.accountId);
+            const senderForHistory = event.senderName
+              ? `${event.senderName} (${event.senderId})`
+              : event.senderId;
+            const historyAttachments = toAttachmentSummaries(event.attachments);
             recordPendingHistoryEntry({
               historyMap: groupHistories,
               historyKey: event.groupOpenid,
@@ -970,15 +1092,18 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
             return;
           }
 
-          // 4. 发送者标签
+          // gate.action === "pass" — 更新 wasMentioned 为 effectiveWasMentioned（含 implicit + bypass）
+          wasMentioned = gate.effectiveWasMentioned;
+
+          // 5. 发送者标签
           senderLabel = event.senderName
             ? `${event.senderName} (${event.senderId})`
             : event.senderId;
 
-          // 5. 群名称（从 config 中读取，fallback 为 openid 前 8 位）
+          // 6. 群名称（从 config 中读取，fallback 为 openid 前 8 位）
           groupSubject = resolveGroupName(cfg as any, event.groupOpenid, account.accountId);
 
-          // 6. GroupSystemPrompt — 根据消息来源（机器人/人类）和 @状态 注入差异化 PE
+          // 7. GroupSystemPrompt — 根据消息来源（机器人/人类）和 @状态 注入差异化 PE
           //    基础提示从 resolveGroupIntroHint 获取（群名称、平台限制等静态信息），
           //    然后根据运行时状态追加针对性行为指引。
           const baseHint = qqbotPlugin.groups?.resolveGroupIntroHint?.({
@@ -1076,7 +1201,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
           ? userContent
           : `${dynamicCtx}${userMessage}`;
 
-        // 被@时：将累积的非@历史消息注入上下文（对齐 Discord/WhatsApp 的 history 方案）
+        // 被@时：将累积的非@历史消息注入上下文
         // 消息格式使用 formatInboundEnvelope 与正常消息保持一致
         if (event.type === "group" && event.groupOpenid) {
           const historyLimit = resolveHistoryLimit(cfg as any, event.groupOpenid, account.accountId);
@@ -1110,14 +1235,6 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                          : event.type === "group" ? `qqbot:group:${event.groupOpenid}`
                          : `qqbot:c2c:${event.senderId}`;
         const toAddress = fromAddress;
-
-        // 计算命令授权状态
-        // allowFrom: ["*"] 表示允许所有人，否则检查 senderId 是否在 allowFrom 列表中
-        const allowFromList = account.config?.allowFrom ?? [];
-        const allowAll = allowFromList.length === 0 || allowFromList.some((entry: string) => entry === "*");
-        const commandAuthorized = allowAll || allowFromList.some((entry: string) => 
-          entry.toUpperCase() === event.senderId.toUpperCase()
-        );
 
         // 分离 imageUrls 为本地路径和远程 URL，供 openclaw 原生媒体处理
         const localMediaPaths: string[] = [];
@@ -1186,7 +1303,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
             MediaUrls: remoteMediaUrls,
             MediaUrl: remoteMediaUrls[0],
           } : {}),
-          // 引用消息上下文（对齐 Telegram/Discord 的 ReplyTo 字段）
+          // 引用消息上下文
           ...(replyToId ? {
             ReplyToId: replyToId,
             ReplyToBody: replyToBody,
@@ -1457,7 +1574,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 
                 let replyText = payload.text ?? "";
                 
-                // 群消息：模型回复 NO_REPLY 表示无需回复，跳过发送（对齐核心框架 SILENT_REPLY_TOKEN）
+                // 群消息：模型回复 NO_REPLY 表示无需回复，跳过发送
                 // 注意：核心框架的 reply-delivery 已会拦截 NO_REPLY，此处为双重保险
                 const trimmedReply = replyText.trim();
                 if (event.type === "group" && (trimmedReply === "NO_REPLY" || trimmedReply === "[SKIP]")) {
@@ -1674,7 +1791,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
               log?.debug?.(`[qqbot:${account.accountId}] Streaming was degraded to static mode (no chunk sent successfully)`);
             }
 
-            // 回复完成后清空群历史缓存（对齐 Discord：每次回复后重新累积）
+            // 回复完成后清空群历史缓存（每次回复后重新累积）
             if (event.type === "group" && event.groupOpenid) {
               const historyLimit = resolveHistoryLimit(cfg as any, event.groupOpenid, account.accountId);
               clearPendingHistory({
@@ -2017,7 +2134,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         log?.info(`[qqbot:${account.accountId}] WebSocket closed: ${code} ${reason.toString()}`);
         isConnecting = false; // 释放锁
         
-        // 根据错误码处理（参考 QQ 官方文档）
+        // 根据错误码处理（见 QQ 官方文档）
         // 4004: CODE_INVALID_TOKEN - Token 无效，需刷新 token 重新连接
         // 4006: CODE_SESSION_NO_LONGER_VALID - 会话失效，需重新 identify
         // 4007: CODE_INVALID_SEQ - Resume 时 seq 无效，需重新 identify

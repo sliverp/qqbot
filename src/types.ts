@@ -36,9 +36,14 @@ export type ToolPolicy = "full" | "restricted" | "none";
 export interface GroupConfig {
   /** 是否需要 @机器人才响应（默认 true） */
   requireMention?: boolean;
+  /**
+   * 是否忽略 @了其他用户但没有 @机器人的消息（默认 false）。
+   * 开启后，消息中 @了其他人但未 @bot 时直接丢弃（不记录历史、不触发 AI）。
+   */
+  ignoreOtherMentions?: boolean;
   /** 群聊中 AI 可使用的工具范围（默认 restricted） */
   toolPolicy?: ToolPolicy;
-  /** 群名称（QQ Bot 无 API 获取群名，需手动配置或自动累积） */
+  /** 群名称 */
   name?: string;
   /** 群消息行为 PE（未配置时使用内置默认值） */
   prompt?: string;
