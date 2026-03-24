@@ -11,10 +11,12 @@ import { qqbotPlugin } from "./channel.js";
 import {
   recordPendingHistoryEntry,
   buildPendingHistoryContext,
+  buildMergedMessageContext,
   clearPendingHistory,
   formatAttachmentTags,
+  formatMessageContent,
+  toAttachmentSummaries,
   type HistoryEntry,
-  type AttachmentSummary,
 } from "./group-history.js";
 
 import { setRefIndex, getRefIndex, formatRefEntryForAgent, flushRefIndex, type RefAttachmentSummary } from "./ref-index-store.js";
@@ -849,17 +851,16 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
           systemPrompts.unshift(staticInstruction);
         }
 
-        // --- 动态上下文（仅框架信封未覆盖的附件信息） ---
-        // 标签风格对齐 openclaw 框架的 MEDIA: 标签
+        // --- 动态上下文 ---
         const dynLines: string[] = [];
         if (imageUrls.length > 0) {
-          dynLines.push(imageUrls.map((u) => `MEDIA:${u}`).join("\n"));
+          dynLines.push(`- 图片: ${imageUrls.join(", ")}`);
         }
         if (uniqueVoicePaths.length > 0 || uniqueVoiceUrls.length > 0) {
-          dynLines.push([...uniqueVoicePaths, ...uniqueVoiceUrls].map((u) => `MEDIA:${u}`).join("\n"));
+          dynLines.push(`- 语音: ${[...uniqueVoicePaths, ...uniqueVoiceUrls].join(", ")}`);
         }
         if (uniqueVoiceAsrReferTexts.length > 0) {
-          dynLines.push(uniqueVoiceAsrReferTexts.map((t) => `[语音消息（内容: "${t}"）]`).join("\n"));
+          dynLines.push(`- ASR: ${uniqueVoiceAsrReferTexts.join(" | ")}`);
         }
         const dynamicCtx = dynLines.length > 0 ? dynLines.join("\n") + "\n" : "";
 
@@ -914,25 +915,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
               : event.senderId;
 
             // 构建轻量附件摘要，保留富媒体上下文（图片/语音/视频/文件）
-            let historyAttachments: AttachmentSummary[] | undefined;
-            if (event.attachments?.length) {
-              historyAttachments = event.attachments.map((att) => {
-                const ct = (att.content_type ?? "").toLowerCase();
-                let type: AttachmentSummary["type"] = "unknown";
-                if (ct.startsWith("image/")) type = "image";
-                else if (ct === "voice" || ct.startsWith("audio/") || ct.includes("silk") || ct.includes("amr")) type = "voice";
-                else if (ct.startsWith("video/")) type = "video";
-                else if (ct.startsWith("application/") || ct.startsWith("text/")) type = "file";
-                return {
-                  type,
-                  filename: att.filename,
-                  // 语音 ASR 识别文本（QQ 事件内置）
-                  transcript: att.asr_refer_text || undefined,
-                  // 附件 URL（群历史上下文注入时需要）
-                  url: att.url || undefined,
-                };
-              });
-            }
+            const historyAttachments = toAttachmentSummaries(event.attachments);
 
             recordPendingHistoryEntry({
               historyMap: groupHistories,
@@ -975,11 +958,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
           groupSystemPrompt = [baseHint, behaviorPrompt].filter(Boolean).join("\n");
         }
 
-        // 合并消息额外提示：告知模型这是多条排队消息的合并
         const mergedCount = (event as QueuedMessage)._mergedCount;
-        if (mergedCount && mergedCount > 1) {
-          groupSystemPrompt += `\n注意：以下内容是群里${mergedCount}条排队消息的合并，请一次性针对所有相关内容统一回复，不需要逐条回复。`;
-        }
 
         // 将 <@member_openid> 替换为 @username（使用 mentions 适配器）
         if (event.type === "group" && event.mentions?.length) {
@@ -994,16 +973,68 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 
         // 群消息 user prompt 带上发送者昵称（合并消息已内嵌发送者前缀，不再重复添加）
         const isMergedMsg = mergedCount && mergedCount > 1;
-        const senderPrefix = (event.type === "group" && !isMergedMsg) ? `[${event.senderName ?? event.senderId}]: ` : "";
+        const senderPrefix = (event.type === "group" && !isMergedMsg)
+          ? `[${event.senderName ? `${event.senderName} (${event.senderId})` : event.senderId}]: `
+          : "";
         const isAtYouTag = event.type === "group"
           ? (wasMentioned ? " (@你)" : "")
           : "";
-        // 命令直接透传，不注入上下文
-        const userMessage = senderPrefix ? `${senderPrefix}${quotePart}${userContent}${isAtYouTag}` : `${quotePart}${userContent}`;
+
+        // 合并消息：前面的消息用 envelope 历史格式，最后一条用当前消息格式（与 mention 单条回复对齐）
         // BodyForAgent 只包含动态上下文 + 用户消息，不拼入 systemPrompts。
         // systemPrompts（[QQBot] to=...、TTS 能力声明等）通过 GroupSystemPrompt 注入到
         // 框架的 extraSystemPrompt 中，不会存入 transcript 的 user turn content，
         // 避免 Web UI 不显示用户 query 的问题。
+        let userMessage: string;
+        const mergedMessages = (event as QueuedMessage)._mergedMessages;
+        if (isMergedMsg && mergedMessages?.length) {
+          // --- 辅助：格式化单条子消息内容（表情解析 + mention 清理 + 附件标签） ---
+          const formatSubMsgContent = (m: QueuedMessage): string =>
+            formatMessageContent({
+              content: m.content ?? "",
+              chatType: m.type,
+              mentions: m.mentions as unknown[],
+              attachments: m.attachments,
+              parseFaceTags,
+              stripMentionText: (text, mentions) =>
+                qqbotPlugin.mentions?.stripMentionText?.(text, mentions as any) ?? text,
+            });
+
+          // 前面的消息使用 envelope 历史格式
+          const preceding = mergedMessages.slice(0, -1);
+          const lastMsg = mergedMessages[mergedMessages.length - 1];
+
+          const envelopeParts = preceding.map((m) => {
+            const msgContent = formatSubMsgContent(m);
+            const senderName = m.senderName
+              ? (m.senderName.includes(m.senderId) ? m.senderName : `${m.senderName} (${m.senderId})`)
+              : m.senderId;
+            return pluginRuntime.channel.reply.formatInboundEnvelope({
+              channel: "qqbot",
+              from: senderName,
+              timestamp: new Date(m.timestamp).getTime(),
+              body: msgContent,
+              chatType: "group",
+              envelope: envelopeOptions,
+            });
+          });
+
+          // 最后一条消息使用简洁格式：[发送者]: 内容 (@你)
+          const lastContent = formatSubMsgContent(lastMsg);
+          const lastSenderName = lastMsg.senderName
+            ? (lastMsg.senderName.includes(lastMsg.senderId) ? lastMsg.senderName : `${lastMsg.senderName} (${lastMsg.senderId})`)
+            : lastMsg.senderId;
+          const lastPart = `[${lastSenderName}]: ${lastContent}${isAtYouTag}`;
+
+          // 前置消息用段落标签包裹（类似引用消息的 [引用消息开始]...[引用消息结束]）
+          userMessage = buildMergedMessageContext({
+            precedingParts: envelopeParts,
+            currentMessage: lastPart,
+          });
+        } else {
+          // 命令直接透传，不注入上下文
+          userMessage = senderPrefix ? `${senderPrefix}${quotePart}${userContent}${isAtYouTag}` : `${quotePart}${userContent}`;
+        }
         let agentBody = userContent.startsWith("/")
           ? userContent
           : `${dynamicCtx}${userMessage}`;
@@ -1030,7 +1061,6 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                 timestamp: entry.timestamp,
                 body: bodyWithAttachments,
                 chatType: "group",
-                senderLabel: entry.sender,
                 envelope: envelopeOpts,
               });
             },

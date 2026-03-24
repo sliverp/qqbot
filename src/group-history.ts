@@ -9,10 +9,12 @@
 // 常量
 // ---------------------------------------------------------------------------
 
-/** 历史上下文标记，与 Discord 侧保持一致 */
-const HISTORY_CONTEXT_MARKER = "[Chat messages since your last reply - for context]";
-/** 当前消息标记 */
-const CURRENT_MESSAGE_MARKER = "[Current message - respond to this]";
+/** 历史上下文段落标签 */
+const HISTORY_CTX_START = "[上次回复后的聊天消息 - 作为上下文]";
+const HISTORY_CTX_END = "[当前消息 - 请回复此条]";
+/** 合并消息段落标签 */
+const MERGED_CTX_START = "[以下是合并消息 - 作为上下文]";
+const MERGED_CTX_END = "[当前消息 - 结合上下文回复]";
 /** 历史 Map 最大 key 数量（LRU 淘汰，防止无限增长） */
 const MAX_HISTORY_KEYS = 1000;
 
@@ -41,6 +43,48 @@ export interface AttachmentSummary {
   url?: string;
 }
 
+/**
+ * QQ 事件原始附件（来自 gateway 事件的通用字段子集）
+ *
+ * 多处需要将原始附件转换为 AttachmentSummary，统一此类型避免内联重复定义。
+ */
+export interface RawAttachment {
+  content_type: string;
+  filename?: string;
+  /** 语音 ASR 识别文本（QQ 事件内置） */
+  asr_refer_text?: string;
+  /** 附件 URL */
+  url?: string;
+}
+
+/**
+ * 根据 content_type 推断附件类型（统一判断逻辑，避免多处重复）
+ */
+export function inferAttachmentType(contentType?: string): AttachmentSummary["type"] {
+  const ct = (contentType ?? "").toLowerCase();
+  if (ct.startsWith("image/")) return "image";
+  if (ct === "voice" || ct.startsWith("audio/") || ct.includes("silk") || ct.includes("amr")) return "voice";
+  if (ct.startsWith("video/")) return "video";
+  if (ct.startsWith("application/") || ct.startsWith("text/")) return "file";
+  return "unknown";
+}
+
+/**
+ * 将原始附件数组转换为 AttachmentSummary 数组。
+ *
+ * 统一"原始附件 → 摘要"的映射逻辑，供历史记录缓存、合并消息格式化等场景复用。
+ * 无附件时返回 undefined（而非空数组），与 HistoryEntry.attachments 的可选语义一致。
+ */
+export function toAttachmentSummaries(attachments?: RawAttachment[]): AttachmentSummary[] | undefined {
+  if (!attachments?.length) return undefined;
+  return attachments.map((att) => ({
+    type: inferAttachmentType(att.content_type),
+    filename: att.filename,
+    transcript: att.asr_refer_text || undefined,
+    url: att.url || undefined,
+  }));
+}
+
 /** @deprecated 使用 AttachmentSummary 代替 */
 export type HistoryAttachment = AttachmentSummary;
 
@@ -51,6 +95,46 @@ export interface HistoryEntry {
   messageId?: string;
   /** 富媒体附件摘要（图片/语音/视频/文件） */
   attachments?: AttachmentSummary[];
+}
+
+// ---------------------------------------------------------------------------
+// 消息内容格式化（表情解析 + mention 清理 + 附件标签）
+// ---------------------------------------------------------------------------
+
+/** formatMessageContent 入参 */
+export interface FormatMessageContentParams {
+  content: string;
+  /** 消息类型（group 时才做 mention 清理） */
+  chatType?: string;
+  mentions?: unknown[];
+  attachments?: RawAttachment[];
+  /** QQ 表情标签解析（<faceType=...> → 【表情: 中文名】） */
+  parseFaceTags: (text: string) => string;
+  /** mention @ 清理（移除 <@member_openid> 标记） */
+  stripMentionText?: (text: string, mentions: unknown[]) => string;
+}
+
+/**
+ * 格式化单条消息内容：表情标签解析 → mention 清理 → 附件标签拼接。
+ *
+ * 用于合并消息的逐条子消息格式化，将外部依赖（parseFaceTags / stripMentionText）
+ * 通过参数注入，保持本模块自包含。
+ */
+export function formatMessageContent(params: FormatMessageContentParams): string {
+  let msgContent = params.parseFaceTags(params.content);
+
+  if (params.chatType === "group" && params.mentions?.length && params.stripMentionText) {
+    msgContent = params.stripMentionText(msgContent, params.mentions);
+  }
+
+  if (params.attachments?.length) {
+    const attachmentDesc = formatAttachmentTags(toAttachmentSummaries(params.attachments));
+    if (attachmentDesc) {
+      msgContent = `${msgContent} ${attachmentDesc}`;
+    }
+  }
+
+  return msgContent;
 }
 
 // ---------------------------------------------------------------------------
@@ -199,11 +283,34 @@ export function buildPendingHistoryContext(params: {
   const historyText = entries.map(params.formatEntry).join(lineBreak);
 
   return [
-    HISTORY_CONTEXT_MARKER,
+    HISTORY_CTX_START,
     historyText,
     "",
-    CURRENT_MESSAGE_MARKER,
+    HISTORY_CTX_END,
     params.currentMessage,
+  ].join(lineBreak);
+}
+
+/**
+ * 构建合并消息上下文（多条排队消息被合并时调用）。
+ * 前置消息用 [合并消息开始]...[合并消息结束] 段落标签包裹，
+ * 最后一条作为当前消息紧跟其后。
+ * 如果只有一条消息，直接返回 currentMessage 原文。
+ */
+export function buildMergedMessageContext(params: {
+  precedingParts: string[];
+  currentMessage: string;
+  lineBreak?: string;
+}): string {
+  const { precedingParts, currentMessage } = params;
+  if (precedingParts.length === 0) return currentMessage;
+
+  const lineBreak = params.lineBreak ?? "\n";
+  return [
+    MERGED_CTX_START,
+    precedingParts.join(lineBreak),
+    MERGED_CTX_END,
+    currentMessage,
   ].join(lineBreak);
 }
 

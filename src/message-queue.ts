@@ -34,6 +34,8 @@ export interface QueuedMessage {
   messageScene?: { source?: string; ext?: string[] };
   /** 群消息合并标记：记录合并了多少条原始消息 */
   _mergedCount?: number;
+  /** 合并前的原始消息列表（用于 gateway 侧逐条格式化信封） */
+  _mergedMessages?: QueuedMessage[];
 }
 
 export interface MessageQueueContext {
@@ -142,6 +144,7 @@ function mergeGroupMessages(batch: QueuedMessage[]): QueuedMessage {
     mentions: mergedMentions.length > 0 ? mergedMentions : undefined,
     messageScene: last.messageScene,
     _mergedCount: batch.length,
+    _mergedMessages: batch.length > 1 ? batch : undefined,
   };
 }
 

@@ -3,6 +3,7 @@
  */
 
 import type { RefAttachmentSummary } from "../ref-index-store.js";
+import { inferAttachmentType } from "../group-history.js";
 
 /**
  * 解析 QQ 表情标签，将 <faceType=1,faceId="13",ext="base64..."> 格式
@@ -65,18 +66,10 @@ export function buildAttachmentSummaries(
   localPaths?: Array<string | null>,
 ): RefAttachmentSummary[] | undefined {
   if (!attachments || attachments.length === 0) return undefined;
-  return attachments.map((att, idx) => {
-    const ct = att.content_type?.toLowerCase() ?? "";
-    let type: RefAttachmentSummary["type"] = "unknown";
-    if (ct.startsWith("image/")) type = "image";
-    else if (ct === "voice" || ct.startsWith("audio/") || ct.includes("silk") || ct.includes("amr")) type = "voice";
-    else if (ct.startsWith("video/")) type = "video";
-    else if (ct.startsWith("application/") || ct.startsWith("text/")) type = "file";
-    return {
-      type,
-      filename: att.filename,
-      contentType: att.content_type,
-      localPath: localPaths?.[idx] ?? undefined,
-    };
-  });
+  return attachments.map((att, idx) => ({
+    type: inferAttachmentType(att.content_type),
+    filename: att.filename,
+    contentType: att.content_type,
+    localPath: localPaths?.[idx] ?? undefined,
+  }));
 }
