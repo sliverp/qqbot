@@ -60,22 +60,25 @@ async function handleInteractionCreate(params: {
     const groupOpenid = event.group_openid ?? "";
     const groupCfg = groupOpenid ? resolveGroupConfig(cfg as any, groupOpenid, account.accountId) : null;
     const groupPolicy = resolveGroupPolicy(cfg as any, account.accountId);
-    const requireMention = groupCfg?.requireMention ?? false;
+    // require_mention 协议：字符串 "mention" | "always"（mention=@机器人时激活，always=总是激活）
+    const configRequireMention = groupCfg?.requireMention ?? false;
+    const requireMentionMode: GroupActivationMode = configRequireMention ? "mention" : "always";
     const pluginVersion = getApiPluginVersion();
     const fwVersionRaw = getFrameworkVersion();
     const clawVer = parseFrameworkDateVersion(fwVersionRaw) ?? fwVersionRaw;
 
-    // mention_patterns: 从框架配置 messages.groupChat.mentionPatterns 读取匹配 @文本的正则数组
+    // mention_patterns 协议：逗号分隔的字符串（@文本的名称提及BOT名，多个使用,分隔）
     const rawCfg = cfg as Record<string, unknown>;
-    const mentionPatterns: string[] =
+    const mentionPatternsArr: string[] =
       (rawCfg?.messages as any)?.groupChat?.mentionPatterns ?? [];
+    const mentionPatterns = mentionPatternsArr.join(",");
 
     const clawCfg = {
       channel_type: "qqbot",
       channel_ver: pluginVersion,
       claw_type: "openclaw",
       claw_ver: clawVer,
-      require_mention: requireMention,
+      require_mention: requireMentionMode,
       group_policy: groupPolicy,
       mention_patterns: mentionPatterns,
       online_state: "online",
@@ -84,56 +87,86 @@ async function handleInteractionCreate(params: {
     await acknowledgeInteraction(token, event.id, 0, { claw_cfg: clawCfg });
     log?.info(`[qqbot:${account.accountId}] Interaction ACK (type=${INTERACTION_TYPE_CONFIG_QUERY}) sent: ${event.id}, claw_cfg=${JSON.stringify(clawCfg)}`);
   } else if (event.data?.type === INTERACTION_TYPE_CONFIG_UPDATE) {
-    // type=2002: 配置更新交互，从 resolved 字段获取更新信息并写入本地配置
+    // type=2002: 配置更新交互，从 resolved.claw_cfg 获取更新信息并写入本地配置
     const resolved = event.data.resolved;
+    const clawCfgUpdate = (resolved as Record<string, unknown>)?.claw_cfg as Record<string, unknown> | undefined;
     const groupOpenid = event.group_openid ?? "";
 
     const runtime = getQQBotRuntime();
-    const currentCfg = runtime.getConfig() as Record<string, unknown>;
-    const qqbot = (currentCfg.channels as Record<string, unknown>)?.qqbot as Record<string, unknown> | undefined;
+    const configApi = runtime.config as {
+      loadConfig: () => Record<string, unknown>;
+      writeConfigFile: (cfg: unknown) => Promise<void>;
+    };
+
+    const currentCfg = structuredClone(configApi.loadConfig()) as Record<string, unknown>;
+    const qqbot = ((currentCfg.channels ?? {}) as Record<string, unknown>).qqbot as Record<string, unknown> | undefined;
     let changed = false;
 
-    // 更新 group_policy（账户级别）
-    if (resolved.group_policy !== undefined) {
-      if (qqbot) {
-        (qqbot as Record<string, unknown>).groupPolicy = resolved.group_policy;
+    if (clawCfgUpdate) {
+      // 更新 group_policy（账户级别）
+      if (clawCfgUpdate.group_policy !== undefined && qqbot) {
+        qqbot.groupPolicy = clawCfgUpdate.group_policy;
         changed = true;
       }
-    }
 
-    // 更新 require_mention（群级别）
-    if (resolved.require_mention !== undefined && groupOpenid) {
-      if (qqbot) {
-        const groups = ((qqbot as Record<string, unknown>).groups ?? {}) as Record<string, Record<string, unknown>>;
-        groups[groupOpenid] = { ...groups[groupOpenid], requireMention: resolved.require_mention };
-        (qqbot as Record<string, unknown>).groups = groups;
+      // 更新 require_mention（群级别）——协议为 "mention" | "always"，写回配置时转为 boolean
+      if (clawCfgUpdate.require_mention !== undefined && groupOpenid && qqbot) {
+        const requireMentionBool = clawCfgUpdate.require_mention === "mention";
+        const groups = (qqbot.groups ?? {}) as Record<string, Record<string, unknown>>;
+        groups[groupOpenid] = { ...groups[groupOpenid], requireMention: requireMentionBool };
+        qqbot.groups = groups;
         changed = true;
       }
-    }
 
-    // 更新 mention_patterns（全局消息配置级别）
-    if (resolved.mention_patterns !== undefined) {
-      const messages = ((currentCfg.messages ?? {}) as Record<string, unknown>);
-      const groupChat = ((messages.groupChat ?? {}) as Record<string, unknown>);
-      groupChat.mentionPatterns = resolved.mention_patterns;
-      messages.groupChat = groupChat;
-      currentCfg.messages = messages;
-      changed = true;
+      // 更新 mention_patterns（全局消息配置级别）——协议为逗号分隔字符串，写回配置时拆分为数组
+      if (clawCfgUpdate.mention_patterns !== undefined) {
+        const patternsStr = typeof clawCfgUpdate.mention_patterns === "string" ? clawCfgUpdate.mention_patterns : "";
+        const mentionPatterns = patternsStr ? patternsStr.split(",").map((s: string) => s.trim()).filter(Boolean) : [];
+        const messages = (currentCfg.messages ?? {}) as Record<string, unknown>;
+        const groupChat = (messages.groupChat ?? {}) as Record<string, unknown>;
+        groupChat.mentionPatterns = mentionPatterns;
+        messages.groupChat = groupChat;
+        currentCfg.messages = messages;
+        changed = true;
+      }
     }
 
     if (changed) {
-      const configApi = (runtime as unknown as { config: { writeConfigFile: (cfg: unknown) => Promise<void> } }).config;
       await configApi.writeConfigFile(currentCfg);
       log?.info(`[qqbot:${account.accountId}] Config updated via interaction ${event.id}: ${JSON.stringify({
-        group_policy: resolved.group_policy,
-        require_mention: resolved.require_mention,
-        mention_patterns: resolved.mention_patterns,
+        group_policy: clawCfgUpdate?.group_policy,
+        require_mention: clawCfgUpdate?.require_mention,
+        mention_patterns: clawCfgUpdate?.mention_patterns,
         group_openid: groupOpenid || undefined,
       })}`);
     }
 
-    await acknowledgeInteraction(token, event.id);
-    log?.debug?.(`[qqbot:${account.accountId}] Interaction ACK (type=${INTERACTION_TYPE_CONFIG_UPDATE}) sent: ${event.id}`);
+    // 无论更新是否成功，ACK 都上报最新的 claw_cfg 快照（写入后重新读取确保一致）
+    const latestCfg = changed ? (configApi.loadConfig() as Record<string, unknown>) : currentCfg;
+    const updatedGroupCfg = groupOpenid ? resolveGroupConfig(latestCfg as any, groupOpenid, account.accountId) : null;
+    const updatedGroupPolicy = resolveGroupPolicy(latestCfg as any, account.accountId);
+    const updatedRequireMention = updatedGroupCfg?.requireMention ?? false;
+    const updatedRequireMentionMode: GroupActivationMode = updatedRequireMention ? "mention" : "always";
+    const updatedMentionPatternsArr: string[] =
+      (latestCfg?.messages as any)?.groupChat?.mentionPatterns ?? [];
+    const updatedMentionPatterns = updatedMentionPatternsArr.join(",");
+    const pluginVersion = getApiPluginVersion();
+    const fwVersionRaw = getFrameworkVersion();
+    const clawVer = parseFrameworkDateVersion(fwVersionRaw) ?? fwVersionRaw;
+
+    const ackClawCfg = {
+      channel_type: "qqbot",
+      channel_ver: pluginVersion,
+      claw_type: "openclaw",
+      claw_ver: clawVer,
+      require_mention: updatedRequireMentionMode,
+      group_policy: updatedGroupPolicy,
+      mention_patterns: updatedMentionPatterns,
+      online_state: "online",
+    };
+
+    await acknowledgeInteraction(token, event.id, 0, { claw_cfg: ackClawCfg });
+    log?.info(`[qqbot:${account.accountId}] Interaction ACK (type=${INTERACTION_TYPE_CONFIG_UPDATE}) sent: ${event.id}, claw_cfg=${JSON.stringify(ackClawCfg)}`);
   } else {
     // 其他类型：普通 ACK
     await acknowledgeInteraction(token, event.id);
@@ -878,10 +911,14 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
           }
 
           // 2. @检测（委托 mentions 适配器）
+          const rawCfgForMention = cfg as Record<string, unknown>;
+          const mentionPatternsForDetect: string[] =
+            (rawCfgForMention?.messages as any)?.groupChat?.mentionPatterns ?? [];
           wasMentioned = qqbotPlugin.mentions?.detectWasMentioned?.({
             eventType: event.eventType,
             mentions: event.mentions,
             content: event.content,
+            mentionPatterns: mentionPatternsForDetect,
           }) ?? false;
 
           // 3. requireMention 门控（对齐核心框架 resolveGroupActivationFor 逻辑）
