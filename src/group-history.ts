@@ -1,5 +1,5 @@
 /**
- * 群历史消息缓存（对齐 Discord/WhatsApp 的 history 方案）
+ * 群历史消息缓存
  *
  * 非@消息写入内存 Map，被@时一次性注入上下文后清空。
  * 自包含实现，不依赖 openclaw/plugin-sdk。
@@ -144,7 +144,7 @@ export function formatMessageContent(params: FormatMessageContentParams): string
 /**
  * 将附件摘要格式化为统一的人类可读标签描述（供 AI 上下文注入）。
  *
- * 标签风格对齐 openclaw 框架的 MEDIA: 标签：
+ * 标签风格沿用框架的 MEDIA: 标签格式：
  *   有路径的附件  → MEDIA:path
  *   语音+转录    → MEDIA:path （内容: "transcript"）
  *   无路径的语音  → [语音消息（内容: "transcript"）]

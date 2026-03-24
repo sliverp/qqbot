@@ -274,7 +274,7 @@ async function getToken(account: ResolvedQQBotAccount): Promise<string> {
 }
 
 /**
- * sendPhoto — 发送图片消息（对齐 Telegram sendPhoto）
+ * sendPhoto — 发送图片消息
  * 
  * 支持三种来源：
  * - 本地文件路径 → 分片上传
@@ -365,7 +365,7 @@ export async function sendPhoto(
 }
 
 /**
- * sendVoice — 发送语音消息（对齐 Telegram sendVoice）
+ * sendVoice — 发送语音消息
  * 
  * 支持本地音频文件和公网 URL：
  * - urlDirectUpload=true + 公网URL：先直传平台，失败后下载到本地再转码重试
@@ -452,7 +452,7 @@ async function sendVoiceFromLocal(
 }
 
 /**
- * sendVideoMsg — 发送视频消息（对齐 Telegram sendVideo）
+ * sendVideoMsg — 发送视频消息
  * 
  * 支持公网 URL（urlDirectUpload 控制直传或下载，失败自动 fallback）和本地文件路径。
  */
@@ -585,7 +585,7 @@ async function sendVideoFromLocal(ctx: MediaTargetContext, mediaPath: string, pr
 }
 
 /**
- * sendDocument — 发送文件消息（对齐 Telegram sendDocument）
+ * sendDocument — 发送文件消息
  * 
  * 支持本地文件路径和公网 URL（urlDirectUpload 控制直传或下载，失败自动 fallback）。
  */
@@ -797,7 +797,7 @@ export async function sendText(ctx: OutboundContext): Promise<OutboundResult> {
     return lastResult;
   }
 
-  // ============ 主动消息校验（参考 Telegram 机制） ============
+  // ============ 主动消息校验 ============
   // 如果是主动消息（无 replyToId 或降级后），必须有消息内容
   if (!replyToId) {
     if (!text || text.trim().length === 0) {
