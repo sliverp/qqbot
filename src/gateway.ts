@@ -106,16 +106,40 @@ async function handleInteractionCreate(params: {
     if (clawCfgUpdate) {
       // 更新 group_policy（账户级别）
       if (clawCfgUpdate.group_policy !== undefined && qqbot) {
-        qqbot.groupPolicy = clawCfgUpdate.group_policy;
+        const accountId = account.accountId;
+        const isNamedAccount = accountId !== "default" && (qqbot.accounts as Record<string, Record<string, unknown>> | undefined)?.[accountId];
+
+        if (isNamedAccount) {
+          const accounts = qqbot.accounts as Record<string, Record<string, unknown>>;
+          const acct = accounts[accountId] ?? {};
+          acct.groupPolicy = clawCfgUpdate.group_policy;
+          accounts[accountId] = acct;
+          qqbot.accounts = accounts;
+        } else {
+          qqbot.groupPolicy = clawCfgUpdate.group_policy;
+        }
         changed = true;
       }
 
       // 更新 require_mention（群级别）——协议为 "mention" | "always"，写回配置时转为 boolean
       if (clawCfgUpdate.require_mention !== undefined && groupOpenid && qqbot) {
         const requireMentionBool = clawCfgUpdate.require_mention === "mention";
-        const groups = (qqbot.groups ?? {}) as Record<string, Record<string, unknown>>;
-        groups[groupOpenid] = { ...groups[groupOpenid], requireMention: requireMentionBool };
-        qqbot.groups = groups;
+        const accountId = account.accountId;
+        const isNamedAccount = accountId !== "default" && (qqbot.accounts as Record<string, Record<string, unknown>> | undefined)?.[accountId];
+
+        if (isNamedAccount) {
+          const accounts = qqbot.accounts as Record<string, Record<string, unknown>>;
+          const acct = accounts[accountId] ?? {};
+          const groups = (acct.groups ?? {}) as Record<string, Record<string, unknown>>;
+          groups[groupOpenid] = { ...groups[groupOpenid], requireMention: requireMentionBool };
+          acct.groups = groups;
+          accounts[accountId] = acct;
+          qqbot.accounts = accounts;
+        } else {
+          const groups = (qqbot.groups ?? {}) as Record<string, Record<string, unknown>>;
+          groups[groupOpenid] = { ...groups[groupOpenid], requireMention: requireMentionBool };
+          qqbot.groups = groups;
+        }
         changed = true;
       }
 
