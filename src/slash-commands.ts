@@ -27,7 +27,7 @@ let PLUGIN_VERSION = getPackageVersion(import.meta.url);
 
 // 获取 openclaw 框架版本（缓存结果，只执行一次）
 let _frameworkVersion: string | null = null;
-function getFrameworkVersion(): string {
+export function getFrameworkVersion(): string {
   if (_frameworkVersion !== null) return _frameworkVersion;
   try {
     // 先尝试 PATH 中的 CLI
@@ -90,7 +90,7 @@ interface UpgradeCompatResult {
  * 解析框架版本字符串中的日期版本号
  * 输入示例: "OpenClaw 2026.3.13 (61d171a)" → "2026.3.13"
  */
-function parseFrameworkDateVersion(versionStr: string): string | null {
+export function parseFrameworkDateVersion(versionStr: string): string | null {
   const m = versionStr.match(/(\d{4}\.\d{1,2}\.\d{1,2})/);
   return m ? m[1] : null;
 }

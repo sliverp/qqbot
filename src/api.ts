@@ -553,6 +553,21 @@ export async function getGatewayUrl(accessToken: string): Promise<string> {
   return data.url;
 }
 
+/** 回应按钮交互（INTERACTION_CREATE），避免客户端按钮持续 loading */
+export async function acknowledgeInteraction(
+  accessToken: string,
+  interactionId: string,
+  code: 0 | 1 | 2 | 3 | 4 | 5 = 0,
+  data?: Record<string, unknown>
+): Promise<void> {
+  await apiRequest(accessToken, "PUT", `/interactions/${interactionId}`, { code, ...(data ? { data } : {}) });
+}
+
+/** 获取插件版本号（从 package.json 读取，和 PLUGIN_USER_AGENT 同源） */
+export function getApiPluginVersion(): string {
+  return _pluginVersion;
+}
+
 // ============ 消息发送接口 ============
 
 export interface MessageResponse {

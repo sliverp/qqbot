@@ -1,12 +1,12 @@
 import WebSocket from "ws";
 import path from "node:path";
 import fs from "node:fs";
-import type { ResolvedQQBotAccount, WSPayload, C2CMessageEvent, GuildMessageEvent, GroupMessageEvent } from "./types.js";
-import { getAccessToken, getGatewayUrl, sendC2CMessage, sendChannelMessage, sendGroupMessage, clearTokenCache, initApiConfig, startBackgroundTokenRefresh, stopBackgroundTokenRefresh, sendC2CInputNotify, onMessageSent, PLUGIN_USER_AGENT, sendProactiveGroupMessage } from "./api.js";
+import type { ResolvedQQBotAccount, WSPayload, C2CMessageEvent, GuildMessageEvent, GroupMessageEvent, InteractionEvent } from "./types.js";
+import { getAccessToken, getGatewayUrl, sendC2CMessage, sendChannelMessage, sendGroupMessage, clearTokenCache, initApiConfig, startBackgroundTokenRefresh, stopBackgroundTokenRefresh, sendC2CInputNotify, onMessageSent, PLUGIN_USER_AGENT, sendProactiveGroupMessage, acknowledgeInteraction, getApiPluginVersion } from "./api.js";
 import { loadSession, saveSession, clearSession } from "./session-store.js";
 import { recordKnownUser, flushKnownUsers } from "./known-users.js";
 import { getQQBotRuntime } from "./runtime.js";
-import { isGroupAllowed, resolveGroupName, resolveGroupPrompt, resolveHistoryLimit } from "./config.js";
+import { isGroupAllowed, resolveGroupName, resolveGroupPrompt, resolveHistoryLimit, resolveGroupPolicy, resolveGroupConfig } from "./config.js";
 import { qqbotPlugin } from "./channel.js";
 import {
   recordPendingHistoryEntry,
@@ -18,7 +18,7 @@ import {
 } from "./group-history.js";
 
 import { setRefIndex, getRefIndex, formatRefEntryForAgent, flushRefIndex, type RefAttachmentSummary } from "./ref-index-store.js";
-import { matchSlashCommand, type SlashCommandContext, type SlashCommandFileResult } from "./slash-commands.js";
+import { matchSlashCommand, getFrameworkVersion, parseFrameworkDateVersion, type SlashCommandContext, type SlashCommandFileResult } from "./slash-commands.js";
 import { createMessageQueue, type QueuedMessage } from "./message-queue.js";
 import { triggerUpdateCheck } from "./update-checker.js";
 import { startImageServer, isImageServerRunning, type ImageServerConfig } from "./image-server.js";
@@ -109,11 +109,12 @@ const INTENTS = {
   // 需要申请的权限
   DIRECT_MESSAGE: 1 << 12,           // 频道私信
   GROUP_AND_C2C: 1 << 25,            // 群聊和 C2C 私聊（需申请）
+  INTERACTION: 1 << 26,              // 按钮交互回调
 };
 
-// 固定使用完整权限（群聊 + 私信 + 频道），不做降级
-const FULL_INTENTS = INTENTS.PUBLIC_GUILD_MESSAGES | INTENTS.DIRECT_MESSAGE | INTENTS.GROUP_AND_C2C;
-const FULL_INTENTS_DESC = "群聊+私信+频道";
+// 固定使用完整权限（群聊 + 私信 + 频道 + 交互），不做降级
+const FULL_INTENTS = INTENTS.PUBLIC_GUILD_MESSAGES | INTENTS.DIRECT_MESSAGE | INTENTS.GROUP_AND_C2C | INTENTS.INTERACTION;
+const FULL_INTENTS_DESC = "群聊+私信+频道+交互";
 
 // 重连配置
 const RECONNECT_DELAYS = [1000, 2000, 5000, 10000, 30000, 60000]; // 递增延迟
@@ -1798,6 +1799,54 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
               } else if (t === "GROUP_MSG_RECEIVE") {
                 const event = d as { timestamp: number; group_openid: string; op_member_openid: string };
                 log?.info(`[qqbot:${account.accountId}] Group ${event.group_openid} accepted bot proactive messages (by ${event.op_member_openid})`);
+              } else if (t === "INTERACTION_CREATE") {
+                const event = d as InteractionEvent;
+                const resolved = event.data?.resolved;
+                const sceneDesc = event.scene ?? (event.chat_type === 0 ? "guild" : event.chat_type === 1 ? "group" : "c2c");
+                log?.info(`[qqbot:${account.accountId}] Interaction: scene=${sceneDesc}, type=${event.data?.type}, button_id=${resolved?.button_id}, button_data=${resolved?.button_data}, user=${event.group_member_openid || event.user_openid || resolved?.user_id || "unknown"}`);
+
+                // 根据 data.type 决定回复内容
+                (async () => {
+                  try {
+                    const token = await getAccessToken(account.appId, account.clientSecret);
+
+                    if (event.data?.type === 2001) {
+                      // type=2001: 配置查询交互，回复 claw_cfg
+                      const groupOpenid = event.group_openid ?? "";
+                      const groupCfg = groupOpenid ? resolveGroupConfig(cfg as any, groupOpenid, account.accountId) : null;
+                      const groupPolicy = resolveGroupPolicy(cfg as any, account.accountId);
+                      const requireMention = groupCfg?.requireMention ?? false
+                      const pluginVersion = getApiPluginVersion();
+                      const fwVersionRaw = getFrameworkVersion();
+                      const clawVer = parseFrameworkDateVersion(fwVersionRaw) ?? fwVersionRaw;
+
+                      // mention_patterns: 从框架配置 messages.groupChat.mentionPatterns 读取匹配 @文本的正则数组
+                      const rawCfg = cfg as Record<string, unknown>;
+                      const mentionPatterns: string[] =
+                        (rawCfg?.messages as any)?.groupChat?.mentionPatterns ?? [];
+
+                      const clawCfg = {
+                        channel_type: "qqbot",
+                        channel_ver: pluginVersion,
+                        claw_type: "openclaw",
+                        claw_ver: clawVer,
+                        require_mention: requireMention,
+                        group_policy: groupPolicy,
+                        mention_patterns: mentionPatterns,
+                        online_state: "online",
+                      };
+
+                      await acknowledgeInteraction(token, event.id, 0, { claw_cfg: clawCfg });
+                      log?.info(`[qqbot:${account.accountId}] Interaction ACK (type=2001) sent: ${event.id}, claw_cfg=${JSON.stringify(clawCfg)}`);
+                    } else {
+                      // 其他类型：普通 ACK
+                      await acknowledgeInteraction(token, event.id);
+                      log?.debug?.(`[qqbot:${account.accountId}] Interaction ACK sent: ${event.id}`);
+                    }
+                  } catch (err) {
+                    log?.error(`[qqbot:${account.accountId}] Failed to ACK interaction ${event.id}: ${err}`);
+                  }
+                })();
               }
               break;
 

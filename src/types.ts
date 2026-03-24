@@ -252,6 +252,48 @@ export interface GroupMessageEvent {
 }
 
 /**
+ * 按钮交互事件（INTERACTION_CREATE）
+ */
+export interface InteractionEvent {
+  /** 事件 ID，用于回应交互（PUT /interactions/{id}） */
+  id: string;
+  /** 事件类型：11=消息按钮 12=单聊快捷菜单 */
+  type: number;
+  /** 场景：c2c / group / guild */
+  scene?: string;
+  /** 场景类型：0=频道 1=群聊 2=单聊 */
+  chat_type?: number;
+  /** 触发时间 RFC3339 */
+  timestamp?: string;
+  /** 频道 openid（仅频道场景） */
+  guild_id?: string;
+  /** 子频道 openid（仅频道场景） */
+  channel_id?: string;
+  /** 单聊用户 openid（仅 c2c 场景） */
+  user_openid?: string;
+  /** 群 openid（仅群聊场景） */
+  group_openid?: string;
+  /** 群内触发用户 openid（仅群聊场景） */
+  group_member_openid?: string;
+  version: number;
+  data: {
+    type: number;
+    resolved: {
+      /** 按钮 action.data 值 */
+      button_data?: string;
+      /** 按钮 id */
+      button_id?: string;
+      /** 操作用户 userid（仅频道场景） */
+      user_id?: string;
+      /** 自定义菜单 id（仅菜单场景） */
+      feature_id?: string;
+      /** 操作的消息 id（仅频道场景） */
+      message_id?: string;
+    };
+  };
+}
+
+/**
  * WebSocket 事件负载
  */
 export interface WSPayload {
