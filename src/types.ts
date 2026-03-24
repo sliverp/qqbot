@@ -289,6 +289,12 @@ export interface InteractionEvent {
       feature_id?: string;
       /** 操作的消息 id（仅频道场景） */
       message_id?: string;
+      /** 配置更新：是否需要 @机器人才响应 */
+      require_mention?: boolean;
+      /** 配置更新：群消息策略 */
+      group_policy?: GroupPolicy;
+      /** 配置更新：@文本匹配正则数组 */
+      mention_patterns?: string[];
     };
   };
 }

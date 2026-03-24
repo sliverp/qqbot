@@ -36,6 +36,109 @@ import { createDeliverDebouncer, type DeliverDebouncer } from "./deliver-debounc
 import { runWithRequestContext } from "./request-context.js";
 import { StreamingController, shouldUseStreaming } from "./streaming.js";
 
+// ============ Interaction 处理 ============
+
+/** 配置查询交互类型 */
+const INTERACTION_TYPE_CONFIG_QUERY = 2001;
+
+/** 配置更新交互类型 */
+const INTERACTION_TYPE_CONFIG_UPDATE = 2002;
+
+/** 处理 INTERACTION_CREATE 事件 */
+async function handleInteractionCreate(params: {
+  event: InteractionEvent;
+  account: ResolvedQQBotAccount;
+  cfg: unknown;
+  log?: { info: (msg: string) => void; warn?: (msg: string) => void; error: (msg: string) => void; debug?: (msg: string) => void };
+}): Promise<void> {
+  const { event, account, cfg, log } = params;
+  const token = await getAccessToken(account.appId, account.clientSecret);
+
+  if (event.data?.type === INTERACTION_TYPE_CONFIG_QUERY) {
+    const groupOpenid = event.group_openid ?? "";
+    const groupCfg = groupOpenid ? resolveGroupConfig(cfg as any, groupOpenid, account.accountId) : null;
+    const groupPolicy = resolveGroupPolicy(cfg as any, account.accountId);
+    const requireMention = groupCfg?.requireMention ?? false;
+    const pluginVersion = getApiPluginVersion();
+    const fwVersionRaw = getFrameworkVersion();
+    const clawVer = parseFrameworkDateVersion(fwVersionRaw) ?? fwVersionRaw;
+
+    // mention_patterns: 从框架配置 messages.groupChat.mentionPatterns 读取匹配 @文本的正则数组
+    const rawCfg = cfg as Record<string, unknown>;
+    const mentionPatterns: string[] =
+      (rawCfg?.messages as any)?.groupChat?.mentionPatterns ?? [];
+
+    const clawCfg = {
+      channel_type: "qqbot",
+      channel_ver: pluginVersion,
+      claw_type: "openclaw",
+      claw_ver: clawVer,
+      require_mention: requireMention,
+      group_policy: groupPolicy,
+      mention_patterns: mentionPatterns,
+      online_state: "online",
+    };
+
+    await acknowledgeInteraction(token, event.id, 0, { claw_cfg: clawCfg });
+    log?.info(`[qqbot:${account.accountId}] Interaction ACK (type=${INTERACTION_TYPE_CONFIG_QUERY}) sent: ${event.id}, claw_cfg=${JSON.stringify(clawCfg)}`);
+  } else if (event.data?.type === INTERACTION_TYPE_CONFIG_UPDATE) {
+    // type=2002: 配置更新交互，从 resolved 字段获取更新信息并写入本地配置
+    const resolved = event.data.resolved;
+    const groupOpenid = event.group_openid ?? "";
+
+    const runtime = getQQBotRuntime();
+    const currentCfg = runtime.getConfig() as Record<string, unknown>;
+    const qqbot = (currentCfg.channels as Record<string, unknown>)?.qqbot as Record<string, unknown> | undefined;
+    let changed = false;
+
+    // 更新 group_policy（账户级别）
+    if (resolved.group_policy !== undefined) {
+      if (qqbot) {
+        (qqbot as Record<string, unknown>).groupPolicy = resolved.group_policy;
+        changed = true;
+      }
+    }
+
+    // 更新 require_mention（群级别）
+    if (resolved.require_mention !== undefined && groupOpenid) {
+      if (qqbot) {
+        const groups = ((qqbot as Record<string, unknown>).groups ?? {}) as Record<string, Record<string, unknown>>;
+        groups[groupOpenid] = { ...groups[groupOpenid], requireMention: resolved.require_mention };
+        (qqbot as Record<string, unknown>).groups = groups;
+        changed = true;
+      }
+    }
+
+    // 更新 mention_patterns（全局消息配置级别）
+    if (resolved.mention_patterns !== undefined) {
+      const messages = ((currentCfg.messages ?? {}) as Record<string, unknown>);
+      const groupChat = ((messages.groupChat ?? {}) as Record<string, unknown>);
+      groupChat.mentionPatterns = resolved.mention_patterns;
+      messages.groupChat = groupChat;
+      currentCfg.messages = messages;
+      changed = true;
+    }
+
+    if (changed) {
+      const configApi = (runtime as unknown as { config: { writeConfigFile: (cfg: unknown) => Promise<void> } }).config;
+      await configApi.writeConfigFile(currentCfg);
+      log?.info(`[qqbot:${account.accountId}] Config updated via interaction ${event.id}: ${JSON.stringify({
+        group_policy: resolved.group_policy,
+        require_mention: resolved.require_mention,
+        mention_patterns: resolved.mention_patterns,
+        group_openid: groupOpenid || undefined,
+      })}`);
+    }
+
+    await acknowledgeInteraction(token, event.id);
+    log?.debug?.(`[qqbot:${account.accountId}] Interaction ACK (type=${INTERACTION_TYPE_CONFIG_UPDATE}) sent: ${event.id}`);
+  } else {
+    // 其他类型：普通 ACK
+    await acknowledgeInteraction(token, event.id);
+    log?.debug?.(`[qqbot:${account.accountId}] Interaction ACK sent: ${event.id}`);
+  }
+}
+
 // /activation 命令支持：读取 session store 中的 groupActivation 值
 // plugin-sdk 未导出 loadSessionStore，插件侧内联实现（只读）
 
@@ -1805,48 +1908,9 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                 const sceneDesc = event.scene ?? (event.chat_type === 0 ? "guild" : event.chat_type === 1 ? "group" : "c2c");
                 log?.info(`[qqbot:${account.accountId}] Interaction: scene=${sceneDesc}, type=${event.data?.type}, button_id=${resolved?.button_id}, button_data=${resolved?.button_data}, user=${event.group_member_openid || event.user_openid || resolved?.user_id || "unknown"}`);
 
-                // 根据 data.type 决定回复内容
-                (async () => {
-                  try {
-                    const token = await getAccessToken(account.appId, account.clientSecret);
-
-                    if (event.data?.type === 2001) {
-                      // type=2001: 配置查询交互，回复 claw_cfg
-                      const groupOpenid = event.group_openid ?? "";
-                      const groupCfg = groupOpenid ? resolveGroupConfig(cfg as any, groupOpenid, account.accountId) : null;
-                      const groupPolicy = resolveGroupPolicy(cfg as any, account.accountId);
-                      const requireMention = groupCfg?.requireMention ?? false
-                      const pluginVersion = getApiPluginVersion();
-                      const fwVersionRaw = getFrameworkVersion();
-                      const clawVer = parseFrameworkDateVersion(fwVersionRaw) ?? fwVersionRaw;
-
-                      // mention_patterns: 从框架配置 messages.groupChat.mentionPatterns 读取匹配 @文本的正则数组
-                      const rawCfg = cfg as Record<string, unknown>;
-                      const mentionPatterns: string[] =
-                        (rawCfg?.messages as any)?.groupChat?.mentionPatterns ?? [];
-
-                      const clawCfg = {
-                        channel_type: "qqbot",
-                        channel_ver: pluginVersion,
-                        claw_type: "openclaw",
-                        claw_ver: clawVer,
-                        require_mention: requireMention,
-                        group_policy: groupPolicy,
-                        mention_patterns: mentionPatterns,
-                        online_state: "online",
-                      };
-
-                      await acknowledgeInteraction(token, event.id, 0, { claw_cfg: clawCfg });
-                      log?.info(`[qqbot:${account.accountId}] Interaction ACK (type=2001) sent: ${event.id}, claw_cfg=${JSON.stringify(clawCfg)}`);
-                    } else {
-                      // 其他类型：普通 ACK
-                      await acknowledgeInteraction(token, event.id);
-                      log?.debug?.(`[qqbot:${account.accountId}] Interaction ACK sent: ${event.id}`);
-                    }
-                  } catch (err) {
-                    log?.error(`[qqbot:${account.accountId}] Failed to ACK interaction ${event.id}: ${err}`);
-                  }
-                })();
+                handleInteractionCreate({ event, account, cfg, log }).catch((err) => {
+                  log?.error(`[qqbot:${account.accountId}] Failed to handle interaction ${event.id}: ${err}`);
+                });
               }
               break;
 
