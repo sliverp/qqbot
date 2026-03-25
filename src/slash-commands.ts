@@ -685,6 +685,43 @@ function copyScriptToTemp(scriptPath: string): string | null {
   }
 }
 
+const REMOTE_UPGRADE_SCRIPT_URL = "https://raw.githubusercontent.com/tencent-connect/openclaw-qqbot/main/scripts/upgrade-via-npm.sh";
+const REMOTE_UPGRADE_SCRIPT_URL_WIN = "https://raw.githubusercontent.com/tencent-connect/openclaw-qqbot/main/scripts/upgrade-via-npm.ps1";
+
+/**
+ * 从远端下载升级脚本到临时目录，返回临时脚本路径，失败返回 null。
+ */
+function downloadRemoteUpgradeScript(): string | null {
+  try {
+    const url = isWindows() ? REMOTE_UPGRADE_SCRIPT_URL_WIN : REMOTE_UPGRADE_SCRIPT_URL;
+    const ext = isWindows() ? ".ps1" : ".sh";
+    const tmpDir = path.join(getHomeDir(), ".openclaw", ".qqbot-upgrade-tmp");
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const tmpScript = path.join(tmpDir, `upgrade-via-npm${ext}`);
+
+    // 使用 curl 同步下载（macOS/Linux/Windows 均内置 curl）
+    execFileSync("curl", ["-fsSL", "--max-time", "15", "-o", tmpScript, url], {
+      timeout: 20_000,
+      stdio: "pipe",
+    });
+
+    if (!fs.existsSync(tmpScript) || fs.statSync(tmpScript).size < 100) {
+      console.error(`[qqbot] downloadRemoteUpgradeScript: downloaded file too small or missing`);
+      return null;
+    }
+
+    if (!isWindows()) {
+      fs.chmodSync(tmpScript, 0o755);
+    }
+
+    console.log(`[qqbot] downloadRemoteUpgradeScript: fetched from ${url} → ${tmpScript}`);
+    return tmpScript;
+  } catch (e: any) {
+    console.error(`[qqbot] downloadRemoteUpgradeScript: failed: ${e.message}`);
+    return null;
+  }
+}
+
 /**
  * 清理临时升级脚本目录
  */
@@ -710,11 +747,14 @@ function cleanupTempScript(): void {
  * 安全机制：脚本会被复制到临时目录再执行，避免升级过程中插件目录被操作导致脚本自身丢失。
  */
 function fireHotUpgrade(targetVersion?: string): HotUpgradeStartResult {
-  const originalScriptPath = getUpgradeScriptPath();
-  if (!originalScriptPath) return { ok: false, reason: "no-script" };
-
-  // 将脚本复制到临时位置，避免升级过程中脚本被删除
-  const scriptPath = copyScriptToTemp(originalScriptPath) || originalScriptPath;
+  // 优先从远端下载升级脚本，避免使用本地可能过时的版本
+  const scriptPath = downloadRemoteUpgradeScript() || (() => {
+    const local = getUpgradeScriptPath();
+    if (!local) return null;
+    console.log(`[qqbot] fireHotUpgrade: remote download failed, falling back to local script: ${local}`);
+    return copyScriptToTemp(local) || local;
+  })();
+  if (!scriptPath) return { ok: false, reason: "no-script" };
 
   const cli = findCli();
   if (!cli) return { ok: false, reason: "no-cli" };
@@ -741,7 +781,7 @@ function fireHotUpgrade(targetVersion?: string): HotUpgradeStartResult {
     shellArgs = [scriptPath, "--no-restart", ...(targetVersion ? ["--version", targetVersion] : [])];
   }
 
-  console.log(`[qqbot] fireHotUpgrade: shell=${shell}, script=${scriptPath} (original: ${originalScriptPath}), cli=${cli}, target=${targetVersion || "latest"}`);
+  console.log(`[qqbot] fireHotUpgrade: shell=${shell}, script=${scriptPath}, cli=${cli}, target=${targetVersion || "latest"}`);
 
   // 异步执行升级脚本
   execFile(shell, shellArgs, {
