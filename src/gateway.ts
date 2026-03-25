@@ -903,10 +903,10 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
             cfg,
             dispatcherOptions: {
               responsePrefix: messagesConfig.responsePrefix,
-              deliver: async (payload: { text?: string; mediaUrls?: string[]; mediaUrl?: string }, info: { kind: string }) => {
+              deliver: async (payload: { text?: string; mediaUrls?: string[]; mediaUrl?: string; audioAsVoice?: boolean }, info: { kind: string }) => {
                 hasResponse = true;
 
-                log?.info(`[qqbot:${account.accountId}] deliver called, kind: ${info.kind}, payload keys: ${Object.keys(payload).join(", ")}`);
+                log?.info(`[qqbot:${account.accountId}] deliver called, kind: ${info.kind}, payload keys: ${Object.keys(payload).join(", ")}${payload.audioAsVoice ? ", audioAsVoice=true" : ""}`);
 
                 // ============ 跳过工具调用的中间结果（带兜底保护） ============
                 if (info.kind === "tool") {
@@ -1037,7 +1037,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                 }
 
                 // ============ 实际发送逻辑（可被 debouncer 包裹） ============
-                const executeDeliver = async (deliverPayload: { text?: string; mediaUrls?: string[]; mediaUrl?: string }, _deliverInfo: { kind: string }) => {
+                const executeDeliver = async (deliverPayload: { text?: string; mediaUrls?: string[]; mediaUrl?: string; audioAsVoice?: boolean }, _deliverInfo: { kind: string }) => {
                   // ============ 引用回复 ============
                   const quoteRef = event.msgIdx;
                   let quoteRefUsed = false;

@@ -102,6 +102,8 @@ export interface PlainReplyPayload {
   text?: string;
   mediaUrls?: string[];
   mediaUrl?: string;
+  /** 框架原生 TTS 标记：true 时音频应作为语音气泡发送 */
+  audioAsVoice?: boolean;
 }
 
 /**
@@ -196,7 +198,7 @@ export async function sendPlainReply(
   }
 
   const useMarkdown = account.markdownSupport === true;
-  log?.info(`${prefix} Markdown mode: ${useMarkdown}, images: ${collectedImageUrls.length}`);
+  log?.info(`${prefix} Markdown mode: ${useMarkdown}, images: ${collectedImageUrls.length}, localMedia: ${localMediaToSend.length}, audioAsVoice: ${payload.audioAsVoice ?? false}`);
 
   let textWithoutImages = filterInternalMarkers(replyText);
 

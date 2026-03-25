@@ -234,8 +234,8 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
         messageId: result.messageId ?? "",
       };
     },
-    sendMedia: async ({ to, text, mediaUrl, accountId, replyToId, cfg }) => {
-      console.log(`[qqbot:channel] sendMedia called — accountId=${accountId}, to=${to}, replyToId=${replyToId}, mediaUrl=${mediaUrl?.slice(0, 80)}, text.length=${text?.length ?? 0}`);
+    sendMedia: async ({ to, text, mediaUrl, audioAsVoice, accountId, replyToId, cfg }) => {
+      console.log(`[qqbot:channel] sendMedia called — accountId=${accountId}, to=${to}, replyToId=${replyToId}, mediaUrl=${mediaUrl?.slice(0, 80)}, text.length=${text?.length ?? 0}, audioAsVoice=${audioAsVoice ?? false}`);
       const account = resolveQQBotAccount(cfg, accountId ?? undefined);
       initApiConfig({ markdownSupport: account.markdownSupport });
       console.log(`[qqbot:channel] sendMedia resolved account: id=${account.accountId}, appId=${account.appId}, enabled=${account.enabled}`);
