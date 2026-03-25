@@ -118,36 +118,9 @@ async function handleInteractionCreate(params: {
     const currentCfg = structuredClone(configApi.loadConfig()) as Record<string, unknown>;
     const qqbot = ((currentCfg.channels ?? {}) as Record<string, unknown>).qqbot as Record<string, unknown> | undefined;
 
-    // 通过路由解析 agentId（与消息处理流程一致），用于 agent-aware 的 mentionPatterns 写回
-    const interactionAgentId = groupOpenid
-      ? (runtime.channel?.routing?.resolveAgentRoute?.({
-          cfg: currentCfg,
-          channel: "qqbot",
-          accountId: account.accountId,
-          peer: { kind: "group", id: groupOpenid },
-        }) as { agentId?: string } | undefined)?.agentId
-      : undefined;
-
     let changed = false;
 
     if (clawCfgUpdate) {
-      // 更新 group_policy（账户级别）
-      if (clawCfgUpdate.group_policy !== undefined && qqbot) {
-        const accountId = account.accountId;
-        const isNamedAccount = accountId !== "default" && (qqbot.accounts as Record<string, Record<string, unknown>> | undefined)?.[accountId];
-
-        if (isNamedAccount) {
-          const accounts = qqbot.accounts as Record<string, Record<string, unknown>>;
-          const acct = accounts[accountId] ?? {};
-          acct.groupPolicy = clawCfgUpdate.group_policy;
-          accounts[accountId] = acct;
-          qqbot.accounts = accounts;
-        } else {
-          qqbot.groupPolicy = clawCfgUpdate.group_policy;
-        }
-        changed = true;
-      }
-
       // 更新 require_mention（群级别）——协议为 "mention" | "always"，写回配置时转为 boolean
       if (clawCfgUpdate.require_mention !== undefined && groupOpenid && qqbot) {
         const requireMentionBool = clawCfgUpdate.require_mention === "mention";
@@ -169,45 +142,12 @@ async function handleInteractionCreate(params: {
         }
         changed = true;
       }
-
-      // 更新 mention_patterns——协议为逗号分隔字符串，写回配置时拆分为数组
-      // 如果路由解析出了 agentId 且该 agent 存在于 agents.list，则写入 agent 级别
-      // 否则写入全局 messages.groupChat.mentionPatterns
-      if (clawCfgUpdate.mention_patterns !== undefined) {
-        const patternsStr = typeof clawCfgUpdate.mention_patterns === "string" ? clawCfgUpdate.mention_patterns : "";
-        const mentionPatterns = patternsStr ? patternsStr.split(",").map((s: string) => s.trim()).filter(Boolean) : [];
-
-        let writtenToAgent = false;
-        if (interactionAgentId) {
-          const agents = (currentCfg.agents ?? {}) as Record<string, unknown>;
-          const list = (agents.list ?? []) as Array<Record<string, unknown>>;
-          const entry = list.find((a) => (a.id as string)?.trim().toLowerCase() === interactionAgentId.trim().toLowerCase());
-          if (entry) {
-            const groupChat = (entry.groupChat ?? {}) as Record<string, unknown>;
-            groupChat.mentionPatterns = mentionPatterns;
-            entry.groupChat = groupChat;
-            writtenToAgent = true;
-          }
-        }
-
-        if (!writtenToAgent) {
-          // 全局级别写入（无 agentId 或 agent 不存在时 fallback）
-          const messages = (currentCfg.messages ?? {}) as Record<string, unknown>;
-          const groupChat = (messages.groupChat ?? {}) as Record<string, unknown>;
-          groupChat.mentionPatterns = mentionPatterns;
-          messages.groupChat = groupChat;
-          currentCfg.messages = messages;
-        }
-        changed = true;
-      }
     }
 
     if (changed) {
       await configApi.writeConfigFile(currentCfg);
       log?.info(`[qqbot:${account.accountId}] Config updated via interaction ${event.id}: ${JSON.stringify({
-        group_policy: clawCfgUpdate?.group_policy,
         require_mention: clawCfgUpdate?.require_mention,
-        mention_patterns: clawCfgUpdate?.mention_patterns,
         group_openid: groupOpenid || undefined,
       })}`);
     }
@@ -215,20 +155,8 @@ async function handleInteractionCreate(params: {
     // 无论更新是否成功，ACK 都上报最新的 claw_cfg 快照（写入后重新读取确保一致）
     const latestCfg = changed ? (configApi.loadConfig() as Record<string, unknown>) : currentCfg;
     const updatedGroupCfg = groupOpenid ? resolveGroupConfig(latestCfg as any, groupOpenid, account.accountId) : null;
-    const updatedGroupPolicy = resolveGroupPolicy(latestCfg as any, account.accountId);
     const updatedRequireMention = updatedGroupCfg?.requireMention ?? true;
     const updatedRequireMentionMode: GroupActivationMode = updatedRequireMention ? "mention" : "always";
-    // 重新解析 agentId（配置写入后 bindings/agents 可能已更新）
-    const ackAgentId = groupOpenid
-      ? (runtime.channel?.routing?.resolveAgentRoute?.({
-          cfg: latestCfg,
-          channel: "qqbot",
-          accountId: account.accountId,
-          peer: { kind: "group", id: groupOpenid },
-        }) as { agentId?: string } | undefined)?.agentId
-      : undefined;
-    const updatedMentionPatternsArr: string[] = resolveMentionPatterns(latestCfg as any, ackAgentId);
-    const updatedMentionPatterns = updatedMentionPatternsArr.join(",");
     const pluginVersion = getApiPluginVersion();
     const fwVersionRaw = getFrameworkVersion();
     const clawVer = parseFrameworkDateVersion(fwVersionRaw) ?? fwVersionRaw;
@@ -239,8 +167,6 @@ async function handleInteractionCreate(params: {
       claw_type: "openclaw",
       claw_ver: clawVer,
       require_mention: updatedRequireMentionMode,
-      group_policy: updatedGroupPolicy,
-      mention_patterns: updatedMentionPatterns,
       online_state: "online",
     };
 
