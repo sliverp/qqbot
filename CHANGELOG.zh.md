@@ -12,7 +12,7 @@
 - **流式消息 API `sendC2CStreamMessage`**：封装 QQ 开放平台 `/v2/users/{openid}/stream_messages` 接口，支持 `replace` 输入模式、递增 `msg_seq`/`index` 序号、`GENERATING`/`DONE` 状态信令。
 - **`ApiError` 结构化错误类**：API 请求错误现在携带 `status`（HTTP 状态码）和 `path`，使调用方（如流式控制器）可根据状态码决定重试或降级策略。
 - **媒体发送队列模块 `media-send.ts`**：将媒体标签解析、路径编码修复、发送队列执行器抽取为公共工具模块，供 `outbound.ts`（静态模式）和 `streaming.ts`（流式模式）共用，消除约 100 行重复代码。
-- **流式消息配置项**：账户配置新增 `streaming`（布尔值，默认 `true`）和 `streamingConfig.throttleMs` 选项，支持按账户控制流式消息开关和节流间隔。
+- **流式消息配置项**：账户配置新增 `streaming`（布尔值，默认 `false`）选项，设置为 `true` 可开启流式消息。
 - **单元测试**：新增 `strip-incomplete-media-tag.test.ts` 和 `streaming-controller.test.ts`。
 
 ### 变更

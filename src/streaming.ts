@@ -4,10 +4,13 @@
  * 核心原则：
  * 1. 绝对不修改原始内容（不 trim、不 strip），避免 PREFIX MISMATCH
  * 2. 媒体标签同步等待发送完成
- * 3. 纯空白分片处理：
+ * 3. 碰到富媒体标签（包括未闭合前缀）时，先终结当前流式会话再处理
+ * 4. 纯空白分片处理：
  *    - 首分片空白 → 暂停发送（不开启流式），但内容保留
  *    - 被媒体标签打断或结束时，如果还都是空白 → 不发送
  *    - 结束时已有活跃流式会话（之前有非空白分片）→ 可以发送当前空白分片
+ * 5. 回复边界检测：通过前缀匹配判断（而非仅长度缩短），
+ *    如果新文本不是上次处理文本的前缀延续，视为新消息
  */
 
 import type { ResolvedQQBotAccount, StreamMessageResponse } from "./types.js";
@@ -259,9 +262,6 @@ export class StreamingController {
    */
   private sentIndex = 0;
 
-  /** 上一次 onPartialReply 的 text 长度（用于检测回复边界） */
-  private lastPartialLen = 0;
-
   // ---- 流式会话 ----
   private streamMsgId: string | null = null;
   /** 当前流式会话的 msg_seq，同一会话内所有 chunk 共享；null 表示需要重新生成 */
@@ -444,10 +444,12 @@ export class StreamingController {
       return;
     }
 
-    // ★ 回复边界检测：text 长度缩短 → 新回复开始
-    // 终结当前 controller，通知调用方创建新的 controller 处理新回复
-    if (this.lastPartialLen > 0 && text.length < this.lastPartialLen) {
-      this.logInfo(`onPartialReply: reply boundary detected (${text.length} < ${this.lastPartialLen}), finalizing current controller`);
+    // ★ 回复边界检测：新文本与上次处理的内容前缀不同 → 新回复开始
+    // 比较方式：新文本 normalize 后，检查是否以上次的 lastNormalizedFull 为前缀
+    // 如果不是前缀关系（内容发生了非追加的变化），终结当前 controller，通知调用方创建新的
+    const normalized = normalizeMediaTags(text);
+    if (this.lastNormalizedFull && normalized.length > 0 && !normalized.startsWith(this.lastNormalizedFull)) {
+      this.logInfo(`onPartialReply: reply boundary detected — prefix mismatch (new len=${normalized.length}, prev len=${this.lastNormalizedFull.length}), finalizing current controller`);
 
       // 终结当前流式会话，处理完当前内容（包括可能的未闭合媒体标签）
       this.dispatchFullyComplete = true;
@@ -463,9 +465,8 @@ export class StreamingController {
       return;
     }
 
-    // 正常增长：直接 normalize 替换
-    this.lastNormalizedFull = normalizeMediaTags(text);
-    this.lastPartialLen = text.length;
+    // 正常增长：使用已 normalize 的文本
+    this.lastNormalizedFull = normalized;
 
     // ★ 核心：从 sentIndex 开始，处理增量文本（串行队列保证不会并发进入）
     await this.processMediaTags(this.lastNormalizedFull);
@@ -744,12 +745,19 @@ export class StreamingController {
       if (hasIncomplete) {
         this.logDebug(`processMediaTags: incomplete tag detected, safe text len=${safeText.length}, remaining len=${remaining.length}`);
 
+        // 先终结当前流式会话（把标签前的安全文本发完 DONE），
+        // 避免流式会话在等待标签闭合期间一直卡在 GENERATING 状态
+        const safeEndInFull = this.sentIndex + (safeText?.length ?? 0);
+        await this.endCurrentStreamIfNeeded("processMediaTags:incompleteTag", safeEndInFull);
+        if (this.isTerminalPhase) return;
+
+        // 推进 sentIndex 到安全文本结束位置，重置流式会话状态
         if (safeText) {
-          // 标签前的安全文本需要通过流式发送
-          await this.ensureStreamingStarted(normalizedFull.length);
-          if (this.isTerminalPhase) return;
-          await this.flush.throttledUpdate(this.throttleMs);
+          this.sentIndex = safeEndInFull;
+          this.logDebug(`processMediaTags: sentIndex advanced to ${this.sentIndex} after ending stream for incomplete tag`);
+          this.resetStreamSession();
         }
+
         // 未闭合标签部分留待下次 onPartialReply 带来更多文本后再处理
         return;
       }
