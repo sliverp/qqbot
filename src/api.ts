@@ -413,6 +413,37 @@ async function completeUploadWithRetry(
   throw lastError!;
 }
 
+// ============ 分片完成重试（无条件，与 completeUpload 策略一致） ============
+
+const PART_FINISH_MAX_RETRIES = 2;
+const PART_FINISH_BASE_DELAY_MS = 1000;
+
+async function partFinishWithRetry(
+  accessToken: string,
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<void> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= PART_FINISH_MAX_RETRIES; attempt++) {
+    try {
+      await apiRequest<Record<string, unknown>>(accessToken, method, path, body);
+      return;
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+
+      if (attempt < PART_FINISH_MAX_RETRIES) {
+        const delay = PART_FINISH_BASE_DELAY_MS * Math.pow(2, attempt);
+        console.warn(`[qqbot-api] PartFinish attempt ${attempt + 1} failed, retrying in ${delay}ms: ${lastError.message.slice(0, 200)}`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+
+  throw lastError!;
+}
+
 export async function getGatewayUrl(accessToken: string): Promise<string> {
   const data = await apiRequest<{ url: string }>(accessToken, "GET", "/gateway");
   return data.url;
@@ -680,7 +711,7 @@ export async function c2cUploadPartFinish(
   blockSize: number,
   md5: string,
 ): Promise<void> {
-  await apiRequest<Record<string, unknown>>(
+  await partFinishWithRetry(
     accessToken, "POST", `/v2/users/${userId}/upload_part_finish`,
     { upload_id: uploadId, part_index: partIndex, block_size: blockSize, md5 },
   );
@@ -736,7 +767,7 @@ export async function groupUploadPartFinish(
   blockSize: number,
   md5: string,
 ): Promise<void> {
-  await apiRequest<Record<string, unknown>>(
+  await partFinishWithRetry(
     accessToken, "POST", `/v2/groups/${groupId}/upload_part_finish`,
     { upload_id: uploadId, part_index: partIndex, block_size: blockSize, md5 },
   );
