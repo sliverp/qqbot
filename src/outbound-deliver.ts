@@ -217,13 +217,13 @@ export async function sendPlainReply(
         });
         if (result.error) {
           log?.error(`${prefix} sendMedia(auto) error for ${mediaPath}: ${result.error}`);
-          await sendTextChunks(result.error, event, actx, sendWithRetry, consumeQuoteRef);
+          await sendTextChunks("发送失败，请稍后重试。", event, actx, sendWithRetry, consumeQuoteRef);
         } else {
           log?.info(`${prefix} Sent local media: ${mediaPath}`);
         }
       } catch (err) {
         log?.error(`${prefix} sendMedia(auto) failed for ${mediaPath}: ${err}`);
-        await sendTextChunks(`发送媒体失败：${err}`, event, actx, sendWithRetry, consumeQuoteRef);
+        await sendTextChunks("发送失败，请稍后重试。", event, actx, sendWithRetry, consumeQuoteRef);
       }
     }
   }
@@ -245,12 +245,13 @@ export async function sendPlainReply(
           });
           if (result.error) {
             log?.error(`${prefix} Tool media forward error: ${result.error}`);
-            await sendTextChunks(result.error, event, actx, sendWithRetry, consumeQuoteRef);
+            await sendTextChunks("发送失败，请稍后重试。", event, actx, sendWithRetry, consumeQuoteRef);
           } else {
             log?.info(`${prefix} Forwarded tool media: ${mediaUrl.slice(0, 80)}...`);
           }
         } catch (err) {
           log?.error(`${prefix} Tool media forward failed: ${err}`);
+          await sendTextChunks("发送失败，请稍后重试。", event, actx, sendWithRetry, consumeQuoteRef);
         }
       }
     }
