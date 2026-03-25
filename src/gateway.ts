@@ -1045,7 +1045,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         if (uniqueVoiceAsrReferTexts.length > 0) {
           dynLines.push(`- ASR: ${uniqueVoiceAsrReferTexts.join(" | ")}`);
         }
-        const dynamicCtx = dynLines.length > 0 ? dynLines.join("\n") + "\n" : "";
+        const dynamicCtx = dynLines.length > 0 ? dynLines.join("\n") + "\n\n" : "";
 
         // --- 命令授权（所有消息类型共用，群消息门控也需要） ---
         // allowFrom: ["*"] 表示允许所有人，否则检查 senderId 是否在 allowFrom 列表中
@@ -1212,7 +1212,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         // 群消息 user prompt 带上发送者昵称（合并消息已内嵌发送者前缀，不再重复添加）
         const isMergedMsg = mergedCount && mergedCount > 1;
         const senderPrefix = (event.type === "group" && !isMergedMsg)
-          ? `[${event.senderName ? `${event.senderName} (${event.senderId})` : event.senderId}]: `
+          ? `[${event.senderName ? `${event.senderName} (${event.senderId})` : event.senderId}] `
           : "";
         const isAtYouTag = event.type === "group"
           ? (wasMentioned ? " (@你)" : "")
@@ -1262,7 +1262,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
           const lastSenderName = lastMsg.senderName
             ? (lastMsg.senderName.includes(lastMsg.senderId) ? lastMsg.senderName : `${lastMsg.senderName} (${lastMsg.senderId})`)
             : lastMsg.senderId;
-          const lastPart = `[${lastSenderName}]: ${lastContent}${isAtYouTag}`;
+          const lastPart = `[${lastSenderName}] ${lastContent}${isAtYouTag}`;
 
           // 前置消息用段落标签包裹（类似引用消息的 [引用消息开始]...[引用消息结束]）
           userMessage = buildMergedMessageContext({
