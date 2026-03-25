@@ -58,9 +58,17 @@ async function handleInteractionCreate(params: {
   const token = await getAccessToken(account.appId, account.clientSecret);
 
   if (event.data?.type === INTERACTION_TYPE_CONFIG_QUERY) {
+    // 从框架 configApi 读取最新配置（而非闭包中的旧 cfg），确保配置查询返回的数据与磁盘一致
+    const runtime = getQQBotRuntime();
+    const configApi = runtime.config as {
+      loadConfig: () => Record<string, unknown>;
+      writeConfigFile: (cfg: unknown) => Promise<void>;
+    };
+    const latestCfg = configApi.loadConfig() as Record<string, unknown>;
+
     const groupOpenid = event.group_openid ?? "";
-    const groupCfg = groupOpenid ? resolveGroupConfig(cfg as any, groupOpenid, account.accountId) : null;
-    const groupPolicy = resolveGroupPolicy(cfg as any, account.accountId);
+    const groupCfg = groupOpenid ? resolveGroupConfig(latestCfg as any, groupOpenid, account.accountId) : null;
+    const groupPolicy = resolveGroupPolicy(latestCfg as any, account.accountId);
     // require_mention 协议：字符串 "mention" | "always"（mention=@机器人时激活，always=总是激活）
     const configRequireMention = groupCfg?.requireMention ?? true;
     const requireMentionMode: GroupActivationMode = configRequireMention ? "mention" : "always";
@@ -69,9 +77,8 @@ async function handleInteractionCreate(params: {
     const clawVer = parseFrameworkDateVersion(fwVersionRaw) ?? fwVersionRaw;
 
     // mention_patterns 协议：逗号分隔的字符串（@文本的名称提及BOT名，多个使用,分隔）
-    const rawCfg = cfg as Record<string, unknown>;
     const mentionPatternsArr: string[] =
-      (rawCfg?.messages as any)?.groupChat?.mentionPatterns ?? [];
+      (latestCfg?.messages as any)?.groupChat?.mentionPatterns ?? [];
     const mentionPatterns = mentionPatternsArr.join(",");
 
     const clawCfg = {
