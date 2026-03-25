@@ -6,7 +6,7 @@ import { getAccessToken, getGatewayUrl, sendC2CMessage, sendChannelMessage, send
 import { loadSession, saveSession, clearSession } from "./session-store.js";
 import { recordKnownUser, flushKnownUsers } from "./known-users.js";
 import { getQQBotRuntime } from "./runtime.js";
-import { isGroupAllowed, resolveGroupName, resolveGroupPrompt, resolveHistoryLimit, resolveGroupPolicy, resolveGroupConfig, resolveIgnoreOtherMentions } from "./config.js";
+import { isGroupAllowed, resolveGroupName, resolveGroupPrompt, resolveHistoryLimit, resolveGroupPolicy, resolveGroupConfig, resolveIgnoreOtherMentions, resolveMentionPatterns } from "./config.js";
 import { qqbotPlugin } from "./channel.js";
 import {
   recordPendingHistoryEntry,
@@ -76,9 +76,18 @@ async function handleInteractionCreate(params: {
     const fwVersionRaw = getFrameworkVersion();
     const clawVer = parseFrameworkDateVersion(fwVersionRaw) ?? fwVersionRaw;
 
+    // 通过路由解析 agentId（与消息处理流程一致），用于 agent-aware 的 mentionPatterns
+    const interactionAgentId = groupOpenid
+      ? (runtime.channel?.routing?.resolveAgentRoute?.({
+          cfg: latestCfg,
+          channel: "qqbot",
+          accountId: account.accountId,
+          peer: { kind: "group", id: groupOpenid },
+        }) as { agentId?: string } | undefined)?.agentId
+      : undefined;
+
     // mention_patterns 协议：逗号分隔的字符串（@文本的名称提及BOT名，多个使用,分隔）
-    const mentionPatternsArr: string[] =
-      (latestCfg?.messages as any)?.groupChat?.mentionPatterns ?? [];
+    const mentionPatternsArr: string[] = resolveMentionPatterns(latestCfg as any, interactionAgentId);
     const mentionPatterns = mentionPatternsArr.join(",");
 
     const clawCfg = {
@@ -108,6 +117,17 @@ async function handleInteractionCreate(params: {
 
     const currentCfg = structuredClone(configApi.loadConfig()) as Record<string, unknown>;
     const qqbot = ((currentCfg.channels ?? {}) as Record<string, unknown>).qqbot as Record<string, unknown> | undefined;
+
+    // 通过路由解析 agentId（与消息处理流程一致），用于 agent-aware 的 mentionPatterns 写回
+    const interactionAgentId = groupOpenid
+      ? (runtime.channel?.routing?.resolveAgentRoute?.({
+          cfg: currentCfg,
+          channel: "qqbot",
+          accountId: account.accountId,
+          peer: { kind: "group", id: groupOpenid },
+        }) as { agentId?: string } | undefined)?.agentId
+      : undefined;
+
     let changed = false;
 
     if (clawCfgUpdate) {
@@ -150,15 +170,34 @@ async function handleInteractionCreate(params: {
         changed = true;
       }
 
-      // 更新 mention_patterns（全局消息配置级别）——协议为逗号分隔字符串，写回配置时拆分为数组
+      // 更新 mention_patterns——协议为逗号分隔字符串，写回配置时拆分为数组
+      // 如果路由解析出了 agentId 且该 agent 存在于 agents.list，则写入 agent 级别
+      // 否则写入全局 messages.groupChat.mentionPatterns
       if (clawCfgUpdate.mention_patterns !== undefined) {
         const patternsStr = typeof clawCfgUpdate.mention_patterns === "string" ? clawCfgUpdate.mention_patterns : "";
         const mentionPatterns = patternsStr ? patternsStr.split(",").map((s: string) => s.trim()).filter(Boolean) : [];
-        const messages = (currentCfg.messages ?? {}) as Record<string, unknown>;
-        const groupChat = (messages.groupChat ?? {}) as Record<string, unknown>;
-        groupChat.mentionPatterns = mentionPatterns;
-        messages.groupChat = groupChat;
-        currentCfg.messages = messages;
+
+        let writtenToAgent = false;
+        if (interactionAgentId) {
+          const agents = (currentCfg.agents ?? {}) as Record<string, unknown>;
+          const list = (agents.list ?? []) as Array<Record<string, unknown>>;
+          const entry = list.find((a) => (a.id as string)?.trim().toLowerCase() === interactionAgentId.trim().toLowerCase());
+          if (entry) {
+            const groupChat = (entry.groupChat ?? {}) as Record<string, unknown>;
+            groupChat.mentionPatterns = mentionPatterns;
+            entry.groupChat = groupChat;
+            writtenToAgent = true;
+          }
+        }
+
+        if (!writtenToAgent) {
+          // 全局级别写入（无 agentId 或 agent 不存在时 fallback）
+          const messages = (currentCfg.messages ?? {}) as Record<string, unknown>;
+          const groupChat = (messages.groupChat ?? {}) as Record<string, unknown>;
+          groupChat.mentionPatterns = mentionPatterns;
+          messages.groupChat = groupChat;
+          currentCfg.messages = messages;
+        }
         changed = true;
       }
     }
@@ -179,8 +218,16 @@ async function handleInteractionCreate(params: {
     const updatedGroupPolicy = resolveGroupPolicy(latestCfg as any, account.accountId);
     const updatedRequireMention = updatedGroupCfg?.requireMention ?? true;
     const updatedRequireMentionMode: GroupActivationMode = updatedRequireMention ? "mention" : "always";
-    const updatedMentionPatternsArr: string[] =
-      (latestCfg?.messages as any)?.groupChat?.mentionPatterns ?? [];
+    // 重新解析 agentId（配置写入后 bindings/agents 可能已更新）
+    const ackAgentId = groupOpenid
+      ? (runtime.channel?.routing?.resolveAgentRoute?.({
+          cfg: latestCfg,
+          channel: "qqbot",
+          accountId: account.accountId,
+          peer: { kind: "group", id: groupOpenid },
+        }) as { agentId?: string } | undefined)?.agentId
+      : undefined;
+    const updatedMentionPatternsArr: string[] = resolveMentionPatterns(latestCfg as any, ackAgentId);
     const updatedMentionPatterns = updatedMentionPatternsArr.join(",");
     const pluginVersion = getApiPluginVersion();
     const fwVersionRaw = getFrameworkVersion();
@@ -1022,9 +1069,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
           }
 
           // 2. @检测（委托 mentions 适配器）
-          const rawCfgForMention = cfg as Record<string, unknown>;
-          const mentionPatternsForDetect: string[] =
-            (rawCfgForMention?.messages as any)?.groupChat?.mentionPatterns ?? [];
+          const mentionPatternsForDetect: string[] = resolveMentionPatterns(cfg as any, route.agentId);
           wasMentioned = qqbotPlugin.mentions?.detectWasMentioned?.({
             eventType: event.eventType,
             mentions: event.mentions,

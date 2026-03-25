@@ -1,6 +1,37 @@
 import type { ResolvedQQBotAccount, QQBotAccountConfig, ToolPolicy, GroupConfig } from "./types.js";
 import type { OpenClawConfig, GroupPolicy } from "openclaw/plugin-sdk";
 
+// ============ Agent-aware mentionPatterns 解析 ============
+
+type AgentEntry = { id?: string; groupChat?: { mentionPatterns?: string[]; historyLimit?: number } };
+
+/**
+ * 解析 mentionPatterns（agent → global → 空数组）
+ *
+ * 优先级：
+ *   1. agents.list[agentId].groupChat.mentionPatterns
+ *   2. messages.groupChat.mentionPatterns
+ *   3. []
+ */
+export function resolveMentionPatterns(cfg: OpenClawConfig, agentId?: string): string[] {
+  // 1. agent 级别
+  if (agentId) {
+    const agents = (cfg as Record<string, unknown>).agents as { list?: AgentEntry[] } | undefined;
+    const entry = agents?.list?.find((a) => a.id?.trim().toLowerCase() === agentId.trim().toLowerCase());
+    const agentGroupChat = entry?.groupChat;
+    if (agentGroupChat && Object.hasOwn(agentGroupChat, "mentionPatterns")) {
+      return agentGroupChat.mentionPatterns ?? [];
+    }
+  }
+  // 2. 全局级别
+  const globalGroupChat = (cfg as any)?.messages?.groupChat;
+  if (globalGroupChat && typeof globalGroupChat === "object" && Object.hasOwn(globalGroupChat, "mentionPatterns")) {
+    return (globalGroupChat as { mentionPatterns?: string[] }).mentionPatterns ?? [];
+  }
+  // 3. 空数组
+  return [];
+}
+
 export const DEFAULT_ACCOUNT_ID = "default";
 
 // 内联 evaluateMatchedGroupAccessForPolicy（openclaw dist 尚未导出，本地实现）
