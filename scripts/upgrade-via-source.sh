@@ -242,9 +242,12 @@ fi
 # 清理之前可能残留的 staging 目录
 find "$HOME/.openclaw/extensions/" -maxdepth 1 -name ".openclaw-install-stage-*" -exec rm -rf {} + 2>/dev/null || true
 
-# ── 确保 dist/ 已构建 ──
-# openclaw plugins install . 只做文件复制，不执行 npm lifecycle scripts，
-# 如果 dist/ 不存在（首次克隆或清理后），插件加载时会因缺少入口文件而失败。
+# ── 清空并重新构建 dist/ ──
+# openclaw plugins install . 只做文件复制，不执行 npm lifecycle scripts。
+# 必须每次清空 dist/ 再重新构建，否则旧的编译产物会被原样拷贝到安装目录，
+# 导致新增的模块（如 streaming.js）缺失。
+echo "  清空 dist/ 确保全量重新构建..."
+rm -rf "$PROJ_DIR/dist"
 if [ ! -f "$PROJ_DIR/dist/index.js" ]; then
     echo "  dist/ 不存在，先执行构建..."
     if [ ! -d "$PROJ_DIR/node_modules" ]; then
@@ -260,7 +263,12 @@ if [ ! -f "$PROJ_DIR/dist/index.js" ]; then
 fi
 
 # 尝试安装并捕获详细输出
-if ! openclaw plugins install . 2>&1 | tee "$INSTALL_LOG"; then
+# 注意：openclaw plugins install 会在安装后尝试验证加载插件，
+# 由于 CJS/ESM 混用问题（Node 22 ERR_INTERNAL_ASSERTION），验证阶段可能失败
+# 但文件已成功拷贝。因此不依赖退出码，而是检查安装目录中关键文件是否存在。
+_INSTALL_DIR="$HOME/.openclaw/extensions/openclaw-qqbot"
+openclaw plugins install . 2>&1 | tee "$INSTALL_LOG" || true
+if [ ! -f "$_INSTALL_DIR/dist/index.js" ] || [ ! -f "$_INSTALL_DIR/preload.cjs" ]; then
     echo ""
     echo "❌ 插件安装失败！"
     echo "========================================="
@@ -355,6 +363,15 @@ else
            [ -f "$HOME/.openclaw/extensions/$_candidate_name/package.json" ]; then
             _plugin_dir_ok=1
             echo "  ✅ 插件目录验证通过: ~/.openclaw/extensions/$_candidate_name/"
+
+            # 源码开发模式：将安装副本替换为 symlink → 源码目录
+            # 这样后续 npm run build 的产物直接生效，无需再手动同步
+            _ext_dir="$HOME/.openclaw/extensions/$_candidate_name"
+            if [ ! -L "$_ext_dir" ]; then
+                rm -rf "$_ext_dir"
+                ln -s "$PROJ_DIR" "$_ext_dir"
+                echo "  ✅ 已将安装副本替换为 symlink → $PROJ_DIR"
+            fi
             break
         fi
     done
@@ -767,14 +784,18 @@ case "$start_choice" in
             if [ "$_need_reload" -eq 1 ]; then
                 echo "  重载配置..."
                 sleep 1
-                _openclaw_with_timeout 30 openclaw gateway restart
-                # 等待重启后端口重新就绪
-                for _k in $(seq 1 15); do
+                # openclaw gateway restart 只是向 LaunchAgent 发送 restart 信号，
+                # CLI 本身可能阻塞在等待输出上，用短超时即可（信号已发出就够了）
+                _openclaw_with_timeout 10 openclaw gateway restart
+                # 等待重启后端口重新就绪（gateway 加载插件+连 WS 可能需要较长时间）
+                for _k in $(seq 1 30); do
                     if lsof -i :18789 -sTCP:LISTEN >/dev/null 2>&1; then
                         break
                     fi
+                    printf "\r  等待端口 18789 重新就绪... (%d/30)" "$_k"
                     sleep 2
                 done
+                echo ""
             fi
             # 检查 qqbot WS 是否连接成功（最多等 20 秒）
             echo "检查 qqbot 插件连接状态..."

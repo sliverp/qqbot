@@ -31,6 +31,7 @@
   },
   "scripts": {
     "build": "tsc || true",
+    "postbuild": "node -e \"const fs=require('fs'),p=require('path'),ext=p.join(require('os').homedir(),'.openclaw/extensions/openclaw-qqbot');if(fs.existsSync(ext)&&!fs.lstatSync(ext).isSymbolicLink()){const d=p.join(ext,'dist'),pr=p.join(ext,'preload.cjs');fs.cpSync('dist',d,{recursive:true});fs.copyFileSync('preload.cjs',pr);console.log('[postbuild] synced to',ext)}\"",
     "dev": "tsc --watch",
     "prepack": "npm install --omit=dev",
     "postinstall": "node scripts/postinstall-link-sdk.js 2>/dev/null || true"

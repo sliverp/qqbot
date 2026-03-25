@@ -4,7 +4,7 @@ import {
   applyAccountNameToChannelSection,
   deleteAccountFromConfigSection,
   setAccountEnabledInConfigSection,
-} from "openclaw/plugin-sdk";
+} from "openclaw/plugin-sdk/core";
 
 import type { ResolvedQQBotAccount } from "./types.js";
 import { DEFAULT_ACCOUNT_ID, listQQBotAccountIds, resolveQQBotAccount, applyQQBotAccountConfig, resolveDefaultQQBotAccountId } from "./config.js";
@@ -51,6 +51,7 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
   },
   reload: { configPrefixes: ["channels.qqbot"] },
   // CLI onboarding wizard
+  // @ts-expect-error onboarding removed from ChannelPlugin type in 2026.3.23 but still supported at runtime
   onboarding: qqbotOnboardingAdapter,
 
   config: {
@@ -88,11 +89,11 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
       tokenSource: account?.secretSource,
     }),
     // 关键：解析 allowFrom 配置，用于命令授权
-    resolveAllowFrom: ({ cfg, accountId }: { cfg: OpenClawConfig; accountId?: string }) => {
-      const account = resolveQQBotAccount(cfg, accountId);
+    resolveAllowFrom: ({ cfg, accountId }: { cfg: OpenClawConfig; accountId?: string | null }) => {
+      const account = resolveQQBotAccount(cfg, accountId ?? undefined);
       const allowFrom = account.config?.allowFrom ?? [];
       console.log(`[qqbot] resolveAllowFrom: accountId=${accountId}, allowFrom=${JSON.stringify(allowFrom)}`);
-      return allowFrom.map((entry: string | number) => String(entry));
+      return allowFrom.map((entry: string | number) => String(entry)) as (string | number)[];
     },
     // 格式化 allowFrom 条目（移除 qqbot: 前缀，统一大写）
     formatAllowFrom: ({ allowFrom }: { allowFrom: Array<string | number> }) =>
@@ -136,8 +137,8 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
         clientSecret,
         clientSecretFile: input.tokenFile,
         name: input.name,
-        imageServerBaseUrl: input.imageServerBaseUrl,
-      });
+        imageServerBaseUrl: (input as Record<string, unknown>).imageServerBaseUrl as string | undefined,
+      }) as OpenClawConfig;
     },
   },
   // Messaging 配置：用于解析目标地址
@@ -222,20 +223,20 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
     sendText: async ({ to, text, accountId, replyToId, cfg }) => {
       console.log(`[qqbot:channel] sendText called — accountId=${accountId}, to=${to}, replyToId=${replyToId}, text.length=${text?.length ?? 0}`);
       console.log(`[qqbot:channel] sendText text preview: ${text?.slice(0, 100)}${(text?.length ?? 0) > 100 ? "..." : ""}`);
-      const account = resolveQQBotAccount(cfg, accountId);
+      const account = resolveQQBotAccount(cfg, accountId ?? undefined);
       initApiConfig({ markdownSupport: account.markdownSupport });
       console.log(`[qqbot:channel] sendText resolved account: id=${account.accountId}, appId=${account.appId}, enabled=${account.enabled}`);
       const result = await sendText({ to, text, accountId, replyToId, account });
       console.log(`[qqbot:channel] sendText result: messageId=${result.messageId}, error=${result.error ?? "none"}`);
+      if (result.error) throw new Error(result.error);
       return {
-        channel: "qqbot",
-        messageId: result.messageId,
-        error: result.error ? new Error(result.error) : undefined,
+        channel: "qqbot" as const,
+        messageId: result.messageId ?? "",
       };
     },
     sendMedia: async ({ to, text, mediaUrl, accountId, replyToId, cfg }) => {
       console.log(`[qqbot:channel] sendMedia called — accountId=${accountId}, to=${to}, replyToId=${replyToId}, mediaUrl=${mediaUrl?.slice(0, 80)}, text.length=${text?.length ?? 0}`);
-      const account = resolveQQBotAccount(cfg, accountId);
+      const account = resolveQQBotAccount(cfg, accountId ?? undefined);
       initApiConfig({ markdownSupport: account.markdownSupport });
       console.log(`[qqbot:channel] sendMedia resolved account: id=${account.accountId}, appId=${account.appId}, enabled=${account.enabled}`);
       const result = await sendMedia({ to, text: text ?? "", mediaUrl: mediaUrl ?? "", accountId, replyToId, account });
@@ -251,11 +252,11 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
         } catch (fallbackErr) {
           console.error(`[qqbot:channel] sendMedia fallback text failed: ${fallbackErr}`);
         }
+        throw new Error(result.error);
       }
       return {
-        channel: "qqbot",
-        messageId: result.messageId,
-        error: result.error ? new Error(result.error) : undefined,
+        channel: "qqbot" as const,
+        messageId: result.messageId ?? "",
       };
     },
   },
@@ -368,7 +369,7 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
       lastOutboundAt: null,
     },
     // 新增：构建通道摘要
-    buildChannelSummary: ({ snapshot }: { snapshot: Record<string, unknown> }) => ({
+    buildChannelSummary: ({ snapshot }) => ({
       configured: snapshot.configured ?? false,
       tokenSource: snapshot.tokenSource ?? "none",
       running: snapshot.running ?? false,
@@ -376,14 +377,14 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
       lastConnectedAt: snapshot.lastConnectedAt ?? null,
       lastError: snapshot.lastError ?? null,
     }),
-    buildAccountSnapshot: ({ account, runtime }: { account?: ResolvedQQBotAccount; runtime?: Record<string, unknown> }) => ({
+    buildAccountSnapshot: ({ account, runtime }) => ({
       accountId: account?.accountId ?? DEFAULT_ACCOUNT_ID,
       name: account?.name,
       enabled: account?.enabled ?? false,
       configured: Boolean(account?.appId && account?.clientSecret),
       tokenSource: account?.secretSource,
-      running: runtime?.running ?? false,
-      connected: runtime?.connected ?? false,
+      running: Boolean(runtime?.running ?? false),
+      connected: Boolean(runtime?.connected ?? false),
       lastConnectedAt: runtime?.lastConnectedAt ?? null,
       lastError: runtime?.lastError ?? null,
       lastInboundAt: runtime?.lastInboundAt ?? null,

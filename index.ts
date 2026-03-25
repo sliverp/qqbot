@@ -13,7 +13,7 @@ const plugin = {
   configSchema: emptyPluginConfigSchema(),
   register(api: OpenClawPluginApi) {
     setQQBotRuntime(api.runtime);
-    api.registerChannel({ plugin: qqbotPlugin });
+    api.registerChannel({ plugin: qqbotPlugin as any });
     registerChannelTool(api);
     registerRemindTool(api);
   },
