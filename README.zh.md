@@ -207,6 +207,10 @@ AI 可直接发送视频，支持本地文件和公网 URL。
 >
 > **QQBot**：📖 /bot-upgrade 用法：…
 
+#### `/bot-clear-storage` — 清理通过 QQBot 对话产生的文件以及下载的资源（保存在 OpenClaw 运行环境的主机上）
+
+`/bot-clear-storage` 列出对话产生的文件以及下载的资源目录里的文件，使用`/bot-clear-storage -- force`确定删除。
+
 ---
 
 ## 🚀 快速开始
