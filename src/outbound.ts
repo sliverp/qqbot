@@ -20,7 +20,7 @@ import {
 } from "./api.js";
 import { isAudioFile, audioFileToSilkFile, waitForFile, shouldTranscodeVoice } from "./utils/audio-convert.js";
 import { fileExistsAsync, formatFileSize, getMaxUploadSize, getFileTypeName, getFileSizeAsync } from "./utils/file-utils.js";
-import { chunkedUploadC2C, chunkedUploadGroup } from "./utils/chunked-upload.js";
+import { chunkedUploadC2C, chunkedUploadGroup, UploadPrepareFallbackError } from "./utils/chunked-upload.js";
 import { isLocalPath as isLocalFilePath, normalizePath, getQQBotMediaDir } from "./utils/platform.js";
 import { downloadFile } from "./image-server.js";
 import { parseMediaTagsToSendQueue, executeSendQueue, type MediaSendContext } from "./utils/media-send.js";
@@ -533,7 +533,11 @@ async function chunkedUploadAndSend(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`${prefix} ${callerName}: c2c chunked upload failed: ${msg}`);
-      return { channel: "qqbot", error: `文件发送失败，请稍后重试。` };
+      // upload_prepare 命中特定错误码时，使用服务端返回的 message 作为兜底文案
+      const userError = err instanceof UploadPrepareFallbackError
+        ? err.userMessage
+        : `文件发送失败，请稍后重试。`;
+      return { channel: "qqbot", error: userError };
     }
   }
 
@@ -556,7 +560,11 @@ async function chunkedUploadAndSend(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`${prefix} ${callerName}: group chunked upload failed: ${msg}`);
-      return { channel: "qqbot", error: `文件发送失败，请稍后重试。` };
+      // upload_prepare 命中特定错误码时，使用服务端返回的 message 作为兜底文案
+      const userError = err instanceof UploadPrepareFallbackError
+        ? err.userMessage
+        : `文件发送失败，请稍后重试。`;
+      return { channel: "qqbot", error: userError };
     }
   }
 

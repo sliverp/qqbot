@@ -9,12 +9,16 @@ import { sanitizeFileName } from "./utils/platform.js";
 
 // ============ 自定义错误 ============
 
-/** API 请求错误，携带 HTTP status code */
+/** API 请求错误，携带 HTTP status code 和业务错误码 */
 export class ApiError extends Error {
   constructor(
     message: string,
     public readonly status: number,
     public readonly path: string,
+    /** 业务错误码（回包中的 code / err_code 字段），不一定存在 */
+    public readonly bizCode?: number,
+    /** 回包中的原始 message 字段（用于向用户展示兜底文案） */
+    public readonly bizMessage?: string,
   ) {
     super(message);
     this.name = "ApiError";
@@ -320,8 +324,9 @@ export async function apiRequest<T = unknown>(
     }
     // JSON 错误响应
     try {
-      const error = JSON.parse(rawBody) as { message?: string; code?: number };
-      throw new ApiError(`API Error [${path}]: ${error.message ?? rawBody}`, res.status, path);
+      const error = JSON.parse(rawBody) as { message?: string; code?: number; err_code?: number };
+      const bizCode = error.code ?? error.err_code;
+      throw new ApiError(`API Error [${path}]: ${error.message ?? rawBody}`, res.status, path, bizCode, error.message);
     } catch (parseErr) {
       if (parseErr instanceof ApiError) throw parseErr;
       throw new ApiError(`API Error [${path}] HTTP ${res.status}: ${rawBody.slice(0, 200)}`, res.status, path);
@@ -413,16 +418,61 @@ async function completeUploadWithRetry(
   throw lastError!;
 }
 
-// ============ 分片完成重试（无条件，与 completeUpload 策略一致） ============
+// ============ 分片完成重试 ============
 
+/** 普通错误最大重试次数 */
 const PART_FINISH_MAX_RETRIES = 2;
 const PART_FINISH_BASE_DELAY_MS = 1000;
 
+/**
+ * 需要持续重试的业务错误码集合
+ * 当 upload_part_finish 返回这些错误码时，会以固定 1s 间隔持续重试直到成功或超时
+ */
+export const PART_FINISH_RETRYABLE_CODES: Set<number> = new Set([
+  40093001,
+]);
+
+/**
+ * upload_prepare 接口命中此错误码时，使用回包中的 message 字段作为兜底文案发送给用户
+ * 而非走通用的"文件发送失败，请稍后重试"
+ */
+export const UPLOAD_PREPARE_FALLBACK_CODE = 40093001;
+
+/** 特定错误码持续重试的默认超时（服务端未返回 retry_timeout 时的兜底） */
+const PART_FINISH_RETRYABLE_DEFAULT_TIMEOUT_MS = 2 * 60 * 1000;
+
+/** 特定错误码重试的固定间隔（1 秒） */
+const PART_FINISH_RETRYABLE_INTERVAL_MS = 1000;
+
+/**
+ * 判断错误是否命中"需要持续重试"的业务错误码
+ */
+function isRetryableBizCode(err: unknown): boolean {
+  if (PART_FINISH_RETRYABLE_CODES.size === 0) return false;
+  if (err instanceof ApiError && err.bizCode !== undefined) {
+    return PART_FINISH_RETRYABLE_CODES.has(err.bizCode);
+  }
+  return false;
+}
+
+/**
+ * 分片完成接口重试策略：
+ * 
+ * 1. 命中 PART_FINISH_RETRYABLE_CODES 的错误码 → 每 1s 重试一次，直到成功或超时
+ *    超时时间 = min(API 返回的 retry_timeout, 10 分钟)
+ * 2. 其他错误 → 最多重试 PART_FINISH_MAX_RETRIES 次（与之前逻辑一致）
+ * 
+ * 若持续重试超时或普通重试耗尽，抛出错误，调用方（chunkedUpload）
+ * 可据此中止后续分片上传。
+ * 
+ * @param retryTimeoutMs - 持续重试的超时时间（毫秒），由 upload_prepare 返回的 retry_timeout 计算得出
+ */
 async function partFinishWithRetry(
   accessToken: string,
   method: string,
   path: string,
   body?: unknown,
+  retryTimeoutMs?: number,
 ): Promise<void> {
   let lastError: Error | null = null;
 
@@ -433,6 +483,14 @@ async function partFinishWithRetry(
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
 
+      // 命中特定错误码 → 进入持续重试模式
+      if (isRetryableBizCode(err)) {
+        const timeoutMs = retryTimeoutMs ?? PART_FINISH_RETRYABLE_DEFAULT_TIMEOUT_MS;
+        console.warn(`[qqbot-api] PartFinish hit retryable bizCode=${(err as ApiError).bizCode}, entering persistent retry (timeout=${timeoutMs / 1000}s, interval=1s)...`);
+        await partFinishPersistentRetry(accessToken, method, path, body, timeoutMs);
+        return;
+      }
+
       if (attempt < PART_FINISH_MAX_RETRIES) {
         const delay = PART_FINISH_BASE_DELAY_MS * Math.pow(2, attempt);
         console.warn(`[qqbot-api] PartFinish attempt ${attempt + 1} failed, retrying in ${delay}ms: ${lastError.message.slice(0, 200)}`);
@@ -442,6 +500,51 @@ async function partFinishWithRetry(
   }
 
   throw lastError!;
+}
+
+/**
+ * 特定错误码的持续重试模式
+ * 不限次数，仅受总超时时间约束，固定每 1 秒重试一次
+ */
+async function partFinishPersistentRetry(
+  accessToken: string,
+  method: string,
+  path: string,
+  body: unknown,
+  timeoutMs: number,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let attempt = 0;
+  let lastError: Error | null = null;
+
+  while (Date.now() < deadline) {
+    try {
+      await apiRequest<Record<string, unknown>>(accessToken, method, path, body);
+      console.log(`[qqbot-api] PartFinish persistent retry succeeded after ${attempt} retries`);
+      return;
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+
+      // 如果不再是可重试的错误码，直接抛出（可能是其他类型的错误）
+      if (!isRetryableBizCode(err)) {
+        console.error(`[qqbot-api] PartFinish persistent retry: error is no longer retryable (bizCode=${(err as ApiError).bizCode ?? "N/A"}), aborting`);
+        throw lastError;
+      }
+
+      attempt++;
+      const remaining = deadline - Date.now();
+
+      if (remaining <= 0) break;
+
+      const actualDelay = Math.min(PART_FINISH_RETRYABLE_INTERVAL_MS, remaining);
+      console.warn(`[qqbot-api] PartFinish persistent retry #${attempt}: bizCode=${(err as ApiError).bizCode}, retrying in ${actualDelay}ms (remaining=${Math.round(remaining / 1000)}s)`);
+      await new Promise(resolve => setTimeout(resolve, actualDelay));
+    }
+  }
+
+  // 超时
+  console.error(`[qqbot-api] PartFinish persistent retry timed out after ${timeoutMs / 1000}s (${attempt} attempts)`);
+  throw new Error(`upload_part_finish 持续重试超时（${timeoutMs / 1000}s, ${attempt} 次重试），中止上传`);
 }
 
 export async function getGatewayUrl(accessToken: string): Promise<string> {
@@ -644,6 +747,10 @@ export interface UploadPrepareResponse {
   block_size: number;
   /** 分片列表（含预签名链接） */
   parts: UploadPart[];
+  /** 上传并发数（由服务端控制，可选，不返回时使用客户端默认值） */
+  concurrency?: number;
+  /** upload_part_finish 特定错误码的重试超时时间（秒），由服务端控制，客户端上限 10 分钟 */
+  retry_timeout?: number;
 }
 
 /** 完成文件上传响应（与 UploadMediaResponse 一致） */
@@ -710,10 +817,12 @@ export async function c2cUploadPartFinish(
   partIndex: number,
   blockSize: number,
   md5: string,
+  retryTimeoutMs?: number,
 ): Promise<void> {
   await partFinishWithRetry(
     accessToken, "POST", `/v2/users/${userId}/upload_part_finish`,
     { upload_id: uploadId, part_index: partIndex, block_size: blockSize, md5 },
+    retryTimeoutMs,
   );
 }
 
@@ -766,10 +875,12 @@ export async function groupUploadPartFinish(
   partIndex: number,
   blockSize: number,
   md5: string,
+  retryTimeoutMs?: number,
 ): Promise<void> {
   await partFinishWithRetry(
     accessToken, "POST", `/v2/groups/${groupId}/upload_part_finish`,
     { upload_id: uploadId, part_index: partIndex, block_size: blockSize, md5 },
+    retryTimeoutMs,
   );
 }
 

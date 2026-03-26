@@ -20,6 +20,8 @@ import {
   type UploadPrepareResponse,
   type UploadPrepareHashes,
   type MediaUploadResponse,
+  ApiError,
+  UPLOAD_PREPARE_FALLBACK_CODE,
   c2cUploadPrepare,
   c2cUploadPartFinish,
   c2cCompleteUpload,
@@ -30,8 +32,29 @@ import {
 } from "../api.js";
 import { formatFileSize } from "./file-utils.js";
 
-/** 分片上传并发控制：最多同时上传 N 个分片 */
-const MAX_CONCURRENT_PARTS = 1;
+/**
+ * upload_prepare 返回特定错误码时抛出的错误
+ * 调用方应使用 userMessage 作为兜底文案发送给用户
+ */
+export class UploadPrepareFallbackError extends Error {
+  /** 应发送给用户的文案（取自回包 message 字段） */
+  public readonly userMessage: string;
+
+  constructor(userMessage: string, originalMessage: string) {
+    super(originalMessage);
+    this.name = "UploadPrepareFallbackError";
+    this.userMessage = userMessage;
+  }
+}
+
+/** 分片上传默认并发数（服务端未返回 concurrency 时的兜底） */
+const DEFAULT_CONCURRENT_PARTS = 1;
+
+/** 分片上传并发上限（即使服务端返回更大的值也不超过此限制） */
+const MAX_CONCURRENT_PARTS = 10;
+
+/** partFinish 特定错误码重试超时上限（10 分钟），即使服务端 retry_timeout 更大也不超过此值 */
+const MAX_PART_FINISH_RETRY_TIMEOUT_MS = 10 * 60 * 1000;
 
 /** 单个分片上传超时（毫秒）— 5 分钟，兼容低带宽场景 */
 const PART_UPLOAD_TIMEOUT = 300_000;
@@ -55,8 +78,6 @@ export interface ChunkedUploadProgress {
 export interface ChunkedUploadOptions {
   /** 进度回调 */
   onProgress?: (progress: ChunkedUploadProgress) => void;
-  /** 最大并发数（默认 2） */
-  maxConcurrent?: number;
   /** 日志前缀 */
   logPrefix?: string;
 }
@@ -81,7 +102,6 @@ export async function chunkedUploadC2C(
   options?: ChunkedUploadOptions,
 ): Promise<MediaUploadResponse> {
   const prefix = options?.logPrefix ?? "[chunked-upload]";
-  const maxConcurrent = options?.maxConcurrent ?? MAX_CONCURRENT_PARTS;
 
   // 1. 读取文件信息
   const stat = await fs.promises.stat(filePath);
@@ -98,13 +118,34 @@ export async function chunkedUploadC2C(
   // 3. 申请上传 → 获取 upload_id + block_size + 预签名链接
   const accessToken = await getAccessToken(appId, clientSecret);
   console.log(`${prefix} >>> Calling c2cUploadPrepare(fileType=${fileType}, fileName=${fileName}, fileSize=${fileSize}, md5=${hashes.md5}, sha1=${hashes.sha1}, md5_10m=${hashes.md5_10m})`);
-  const prepareResp = await c2cUploadPrepare(accessToken, userId, fileType, fileName, fileSize, hashes);
+  let prepareResp: UploadPrepareResponse;
+  try {
+    prepareResp = await c2cUploadPrepare(accessToken, userId, fileType, fileName, fileSize, hashes);
+  } catch (err) {
+    // 命中特定错误码 → 使用回包 message 作为兜底文案
+    if (err instanceof ApiError && err.bizCode === UPLOAD_PREPARE_FALLBACK_CODE && err.bizMessage) {
+      console.warn(`${prefix} c2cUploadPrepare hit fallback code ${UPLOAD_PREPARE_FALLBACK_CODE}, using bizMessage as user fallback: ${err.bizMessage}`);
+      throw new UploadPrepareFallbackError(err.bizMessage, err.message);
+    }
+    throw err;
+  }
   console.log(`${prefix} <<< c2cUploadPrepare response:`, JSON.stringify(prepareResp));
   const { upload_id, parts } = prepareResp;
   // QQ 开放平台返回的 block_size 可能是字符串，需要转为数字
   const block_size = Number(prepareResp.block_size);
 
-  console.log(`${prefix} Upload prepared: upload_id=${upload_id}, block_size=${formatFileSize(block_size)}, parts=${parts.length}`);
+  // 并发数：使用 API 返回的 concurrency，未返回则用默认值，且不超过上限
+  const maxConcurrent = Math.min(
+    prepareResp.concurrency ? Number(prepareResp.concurrency) : DEFAULT_CONCURRENT_PARTS,
+    MAX_CONCURRENT_PARTS,
+  );
+
+  // partFinish 特定错误码的重试超时：使用 API 返回的 retry_timeout（秒），上限 10 分钟
+  const retryTimeoutMs = prepareResp.retry_timeout
+    ? Math.min(Number(prepareResp.retry_timeout) * 1000, MAX_PART_FINISH_RETRY_TIMEOUT_MS)
+    : undefined;
+
+  console.log(`${prefix} Upload prepared: upload_id=${upload_id}, block_size=${formatFileSize(block_size)}, parts=${parts.length}, concurrency=${maxConcurrent}, retryTimeout=${retryTimeoutMs ? retryTimeoutMs / 1000 + 's' : 'default'}`);
 
   // 4. 并行上传所有分片（带并发控制）
   let completedParts = 0;
@@ -131,7 +172,7 @@ export async function chunkedUploadC2C(
     // b. 通知开放平台分片上传完成（需要重新获取 token，避免长时间上传后 token 过期）
     const token = await getAccessToken(appId, clientSecret);
     console.log(`${prefix} >>> Calling c2cUploadPartFinish(upload_id=${upload_id}, partIndex=${partIndex}, blockSize=${length}, md5=${md5Hex})`);
-    await c2cUploadPartFinish(token, userId, upload_id, partIndex, length, md5Hex);
+    await c2cUploadPartFinish(token, userId, upload_id, partIndex, length, md5Hex, retryTimeoutMs);
     console.log(`${prefix} <<< c2cUploadPartFinish(partIndex=${partIndex}) done`);
 
     // 更新进度
@@ -188,7 +229,6 @@ export async function chunkedUploadGroup(
   options?: ChunkedUploadOptions,
 ): Promise<MediaUploadResponse> {
   const prefix = options?.logPrefix ?? "[chunked-upload]";
-  const maxConcurrent = options?.maxConcurrent ?? MAX_CONCURRENT_PARTS;
 
   // 1. 读取文件信息
   const stat = await fs.promises.stat(filePath);
@@ -205,13 +245,34 @@ export async function chunkedUploadGroup(
   // 3. 申请上传
   const accessToken = await getAccessToken(appId, clientSecret);
   console.log(`${prefix} >>> Calling groupUploadPrepare(fileType=${fileType}, fileName=${fileName}, fileSize=${fileSize}, md5=${hashes.md5}, sha1=${hashes.sha1}, md5_10m=${hashes.md5_10m})`);
-  const prepareResp = await groupUploadPrepare(accessToken, groupId, fileType, fileName, fileSize, hashes);
+  let prepareResp: UploadPrepareResponse;
+  try {
+    prepareResp = await groupUploadPrepare(accessToken, groupId, fileType, fileName, fileSize, hashes);
+  } catch (err) {
+    // 命中特定错误码 → 使用回包 message 作为兜底文案
+    if (err instanceof ApiError && err.bizCode === UPLOAD_PREPARE_FALLBACK_CODE && err.bizMessage) {
+      console.warn(`${prefix} groupUploadPrepare hit fallback code ${UPLOAD_PREPARE_FALLBACK_CODE}, using bizMessage as user fallback: ${err.bizMessage}`);
+      throw new UploadPrepareFallbackError(err.bizMessage, err.message);
+    }
+    throw err;
+  }
   console.log(`${prefix} <<< groupUploadPrepare response:`, JSON.stringify(prepareResp));
   const { upload_id, parts } = prepareResp;
   // QQ 开放平台返回的 block_size 可能是字符串，需要转为数字
   const block_size = Number(prepareResp.block_size);
 
-  console.log(`${prefix} Upload prepared: upload_id=${upload_id}, block_size=${formatFileSize(block_size)}, parts=${parts.length}`);
+  // 并发数：使用 API 返回的 concurrency，未返回则用默认值，且不超过上限
+  const maxConcurrent = Math.min(
+    prepareResp.concurrency ? Number(prepareResp.concurrency) : DEFAULT_CONCURRENT_PARTS,
+    MAX_CONCURRENT_PARTS,
+  );
+
+  // partFinish 特定错误码的重试超时：使用 API 返回的 retry_timeout（秒），上限 10 分钟
+  const retryTimeoutMs = prepareResp.retry_timeout
+    ? Math.min(Number(prepareResp.retry_timeout) * 1000, MAX_PART_FINISH_RETRY_TIMEOUT_MS)
+    : undefined;
+
+  console.log(`${prefix} Upload prepared: upload_id=${upload_id}, block_size=${formatFileSize(block_size)}, parts=${parts.length}, concurrency=${maxConcurrent}, retryTimeout=${retryTimeoutMs ? retryTimeoutMs / 1000 + 's' : 'default'}`);
 
   // 4. 并行上传所有分片（带并发控制）
   let completedParts = 0;
@@ -232,7 +293,7 @@ export async function chunkedUploadGroup(
 
     const token = await getAccessToken(appId, clientSecret);
     console.log(`${prefix} >>> Calling groupUploadPartFinish(upload_id=${upload_id}, partIndex=${partIndex}, blockSize=${length}, md5=${md5Hex})`);
-    await groupUploadPartFinish(token, groupId, upload_id, partIndex, length, md5Hex);
+    await groupUploadPartFinish(token, groupId, upload_id, partIndex, length, md5Hex, retryTimeoutMs);
     console.log(`${prefix} <<< groupUploadPartFinish(partIndex=${partIndex}) done`);
 
     completedParts++;
