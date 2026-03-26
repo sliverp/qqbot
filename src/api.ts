@@ -436,7 +436,7 @@ export const PART_FINISH_RETRYABLE_CODES: Set<number> = new Set([
  * upload_prepare 接口命中此错误码时，使用回包中的 message 字段作为兜底文案发送给用户
  * 而非走通用的"文件发送失败，请稍后重试"
  */
-export const UPLOAD_PREPARE_FALLBACK_CODE = 40093001;
+export const UPLOAD_PREPARE_FALLBACK_CODE = 40093002;
 
 /** 特定错误码持续重试的默认超时（服务端未返回 retry_timeout 时的兜底） */
 const PART_FINISH_RETRYABLE_DEFAULT_TIMEOUT_MS = 2 * 60 * 1000;

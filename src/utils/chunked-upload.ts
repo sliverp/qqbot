@@ -34,16 +34,19 @@ import { formatFileSize } from "./file-utils.js";
 
 /**
  * upload_prepare 返回特定错误码时抛出的错误
- * 调用方应使用 userMessage 作为兜底文案发送给用户
+ * 调用方根据携带的文件信息构造兜底文案发送给用户
  */
 export class UploadPrepareFallbackError extends Error {
-  /** 应发送给用户的文案（取自回包 message 字段） */
-  public readonly userMessage: string;
+  /** 触发错误的本地文件路径 */
+  public readonly filePath: string;
+  /** 文件大小（字节） */
+  public readonly fileSize: number;
 
-  constructor(userMessage: string, originalMessage: string) {
+  constructor(filePath: string, fileSize: number, originalMessage: string) {
     super(originalMessage);
     this.name = "UploadPrepareFallbackError";
-    this.userMessage = userMessage;
+    this.filePath = filePath;
+    this.fileSize = fileSize;
   }
 }
 
@@ -122,10 +125,10 @@ export async function chunkedUploadC2C(
   try {
     prepareResp = await c2cUploadPrepare(accessToken, userId, fileType, fileName, fileSize, hashes);
   } catch (err) {
-    // 命中特定错误码 → 使用回包 message 作为兜底文案
-    if (err instanceof ApiError && err.bizCode === UPLOAD_PREPARE_FALLBACK_CODE && err.bizMessage) {
-      console.warn(`${prefix} c2cUploadPrepare hit fallback code ${UPLOAD_PREPARE_FALLBACK_CODE}, using bizMessage as user fallback: ${err.bizMessage}`);
-      throw new UploadPrepareFallbackError(err.bizMessage, err.message);
+    // 命中特定错误码 → 携带文件信息抛出，由上层构造兜底文案
+    if (err instanceof ApiError && err.bizCode === UPLOAD_PREPARE_FALLBACK_CODE) {
+      console.warn(`${prefix} c2cUploadPrepare hit fallback code ${UPLOAD_PREPARE_FALLBACK_CODE}`);
+      throw new UploadPrepareFallbackError(filePath, fileSize, err.message);
     }
     throw err;
   }
@@ -249,10 +252,10 @@ export async function chunkedUploadGroup(
   try {
     prepareResp = await groupUploadPrepare(accessToken, groupId, fileType, fileName, fileSize, hashes);
   } catch (err) {
-    // 命中特定错误码 → 使用回包 message 作为兜底文案
-    if (err instanceof ApiError && err.bizCode === UPLOAD_PREPARE_FALLBACK_CODE && err.bizMessage) {
-      console.warn(`${prefix} groupUploadPrepare hit fallback code ${UPLOAD_PREPARE_FALLBACK_CODE}, using bizMessage as user fallback: ${err.bizMessage}`);
-      throw new UploadPrepareFallbackError(err.bizMessage, err.message);
+    // 命中特定错误码 → 携带文件信息抛出，由上层构造兜底文案
+    if (err instanceof ApiError && err.bizCode === UPLOAD_PREPARE_FALLBACK_CODE) {
+      console.warn(`${prefix} groupUploadPrepare hit fallback code ${UPLOAD_PREPARE_FALLBACK_CODE}`);
+      throw new UploadPrepareFallbackError(filePath, fileSize, err.message);
     }
     throw err;
   }

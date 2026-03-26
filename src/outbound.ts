@@ -533,11 +533,13 @@ async function chunkedUploadAndSend(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`${prefix} ${callerName}: c2c chunked upload failed: ${msg}`);
-      // upload_prepare 命中特定错误码时，使用服务端返回的 message 作为兜底文案
-      const userError = err instanceof UploadPrepareFallbackError
-        ? err.userMessage
-        : `文件发送失败，请稍后重试。`;
-      return { channel: "qqbot", error: userError };
+      if (err instanceof UploadPrepareFallbackError) {
+        const dir = path.dirname(err.filePath);
+        const name = path.basename(err.filePath);
+        const size = formatFileSize(err.fileSize);
+        return { channel: "qqbot", error: `QQBot每天发送文件有累计2G的限制，如果着急的话，可以直接来我的主机copy下载，文件目录\`${dir}/${name}\`（${size}）` };
+      }
+      return { channel: "qqbot", error: `文件发送失败，请稍后重试。` };
     }
   }
 
@@ -560,11 +562,13 @@ async function chunkedUploadAndSend(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`${prefix} ${callerName}: group chunked upload failed: ${msg}`);
-      // upload_prepare 命中特定错误码时，使用服务端返回的 message 作为兜底文案
-      const userError = err instanceof UploadPrepareFallbackError
-        ? err.userMessage
-        : `文件发送失败，请稍后重试。`;
-      return { channel: "qqbot", error: userError };
+      if (err instanceof UploadPrepareFallbackError) {
+        const dir = path.dirname(err.filePath);
+        const name = path.basename(err.filePath);
+        const size = formatFileSize(err.fileSize);
+        return { channel: "qqbot", error: `QQBot每天发送文件有累计2G的限制，如果着急的话，可以直接来我的主机copy下载，文件目录\`${dir}/${name}\`（${size}）` };
+      }
+      return { channel: "qqbot", error: `文件发送失败，请稍后重试。` };
     }
   }
 
