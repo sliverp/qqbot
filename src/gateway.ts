@@ -1055,7 +1055,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
               limit: historyLimit,
               entry: {
                 sender: senderForHistory,
-                body: event.content,
+                body: parseFaceTags(event.content),
                 timestamp: new Date(event.timestamp).getTime(),
                 messageId: event.messageId,
                 attachments: historyAttachments,
@@ -1084,7 +1084,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
               limit: historyLimit,
               entry: {
                 sender: senderForHistory,
-                body: event.content,
+                body: parseFaceTags(event.content),
                 timestamp: new Date(event.timestamp).getTime(),
                 messageId: event.messageId,
                 attachments: historyAttachments,
