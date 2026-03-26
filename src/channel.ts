@@ -55,65 +55,44 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
   groups: {
     /** 是否需要 @机器人才响应 */
     resolveRequireMention: ({ cfg, accountId, groupId }) => {
-      return resolveRequireMention(cfg, groupId, accountId);
+      if (!groupId) return undefined;
+      return resolveRequireMention(cfg, groupId, accountId ?? undefined);
     },
 
-    /** 群聊工具范围（默认 restricted） */
+    /** 群聊工具范围 */
     resolveToolPolicy: ({ cfg, accountId, groupId }) => {
-      return resolveToolPolicy(cfg, groupId, accountId);
+      if (!groupId) return undefined;
+      const policy = resolveToolPolicy(cfg, groupId, accountId ?? undefined);
+      // 将简单字符串策略映射为 GroupToolPolicyConfig 对象
+      if (policy === "full") return undefined; // full = 默认不限制
+      if (policy === "none") return { allow: [], deny: ["*"] };
+      // restricted: 默认空 allow（框架会使用内置 restricted 列表）
+      return { allow: [] };
     },
 
     /** QQ Bot 平台特有的群聊行为提示 */
     resolveGroupIntroHint: ({ cfg, accountId, groupId }) => {
-      const groupCfg = resolveGroupConfig(cfg, groupId, accountId);
+      if (!groupId) return undefined;
+      const groupCfg = resolveGroupConfig(cfg, groupId, accountId ?? undefined);
       const hints: string[] = [];
       if (groupCfg.name) {
         hints.push(`当前群: ${groupCfg.name}`);
       }
       // bot 互聊防护、@状态行为指引在 gateway.ts 动态注入
-      return hints.join(" ");
+      return hints.join(" ") || undefined;
     },
   },
 
   // ============ @mention 检测与清理 ============
   mentions: {
-    /** 清理 @mention：替换 <@openid> 为 @用户名，去除 @机器人自身 */
-    stripMentionText: (text, mentions) => {
-      if (!text || !mentions?.length) return text;
-      let cleaned = text;
-      for (const m of mentions) {
-        const openid = (m as any).member_openid ?? (m as any).id ?? (m as any).user_openid;
-        if (!openid) continue;
-        if (m.is_you) {
-          cleaned = cleaned.replace(new RegExp(`<@!?${openid}>`, "g"), "").trim();
-        } else {
-          const displayName = m.nickname ?? (m as any).username;
-          if (displayName) {
-            cleaned = cleaned.replace(new RegExp(`<@!?${openid}>`, "g"), `@${displayName}`);
-          }
-        }
-      }
-      return cleaned;
-    },
-
-    /** 检测消息是否 @了机器人（mentions > eventType > mentionPatterns） */
-    detectWasMentioned: ({ eventType, mentions, content, mentionPatterns }) => {
-      if (mentions?.some((m) => m.is_you)) return true;
-      if (eventType === "GROUP_AT_MESSAGE_CREATE") return true;
-      if (mentionPatterns?.length && content) {
-        for (const pattern of mentionPatterns) {
-          try {
-            if (new RegExp(pattern, "i").test(content)) return true;
-          } catch {
-            // 无效正则，跳过
-          }
-        }
-      }
-      return false;
+    /** 清理 @mention 文本（SDK ChannelMentionAdapter 接口） */
+    stripMentions: ({ text, ctx }) => {
+      const mentions = (ctx as any)?.mentions as Array<{ member_openid?: string; id?: string; user_openid?: string; is_you?: boolean; nickname?: string; username?: string }> | undefined;
+      return stripMentionText(text, mentions);
     },
   },
   // CLI onboarding wizard
-  // @ts-expect-error onboarding removed from ChannelPlugin type in 2026.3.23 but still supported at runtime
+  // @ts-ignore onboarding removed from ChannelPlugin type in 2026.3.23 but still supported at runtime
   onboarding: qqbotOnboardingAdapter,
 
   config: {
@@ -454,3 +433,45 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
     }),
   },
 };
+
+// ============ 独立的 mention 工具函数（供 gateway.ts 等直接调用） ============
+
+/** 清理 @mention：替换 <@openid> 为 @用户名，去除 @机器人自身 */
+export function stripMentionText(text: string, mentions?: Array<{ member_openid?: string; id?: string; user_openid?: string; is_you?: boolean; nickname?: string; username?: string }>): string {
+  if (!text || !mentions?.length) return text;
+  let cleaned = text;
+  for (const m of mentions) {
+    const openid = m.member_openid ?? m.id ?? m.user_openid;
+    if (!openid) continue;
+    if (m.is_you) {
+      cleaned = cleaned.replace(new RegExp(`<@!?${openid}>`, "g"), "").trim();
+    } else {
+      const displayName = m.nickname ?? m.username;
+      if (displayName) {
+        cleaned = cleaned.replace(new RegExp(`<@!?${openid}>`, "g"), `@${displayName}`);
+      }
+    }
+  }
+  return cleaned;
+}
+
+/** 检测消息是否 @了机器人（mentions > eventType > mentionPatterns） */
+export function detectWasMentioned({ eventType, mentions, content, mentionPatterns }: {
+  eventType?: string;
+  mentions?: Array<{ is_you?: boolean }>;
+  content?: string;
+  mentionPatterns?: string[];
+}): boolean {
+  if (mentions?.some((m) => m.is_you)) return true;
+  if (eventType === "GROUP_AT_MESSAGE_CREATE") return true;
+  if (mentionPatterns?.length && content) {
+    for (const pattern of mentionPatterns) {
+      try {
+        if (new RegExp(pattern, "i").test(content)) return true;
+      } catch {
+        // 无效正则，跳过
+      }
+    }
+  }
+  return false;
+}

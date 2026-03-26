@@ -7,7 +7,7 @@ import { loadSession, saveSession, clearSession } from "./session-store.js";
 import { recordKnownUser, flushKnownUsers } from "./known-users.js";
 import { getQQBotRuntime } from "./runtime.js";
 import { isGroupAllowed, resolveGroupName, resolveGroupPrompt, resolveHistoryLimit, resolveGroupPolicy, resolveGroupConfig, resolveIgnoreOtherMentions, resolveMentionPatterns } from "./config.js";
-import { qqbotPlugin } from "./channel.js";
+import { qqbotPlugin, stripMentionText, detectWasMentioned } from "./channel.js";
 import {
   recordPendingHistoryEntry,
   buildPendingHistoryContext,
@@ -996,12 +996,12 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 
           // 2. @检测（委托 mentions 适配器）
           const mentionPatternsForDetect: string[] = resolveMentionPatterns(cfg as any, route.agentId);
-          wasMentioned = qqbotPlugin.mentions?.detectWasMentioned?.({
+          wasMentioned = detectWasMentioned({
             eventType: event.eventType,
             mentions: event.mentions,
             content: event.content,
             mentionPatterns: mentionPatternsForDetect,
-          }) ?? false;
+          });
 
           // 3. requireMention 门控
           // 优先级：session store 中的 /activation 命令 > 配置文件 requireMention > 默认值
@@ -1126,7 +1126,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 
         // 将 <@member_openid> 替换为 @username（使用 mentions 适配器）
         if (event.type === "group" && event.mentions?.length) {
-          userContent = qqbotPlugin.mentions?.stripMentionText?.(userContent, event.mentions as any) ?? userContent;
+          userContent = stripMentionText(userContent, event.mentions as any) ?? userContent;
         } else if (event.mentions?.length) {
           for (const m of event.mentions) {
             if (m.member_openid && m.username) {
@@ -1161,7 +1161,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
               attachments: m.attachments,
               parseFaceTags,
               stripMentionText: (text, mentions) =>
-                qqbotPlugin.mentions?.stripMentionText?.(text, mentions as any) ?? text,
+                stripMentionText(text, mentions as any) ?? text,
             });
 
           // 前面的消息使用 envelope 历史格式
