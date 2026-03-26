@@ -2068,17 +2068,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                   groupOpenid: event.group_openid,
                   accountId: account.accountId,
                 });
-                // 发送入群欢迎
-                (async () => {
-                  try {
-                    const token = await getAccessToken(account.appId, account.clientSecret);
-                    const greeting = `嗨～我来啦！有事随时喊我就好 😄`;
-                    await sendProactiveGroupMessage(token, event.group_openid, greeting);
-                    log?.info(`[qqbot:${account.accountId}] Sent welcome message to group: ${event.group_openid}`);
-                  } catch (err) {
-                    log?.debug?.(`[qqbot:${account.accountId}] Failed to send welcome message to group ${event.group_openid}: ${err}`);
-                  }
-                })();
+
               } else if (t === "GROUP_DEL_ROBOT") {
                 const event = d as { timestamp: string; group_openid: string; op_member_openid: string };
                 log?.info(`[qqbot:${account.accountId}] Bot removed from group: ${event.group_openid} by ${event.op_member_openid}`);
