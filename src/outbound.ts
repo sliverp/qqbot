@@ -20,7 +20,7 @@ import {
 } from "./api.js";
 import { isAudioFile, audioFileToSilkFile, waitForFile, shouldTranscodeVoice } from "./utils/audio-convert.js";
 import { fileExistsAsync, formatFileSize, getMaxUploadSize, getFileTypeName, getFileSizeAsync } from "./utils/file-utils.js";
-import { chunkedUploadC2C, chunkedUploadGroup, UploadPrepareFallbackError } from "./utils/chunked-upload.js";
+import { chunkedUploadC2C, chunkedUploadGroup, UploadDailyLimitExceededError } from "./utils/chunked-upload.js";
 import { isLocalPath as isLocalFilePath, normalizePath, getQQBotMediaDir } from "./utils/platform.js";
 import { downloadFile } from "./image-server.js";
 import { parseMediaTagsToSendQueue, executeSendQueue, type MediaSendContext } from "./utils/media-send.js";
@@ -533,7 +533,7 @@ async function chunkedUploadAndSend(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`${prefix} ${callerName}: c2c chunked upload failed: ${msg}`);
-      if (err instanceof UploadPrepareFallbackError) {
+      if (err instanceof UploadDailyLimitExceededError) {
         const dir = path.dirname(err.filePath);
         const name = path.basename(err.filePath);
         const size = formatFileSize(err.fileSize);
@@ -562,7 +562,7 @@ async function chunkedUploadAndSend(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`${prefix} ${callerName}: group chunked upload failed: ${msg}`);
-      if (err instanceof UploadPrepareFallbackError) {
+      if (err instanceof UploadDailyLimitExceededError) {
         const dir = path.dirname(err.filePath);
         const name = path.basename(err.filePath);
         const size = formatFileSize(err.fileSize);

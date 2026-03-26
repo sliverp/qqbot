@@ -33,10 +33,10 @@ import {
 import { formatFileSize } from "./file-utils.js";
 
 /**
- * upload_prepare 返回特定错误码时抛出的错误
+ * upload_prepare 返回特定错误码（40093002）时抛出：文件超过每日累积上传限制
  * 调用方根据携带的文件信息构造兜底文案发送给用户
  */
-export class UploadPrepareFallbackError extends Error {
+export class UploadDailyLimitExceededError extends Error {
   /** 触发错误的本地文件路径 */
   public readonly filePath: string;
   /** 文件大小（字节） */
@@ -44,7 +44,7 @@ export class UploadPrepareFallbackError extends Error {
 
   constructor(filePath: string, fileSize: number, originalMessage: string) {
     super(originalMessage);
-    this.name = "UploadPrepareFallbackError";
+    this.name = "UploadDailyLimitExceededError";
     this.filePath = filePath;
     this.fileSize = fileSize;
   }
@@ -128,7 +128,7 @@ export async function chunkedUploadC2C(
     // 命中特定错误码 → 携带文件信息抛出，由上层构造兜底文案
     if (err instanceof ApiError && err.bizCode === UPLOAD_PREPARE_FALLBACK_CODE) {
       console.warn(`${prefix} c2cUploadPrepare hit fallback code ${UPLOAD_PREPARE_FALLBACK_CODE}`);
-      throw new UploadPrepareFallbackError(filePath, fileSize, err.message);
+      throw new UploadDailyLimitExceededError(filePath, fileSize, err.message);
     }
     throw err;
   }
@@ -255,7 +255,7 @@ export async function chunkedUploadGroup(
     // 命中特定错误码 → 携带文件信息抛出，由上层构造兜底文案
     if (err instanceof ApiError && err.bizCode === UPLOAD_PREPARE_FALLBACK_CODE) {
       console.warn(`${prefix} groupUploadPrepare hit fallback code ${UPLOAD_PREPARE_FALLBACK_CODE}`);
-      throw new UploadPrepareFallbackError(filePath, fileSize, err.message);
+      throw new UploadDailyLimitExceededError(filePath, fileSize, err.message);
     }
     throw err;
   }

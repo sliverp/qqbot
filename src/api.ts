@@ -433,7 +433,8 @@ export const PART_FINISH_RETRYABLE_CODES: Set<number> = new Set([
 ]);
 
 /**
- * upload_prepare 接口命中此错误码时，使用回包中的 message 字段作为兜底文案发送给用户
+ * upload_prepare 接口命中此错误码时，携带文件信息抛出 UploadDailyLimitExceededError，
+ * 由上层（outbound.ts）构造包含文件路径和大小的兜底文案发送给用户，
  * 而非走通用的"文件发送失败，请稍后重试"
  */
 export const UPLOAD_PREPARE_FALLBACK_CODE = 40093002;
