@@ -364,6 +364,7 @@ export async function executeSendQueue(
   };
 
   for (const item of queue) {
+    const FALLBACK_MSG = "发送失败，请稍后重试。";
     try {
       if (item.type === "text") {
         if (options.skipInterTagText) {
@@ -379,8 +380,6 @@ export async function executeSendQueue(
       }
 
       log?.info(`${prefix} executeSendQueue: sending ${item.type}: ${item.content.slice(0, 80)}...`);
-
-      const FALLBACK_MSG = "发送失败，请稍后重试。";
 
       if (item.type === "image") {
         const result = await sendPhoto(mediaTarget, item.content);
