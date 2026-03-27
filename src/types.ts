@@ -207,6 +207,8 @@ export interface C2CMessageEvent {
     ext?: string[];
   };
   attachments?: MessageAttachment[];
+  /** 消息引用，当用户引用某条消息时存在 */
+  message_reference?: MessageReference;
 }
 
 /**
@@ -228,6 +230,18 @@ export interface GuildMessageEvent {
     joined_at?: string;
   };
   attachments?: MessageAttachment[];
+}
+
+/**
+ * 消息引用（被回复的原始消息）
+ */
+export interface MessageReference {
+  /** 被引用消息的文本内容 */
+  content: string;
+  /** 被引用消息的附件列表 */
+  attachments?: MessageAttachment[];
+  /** 被引用消息的索引标识 */
+  msg_idx?: string;
 }
 
 /**
@@ -261,6 +275,8 @@ export interface GroupMessageEvent {
     /** 是否 @机器人自身 */
     is_you?: boolean;
   }>;
+  /** 消息引用，当用户引用某条消息时存在 */
+  message_reference?: MessageReference;
 }
 
 /**

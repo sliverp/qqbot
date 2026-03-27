@@ -1,4 +1,5 @@
 import type { QueueSnapshot } from "./slash-commands.js";
+import type { MessageReference } from "./types.js";
 
 // ── 消息队列默认配置 ──
 const DEFAULT_GLOBAL_QUEUE_SIZE = 1000;
@@ -32,6 +33,8 @@ export interface QueuedMessage {
   mentions?: Array<{ scope?: "all" | "single"; id?: string; user_openid?: string; member_openid?: string; username?: string; bot?: boolean; is_you?: boolean }>;
   /** 消息场景（来源、扩展字段） */
   messageScene?: { source?: string; ext?: string[] };
+  /** 消息引用结构（QQ 推送事件中携带的被引用原始消息） */
+  messageReference?: MessageReference;
   /** 群消息合并标记：记录合并了多少条原始消息 */
   _mergedCount?: number;
   /** 合并前的原始消息列表（用于 gateway 侧逐条格式化信封） */
