@@ -1,6 +1,9 @@
 {
   "name": "@tencent-connect/openclaw-qqbot",
   "version": "1.6.6",
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
