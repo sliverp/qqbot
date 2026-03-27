@@ -4,10 +4,10 @@ import {
   applyAccountNameToChannelSection,
   deleteAccountFromConfigSection,
   setAccountEnabledInConfigSection,
-} from "openclaw/plugin-sdk";
+} from "openclaw/plugin-sdk/core";
 
 import type { ResolvedQQBotAccount } from "./types.js";
-import { DEFAULT_ACCOUNT_ID, listQQBotAccountIds, resolveQQBotAccount, applyQQBotAccountConfig, resolveDefaultQQBotAccountId } from "./config.js";
+import { DEFAULT_ACCOUNT_ID, listQQBotAccountIds, resolveQQBotAccount, applyQQBotAccountConfig, resolveDefaultQQBotAccountId, resolveRequireMention, resolveToolPolicy, resolveGroupConfig } from "./config.js";
 import { sendText, sendMedia } from "./outbound.js";
 import { startGateway } from "./gateway.js";
 import { qqbotOnboardingAdapter } from "./onboarding.js";
@@ -50,7 +50,49 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
     blockStreaming: true,
   },
   reload: { configPrefixes: ["channels.qqbot"] },
+
+  // ============ 群消息策略适配器 ============
+  groups: {
+    /** 是否需要 @机器人才响应 */
+    resolveRequireMention: ({ cfg, accountId, groupId }) => {
+      if (!groupId) return undefined;
+      return resolveRequireMention(cfg, groupId, accountId ?? undefined);
+    },
+
+    /** 群聊工具范围 */
+    resolveToolPolicy: ({ cfg, accountId, groupId }) => {
+      if (!groupId) return undefined;
+      const policy = resolveToolPolicy(cfg, groupId, accountId ?? undefined);
+      // 将简单字符串策略映射为 GroupToolPolicyConfig 对象
+      if (policy === "full") return undefined; // full = 默认不限制
+      if (policy === "none") return { allow: [], deny: ["*"] };
+      // restricted: 默认空 allow（框架会使用内置 restricted 列表）
+      return { allow: [] };
+    },
+
+    /** QQ Bot 平台特有的群聊行为提示 */
+    resolveGroupIntroHint: ({ cfg, accountId, groupId }) => {
+      if (!groupId) return undefined;
+      const groupCfg = resolveGroupConfig(cfg, groupId, accountId ?? undefined);
+      const hints: string[] = [];
+      if (groupCfg.name) {
+        hints.push(`当前群: ${groupCfg.name}`);
+      }
+      // bot 互聊防护、@状态行为指引在 gateway.ts 动态注入
+      return hints.join(" ") || undefined;
+    },
+  },
+
+  // ============ @mention 检测与清理 ============
+  mentions: {
+    /** 清理 @mention 文本（SDK ChannelMentionAdapter 接口） */
+    stripMentions: ({ text, ctx }) => {
+      const mentions = (ctx as any)?.mentions as Array<{ member_openid?: string; id?: string; user_openid?: string; is_you?: boolean; nickname?: string; username?: string }> | undefined;
+      return stripMentionText(text, mentions);
+    },
+  },
   // CLI onboarding wizard
+  // @ts-ignore onboarding removed from ChannelPlugin type in 2026.3.23 but still supported at runtime
   onboarding: qqbotOnboardingAdapter,
 
   config: {
@@ -88,11 +130,11 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
       tokenSource: account?.secretSource,
     }),
     // 关键：解析 allowFrom 配置，用于命令授权
-    resolveAllowFrom: ({ cfg, accountId }: { cfg: OpenClawConfig; accountId?: string }) => {
-      const account = resolveQQBotAccount(cfg, accountId);
+    resolveAllowFrom: ({ cfg, accountId }: { cfg: OpenClawConfig; accountId?: string | null }) => {
+      const account = resolveQQBotAccount(cfg, accountId ?? undefined);
       const allowFrom = account.config?.allowFrom ?? [];
       console.log(`[qqbot] resolveAllowFrom: accountId=${accountId}, allowFrom=${JSON.stringify(allowFrom)}`);
-      return allowFrom.map((entry: string | number) => String(entry));
+      return allowFrom.map((entry: string | number) => String(entry)) as (string | number)[];
     },
     // 格式化 allowFrom 条目（移除 qqbot: 前缀，统一大写）
     formatAllowFrom: ({ allowFrom }: { allowFrom: Array<string | number> }) =>
@@ -136,8 +178,8 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
         clientSecret,
         clientSecretFile: input.tokenFile,
         name: input.name,
-        imageServerBaseUrl: input.imageServerBaseUrl,
-      });
+        imageServerBaseUrl: (input as Record<string, unknown>).imageServerBaseUrl as string | undefined,
+      }) as OpenClawConfig;
     },
   },
   // Messaging 配置：用于解析目标地址
@@ -222,28 +264,40 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
     sendText: async ({ to, text, accountId, replyToId, cfg }) => {
       console.log(`[qqbot:channel] sendText called — accountId=${accountId}, to=${to}, replyToId=${replyToId}, text.length=${text?.length ?? 0}`);
       console.log(`[qqbot:channel] sendText text preview: ${text?.slice(0, 100)}${(text?.length ?? 0) > 100 ? "..." : ""}`);
-      const account = resolveQQBotAccount(cfg, accountId);
+      const account = resolveQQBotAccount(cfg, accountId ?? undefined);
       initApiConfig({ markdownSupport: account.markdownSupport });
       console.log(`[qqbot:channel] sendText resolved account: id=${account.accountId}, appId=${account.appId}, enabled=${account.enabled}`);
       const result = await sendText({ to, text, accountId, replyToId, account });
       console.log(`[qqbot:channel] sendText result: messageId=${result.messageId}, error=${result.error ?? "none"}`);
+      if (result.error) throw new Error(result.error);
       return {
-        channel: "qqbot",
-        messageId: result.messageId,
-        error: result.error ? new Error(result.error) : undefined,
+        channel: "qqbot" as const,
+        messageId: result.messageId ?? "",
       };
     },
     sendMedia: async ({ to, text, mediaUrl, accountId, replyToId, cfg }) => {
       console.log(`[qqbot:channel] sendMedia called — accountId=${accountId}, to=${to}, replyToId=${replyToId}, mediaUrl=${mediaUrl?.slice(0, 80)}, text.length=${text?.length ?? 0}`);
-      const account = resolveQQBotAccount(cfg, accountId);
+      const account = resolveQQBotAccount(cfg, accountId ?? undefined);
       initApiConfig({ markdownSupport: account.markdownSupport });
       console.log(`[qqbot:channel] sendMedia resolved account: id=${account.accountId}, appId=${account.appId}, enabled=${account.enabled}`);
       const result = await sendMedia({ to, text: text ?? "", mediaUrl: mediaUrl ?? "", accountId, replyToId, account });
       console.log(`[qqbot:channel] sendMedia result: messageId=${result.messageId}, error=${result.error ?? "none"}`);
+      // 此 sendMedia 是框架 Channel Plugin 的标准出站接口，
+      // 用于非 gateway deliver 场景（如 API 直接发送、cron 等）。
+      // gateway 消息响应走的是 deliver 回调 → sendPlainReply，不经过此处。
+      // 框架拿到 error 后不一定会给用户发文字兜底，所以这里主动发一条。
+      if (result.error) {
+        try {
+          const fallbackResult = await sendText({ to, text: result.error, accountId, replyToId, account });
+          console.log(`[qqbot:channel] sendMedia fallback text sent: messageId=${fallbackResult.messageId}, error=${fallbackResult.error ?? "none"}`);
+        } catch (fallbackErr) {
+          console.error(`[qqbot:channel] sendMedia fallback text failed: ${fallbackErr}`);
+        }
+        throw new Error(result.error);
+      }
       return {
-        channel: "qqbot",
-        messageId: result.messageId,
-        error: result.error ? new Error(result.error) : undefined,
+        channel: "qqbot" as const,
+        messageId: result.messageId ?? "",
       };
     },
   },
@@ -356,7 +410,7 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
       lastOutboundAt: null,
     },
     // 新增：构建通道摘要
-    buildChannelSummary: ({ snapshot }: { snapshot: Record<string, unknown> }) => ({
+    buildChannelSummary: ({ snapshot }) => ({
       configured: snapshot.configured ?? false,
       tokenSource: snapshot.tokenSource ?? "none",
       running: snapshot.running ?? false,
@@ -364,14 +418,14 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
       lastConnectedAt: snapshot.lastConnectedAt ?? null,
       lastError: snapshot.lastError ?? null,
     }),
-    buildAccountSnapshot: ({ account, runtime }: { account?: ResolvedQQBotAccount; runtime?: Record<string, unknown> }) => ({
+    buildAccountSnapshot: ({ account, runtime }) => ({
       accountId: account?.accountId ?? DEFAULT_ACCOUNT_ID,
       name: account?.name,
       enabled: account?.enabled ?? false,
       configured: Boolean(account?.appId && account?.clientSecret),
       tokenSource: account?.secretSource,
-      running: runtime?.running ?? false,
-      connected: runtime?.connected ?? false,
+      running: Boolean(runtime?.running ?? false),
+      connected: Boolean(runtime?.connected ?? false),
       lastConnectedAt: runtime?.lastConnectedAt ?? null,
       lastError: runtime?.lastError ?? null,
       lastInboundAt: runtime?.lastInboundAt ?? null,
@@ -379,3 +433,45 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
     }),
   },
 };
+
+// ============ 独立的 mention 工具函数（供 gateway.ts 等直接调用） ============
+
+/** 清理 @mention：替换 <@openid> 为 @用户名，去除 @机器人自身 */
+export function stripMentionText(text: string, mentions?: Array<{ member_openid?: string; id?: string; user_openid?: string; is_you?: boolean; nickname?: string; username?: string }>): string {
+  if (!text || !mentions?.length) return text;
+  let cleaned = text;
+  for (const m of mentions) {
+    const openid = m.member_openid ?? m.id ?? m.user_openid;
+    if (!openid) continue;
+    if (m.is_you) {
+      cleaned = cleaned.replace(new RegExp(`<@!?${openid}>`, "g"), "").trim();
+    } else {
+      const displayName = m.nickname ?? m.username;
+      if (displayName) {
+        cleaned = cleaned.replace(new RegExp(`<@!?${openid}>`, "g"), `@${displayName}`);
+      }
+    }
+  }
+  return cleaned;
+}
+
+/** 检测消息是否 @了机器人（mentions > eventType > mentionPatterns） */
+export function detectWasMentioned({ eventType, mentions, content, mentionPatterns }: {
+  eventType?: string;
+  mentions?: Array<{ is_you?: boolean }>;
+  content?: string;
+  mentionPatterns?: string[];
+}): boolean {
+  if (mentions?.some((m) => m.is_you)) return true;
+  if (eventType === "GROUP_AT_MESSAGE_CREATE") return true;
+  if (mentionPatterns?.length && content) {
+    for (const pattern of mentionPatterns) {
+      try {
+        if (new RegExp(pattern, "i").test(content)) return true;
+      } catch {
+        // 无效正则，跳过
+      }
+    }
+  }
+  return false;
+}

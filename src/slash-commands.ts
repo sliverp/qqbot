@@ -27,7 +27,7 @@ let PLUGIN_VERSION = getPackageVersion(import.meta.url);
 
 // 获取 openclaw 框架版本（缓存结果，只执行一次）
 let _frameworkVersion: string | null = null;
-function getFrameworkVersion(): string {
+export function getFrameworkVersion(): string {
   if (_frameworkVersion !== null) return _frameworkVersion;
   try {
     // 先尝试 PATH 中的 CLI
@@ -90,7 +90,7 @@ interface UpgradeCompatResult {
  * 解析框架版本字符串中的日期版本号
  * 输入示例: "OpenClaw 2026.3.13 (61d171a)" → "2026.3.13"
  */
-function parseFrameworkDateVersion(versionStr: string): string | null {
+export function parseFrameworkDateVersion(versionStr: string): string | null {
   const m = versionStr.match(/(\d{4}\.\d{1,2}\.\d{1,2})/);
   return m ? m[1] : null;
 }
@@ -327,9 +327,14 @@ registerCommand({
     `列出所有可用的 QQBot 插件内置指令及其简要说明。`,
     `使用 /指令名 ? 可查看某条指令的详细用法。`,
   ].join("\n"),
-  handler: () => {
+  handler: (ctx) => {
+    // 群聊场景排除仅限私聊的指令
+    const GROUP_EXCLUDED_COMMANDS = new Set(["bot-upgrade", "bot-clear-storage"]);
+    const isGroup = ctx.type === "group";
+
     const lines = [`### QQBot插件内置调试指令`, ``];
     for (const [name, cmd] of commands) {
+      if (isGroup && GROUP_EXCLUDED_COMMANDS.has(name)) continue;
       lines.push(`<qqbot-cmd-input text="/${name}" show="/${name}"/> ${cmd.description}`);
     }
     lines.push(``, `> 插件版本 v${PLUGIN_VERSION}`);
@@ -680,6 +685,43 @@ function copyScriptToTemp(scriptPath: string): string | null {
   }
 }
 
+const REMOTE_UPGRADE_SCRIPT_URL = "https://raw.githubusercontent.com/tencent-connect/openclaw-qqbot/main/scripts/upgrade-via-npm.sh";
+const REMOTE_UPGRADE_SCRIPT_URL_WIN = "https://raw.githubusercontent.com/tencent-connect/openclaw-qqbot/main/scripts/upgrade-via-npm.ps1";
+
+/**
+ * 从远端下载升级脚本到临时目录，返回临时脚本路径，失败返回 null。
+ */
+function downloadRemoteUpgradeScript(): string | null {
+  try {
+    const url = isWindows() ? REMOTE_UPGRADE_SCRIPT_URL_WIN : REMOTE_UPGRADE_SCRIPT_URL;
+    const ext = isWindows() ? ".ps1" : ".sh";
+    const tmpDir = path.join(getHomeDir(), ".openclaw", ".qqbot-upgrade-tmp");
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const tmpScript = path.join(tmpDir, `upgrade-via-npm${ext}`);
+
+    // 使用 curl 同步下载（macOS/Linux/Windows 均内置 curl）
+    execFileSync("curl", ["-fsSL", "--max-time", "15", "-o", tmpScript, url], {
+      timeout: 20_000,
+      stdio: "pipe",
+    });
+
+    if (!fs.existsSync(tmpScript) || fs.statSync(tmpScript).size < 100) {
+      console.error(`[qqbot] downloadRemoteUpgradeScript: downloaded file too small or missing`);
+      return null;
+    }
+
+    if (!isWindows()) {
+      fs.chmodSync(tmpScript, 0o755);
+    }
+
+    console.log(`[qqbot] downloadRemoteUpgradeScript: fetched from ${url} → ${tmpScript}`);
+    return tmpScript;
+  } catch (e: any) {
+    console.error(`[qqbot] downloadRemoteUpgradeScript: failed: ${e.message}`);
+    return null;
+  }
+}
+
 /**
  * 清理临时升级脚本目录
  */
@@ -705,11 +747,14 @@ function cleanupTempScript(): void {
  * 安全机制：脚本会被复制到临时目录再执行，避免升级过程中插件目录被操作导致脚本自身丢失。
  */
 function fireHotUpgrade(targetVersion?: string): HotUpgradeStartResult {
-  const originalScriptPath = getUpgradeScriptPath();
-  if (!originalScriptPath) return { ok: false, reason: "no-script" };
-
-  // 将脚本复制到临时位置，避免升级过程中脚本被删除
-  const scriptPath = copyScriptToTemp(originalScriptPath) || originalScriptPath;
+  // 优先从远端下载升级脚本，避免使用本地可能过时的版本
+  const scriptPath = downloadRemoteUpgradeScript() || (() => {
+    const local = getUpgradeScriptPath();
+    if (!local) return null;
+    console.log(`[qqbot] fireHotUpgrade: remote download failed, falling back to local script: ${local}`);
+    return copyScriptToTemp(local) || local;
+  })();
+  if (!scriptPath) return { ok: false, reason: "no-script" };
 
   const cli = findCli();
   if (!cli) return { ok: false, reason: "no-cli" };
@@ -736,7 +781,7 @@ function fireHotUpgrade(targetVersion?: string): HotUpgradeStartResult {
     shellArgs = [scriptPath, "--no-restart", ...(targetVersion ? ["--version", targetVersion] : [])];
   }
 
-  console.log(`[qqbot] fireHotUpgrade: shell=${shell}, script=${scriptPath} (original: ${originalScriptPath}), cli=${cli}, target=${targetVersion || "latest"}`);
+  console.log(`[qqbot] fireHotUpgrade: shell=${shell}, script=${scriptPath}, cli=${cli}, target=${targetVersion || "latest"}`);
 
   // 异步执行升级脚本
   execFile(shell, shellArgs, {
@@ -1333,6 +1378,204 @@ registerCommand({
     };
   },
 });
+
+// ============ /bot-clear-storage ============
+
+/**
+ * 扫描指定目录下的所有文件，递归统计。
+ * 返回按文件大小降序排列的文件列表。
+ */
+function scanDirectoryFiles(dirPath: string): { filePath: string; size: number }[] {
+  const files: { filePath: string; size: number }[] = [];
+  if (!fs.existsSync(dirPath)) return files;
+
+  const walk = (dir: string) => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(fullPath);
+      } else if (entry.isFile()) {
+        try {
+          const stat = fs.statSync(fullPath);
+          files.push({ filePath: fullPath, size: stat.size });
+        } catch {
+          // 跳过无法访问的文件
+        }
+      }
+    }
+  };
+
+  walk(dirPath);
+  // 按大小降序排列
+  files.sort((a, b) => b.size - a.size);
+  return files;
+}
+
+/** 格式化文件大小为人类可读形式 */
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+/**
+ * /bot-clear-storage — 清理通过 QQBot 对话产生的文件以及下载的资源
+ *
+ * 仅在私聊（c2c）中可用。
+ * --force 执行时删除整个 appId 目录下的所有文件（不区分用户 openid）。
+ *
+ * 产品流程：
+ *   /bot-clear-storage          — 扫描并列出当前 appId 下的文件，展示确认按钮
+ *   /bot-clear-storage --force   — 确认执行删除
+ */
+registerCommand({
+  name: "bot-clear-storage",
+  description: "清理通过QQBot对话产生的文件以及下载的资源（保存在 OpenClaw 运行环境的主机上）",
+  usage: [
+    `/bot-clear-storage`,
+    ``,
+    `扫描当前机器人产生的下载文件并列出明细。`,
+    `确认后执行删除，释放主机磁盘空间。`,
+    ``,
+    `/bot-clear-storage --force   确认执行清理`,
+    ``,
+    `⚠️ 仅在私聊中可用。`,
+  ].join("\n"),
+  handler: (ctx) => {
+    const { appId, type } = ctx;
+
+    // 仅私聊可用
+    if (type !== "c2c") {
+      return `💡 请在私聊中使用此指令`;
+    }
+
+    const isForce = ctx.args.trim() === "--force";
+
+    // 删除粒度为 appId 目录（不区分用户 openid）
+    // 路径: downloads/{appId}/
+    const targetDir = path.join(getHomeDir(), ".openclaw", "media", "qqbot", "downloads", appId);
+    const displayDir = `~/.openclaw/media/qqbot/downloads/${appId}`;
+
+    if (!isForce) {
+      // ── 第一步：扫描并展示文件列表 ──
+      const files = scanDirectoryFiles(targetDir);
+
+      if (files.length === 0) {
+        return [
+          `✅ 当前没有需要清理的文件`,
+          ``,
+          `目录 \`${displayDir}\` 为空或不存在。`,
+        ].join("\n");
+      }
+
+      const totalSize = files.reduce((sum, f) => sum + f.size, 0);
+      const MAX_DISPLAY = 10;
+
+      const lines: string[] = [
+        `即将清理 \`${displayDir}\` 目录下所有文件，总共 ${files.length} 个文件，占用磁盘存储空间 ${formatBytes(totalSize)}。`,
+        ``,
+        `目录文件概况：`,
+      ];
+
+      // 展示前 MAX_DISPLAY 个（按大小降序）
+      const displayFiles = files.slice(0, MAX_DISPLAY);
+      for (const f of displayFiles) {
+        const relativePath = path.relative(targetDir, f.filePath);
+        // 在 Windows 上统一用 / 分隔显示
+        const displayName = relativePath.replace(/\\/g, "/");
+        lines.push(`${displayName} (${formatBytes(f.size)})`, ``, ``);
+      }
+      if (files.length > MAX_DISPLAY) {
+        lines.push(`...[合计：${files.length} 个文件（${formatBytes(totalSize)}）]`, ``);
+      }
+
+      lines.push(
+        ``,
+        `---`,
+        ``,
+        `确认清理后，上述保存在 OpenClaw 运行主机磁盘上的文件将永久删除，后续对话过程中AI无法再找回相关文件。`,
+        `‼️ 点击指令确认删除`,
+        `<qqbot-cmd-enter text="/bot-clear-storage --force" />`,
+      );
+
+      return lines.join("\n");
+    }
+
+    // ── 第二步：--force 执行删除 ──
+    const files = scanDirectoryFiles(targetDir);
+
+    if (files.length === 0) {
+      return `✅ 目录已为空，无需清理`;
+    }
+
+    let deletedCount = 0;
+    let deletedSize = 0;
+    let failedCount = 0;
+
+    for (const f of files) {
+      try {
+        fs.unlinkSync(f.filePath);
+        deletedCount++;
+        deletedSize += f.size;
+      } catch {
+        failedCount++;
+      }
+    }
+
+    // 尝试清理空目录（递归删除空子目录）
+    try {
+      removeEmptyDirs(targetDir);
+    } catch {
+      // 非关键，静默忽略
+    }
+
+    if (failedCount === 0) {
+      return [
+        `✅ 清理成功`,
+        ``,
+        `已删除 ${deletedCount} 个文件，释放 ${formatBytes(deletedSize)} 磁盘空间。`,
+      ].join("\n");
+    }
+
+    return [
+      `⚠️ 部分清理完成`,
+      ``,
+      `已删除 ${deletedCount} 个文件（${formatBytes(deletedSize)}），${failedCount} 个文件删除失败。`,
+    ].join("\n");
+  },
+});
+
+/** 递归删除空目录（从叶子向上清理） */
+function removeEmptyDirs(dirPath: string): void {
+  if (!fs.existsSync(dirPath)) return;
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dirPath, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (entry.isDirectory()) {
+      removeEmptyDirs(path.join(dirPath, entry.name));
+    }
+  }
+  // 重新读取，如果目录已空则删除
+  try {
+    const remaining = fs.readdirSync(dirPath);
+    if (remaining.length === 0) {
+      fs.rmdirSync(dirPath);
+    }
+  } catch {
+    // 目录可能正在被使用，跳过
+  }
+}
 
 // ============ 匹配入口 ============
 

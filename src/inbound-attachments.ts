@@ -45,7 +45,9 @@ export interface ProcessedAttachments {
 }
 
 interface ProcessContext {
-  accountId: string;
+  appId: string;
+  /** 对话 ID：群聊传 groupOpenid，私聊传 senderId（用于按群/用户隔离下载目录） */
+  peerId?: string;
   cfg: unknown;
   log?: {
     info: (msg: string) => void;
@@ -84,9 +86,10 @@ export async function processAttachments(
 ): Promise<ProcessedAttachments> {
   if (!attachments?.length) return EMPTY_RESULT;
 
-  const { accountId, cfg, log } = ctx;
-  const downloadDir = getQQBotMediaDir("downloads");
-  const prefix = `[qqbot:${accountId}]`;
+  const { appId, peerId, cfg, log } = ctx;
+  const subPaths = ["downloads", appId, ...(peerId ? [peerId] : [])];
+  const downloadDir = getQQBotMediaDir(...subPaths);
+  const prefix = `[qqbot:${appId}]`;
 
   // 结果收集
   const imageUrls: string[] = [];
@@ -99,6 +102,9 @@ export async function processAttachments(
   const attachmentLocalPaths: Array<string | null> = [];
   const otherAttachments: string[] = [];
 
+  // 入站附件下载：限制 2 分钟，不限大小
+  const INBOUND_DOWNLOAD_TIMEOUT_MS = 2 * 60 * 1000; // 2 分钟
+
   // Phase 1: 并行下载所有附件
   const downloadTasks = attachments.map(async (att) => {
     const attUrl = att.url?.startsWith("//") ? `https:${att.url}` : att.url;
@@ -109,29 +115,32 @@ export async function processAttachments(
 
     let localPath: string | null = null;
     let audioPath: string | null = null;
+    let dlError: string | undefined;
 
     if (isVoice && wavUrl) {
-      const wavLocalPath = await downloadFile(wavUrl, downloadDir);
-      if (wavLocalPath) {
-        localPath = wavLocalPath;
-        audioPath = wavLocalPath;
+      const wavResult = await downloadFile(wavUrl, undefined, { destDir: downloadDir, timeoutMs: INBOUND_DOWNLOAD_TIMEOUT_MS });
+      if (wavResult.filePath) {
+        localPath = wavResult.filePath;
+        audioPath = wavResult.filePath;
         log?.info(`${prefix} Voice attachment: ${att.filename}, downloaded WAV directly (skip SILK→WAV)`);
       } else {
-        log?.error(`${prefix} Failed to download voice_wav_url, falling back to original URL`);
+        log?.error(`${prefix} Failed to download voice_wav_url (${wavResult.error}), falling back to original URL`);
       }
     }
 
     if (!localPath) {
-      localPath = await downloadFile(attUrl, downloadDir, att.filename);
+      const dlResult = await downloadFile(attUrl, att.filename, { destDir: downloadDir, timeoutMs: INBOUND_DOWNLOAD_TIMEOUT_MS });
+      localPath = dlResult.filePath;
+      dlError = dlResult.error;
     }
 
-    return { att, attUrl, isVoice, localPath, audioPath };
+    return { att, attUrl, isVoice, localPath, audioPath, dlError };
   });
 
   const downloadResults = await Promise.all(downloadTasks);
 
   // Phase 2: 并行处理语音转换 + 转录（非语音附件同步归类）
-  const processTasks = downloadResults.map(async ({ att, attUrl, isVoice, localPath, audioPath }) => {
+  const processTasks = downloadResults.map(async ({ att, attUrl, isVoice, localPath, audioPath, dlError }) => {
     const asrReferText = typeof att.asr_refer_text === "string" ? att.asr_refer_text.trim() : "";
     const wavUrl = isVoice && att.voice_wav_url
       ? (att.voice_wav_url.startsWith("//") ? `https:${att.voice_wav_url}` : att.voice_wav_url)
@@ -157,12 +166,12 @@ export async function processAttachments(
     } else {
       log?.error(`${prefix} Failed to download: ${attUrl}`);
       if (att.content_type?.startsWith("image/")) {
-        return { localPath: null, type: "image-fallback" as const, attUrl, contentType: att.content_type, meta };
+        return { localPath: null, type: "image-fallback" as const, attUrl, contentType: att.content_type, dlError, meta };
       } else if (isVoice && asrReferText) {
         log?.info(`${prefix} Voice attachment download failed, using asr_refer_text fallback`);
         return { localPath: null, type: "voice-fallback" as const, transcript: asrReferText, meta };
       } else {
-        return { localPath: null, type: "other-fallback" as const, filename: att.filename ?? att.content_type, meta };
+        return { localPath: null, type: "other-fallback" as const, filename: att.filename ?? att.content_type, dlError, meta };
       }
     }
   });
@@ -190,12 +199,20 @@ export async function processAttachments(
       imageUrls.push(result.attUrl);
       imageMediaTypes.push(result.contentType);
       attachmentLocalPaths.push(null);
+      // 给模型一个明确的失败提示（和 other-fallback 对齐）
+      const hint = result.dlError?.includes("超时")
+        ? "(图片下载超时)"
+        : "(图片下载失败)";
+      otherAttachments.push(`[图片] ${hint}`);
     } else if (result.type === "voice-fallback") {
       voiceTranscripts.push(result.transcript);
       voiceTranscriptSources.push("asr");
       attachmentLocalPaths.push(null);
     } else if (result.type === "other-fallback") {
-      otherAttachments.push(`[附件: ${result.filename}] (下载失败)`);
+      const hint = result.dlError?.includes("超时")
+        ? "(下载超时)"
+        : "(下载失败)";
+      otherAttachments.push(`[附件: ${result.filename}] ${hint}`);
       attachmentLocalPaths.push(null);
     }
   }

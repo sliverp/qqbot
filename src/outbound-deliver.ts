@@ -8,12 +8,12 @@
 
 import type { ResolvedQQBotAccount } from "./types.js";
 import { sendC2CMessage, sendGroupMessage, sendChannelMessage, sendC2CImageMessage, sendGroupImageMessage } from "./api.js";
-import { sendPhoto, sendVoice, sendVideoMsg, sendDocument, sendMedia as sendMediaAuto, type MediaTargetContext } from "./outbound.js";
+import { sendPhoto, sendMedia as sendMediaAuto, type MediaTargetContext } from "./outbound.js";
 import { chunkText, TEXT_CHUNK_LIMIT } from "./channel.js";
 import { getQQBotRuntime } from "./runtime.js";
 import { getImageSize, formatQQBotMarkdownImage, hasQQBotImageSize } from "./utils/image-size.js";
-import { normalizeMediaTags } from "./utils/media-tags.js";
-import { normalizePath, isLocalPath as isLocalFilePath } from "./utils/platform.js";
+import { parseMediaTagsToSendQueue, executeSendQueue, type MediaSendContext } from "./utils/media-send.js";
+import { isLocalPath as isLocalFilePath } from "./utils/platform.js";
 import { filterInternalMarkers } from "./utils/text-parsing.js";
 
 // ============ 类型定义 ============
@@ -60,56 +60,16 @@ export async function parseAndSendMediaTags(
   const { account, log } = actx;
   const prefix = `[qqbot:${account.accountId}]`;
 
-  // 预处理：纠正小模型常见的标签拼写错误和格式问题
-  const text = normalizeMediaTags(replyText);
+  // 使用 media-send.ts 的统一解析器（内含 normalizeMediaTags + 路径编码修复）
+  const { hasMediaTags: hasMedia, sendQueue } = parseMediaTagsToSendQueue(replyText, log);
 
-  const mediaTagRegex = /<(qqimg|qqvoice|qqvideo|qqfile|qqmedia)>([^<>]+)<\/(?:qqimg|qqvoice|qqvideo|qqfile|qqmedia|img)>/gi;
-  const mediaTagMatches = [...text.matchAll(mediaTagRegex)];
-
-  if (mediaTagMatches.length === 0) {
-    return { handled: false, normalizedText: text };
-  }
-
-  const tagCounts = mediaTagMatches.reduce((acc, m) => { const t = m[1]!.toLowerCase(); acc[t] = (acc[t] ?? 0) + 1; return acc; }, {} as Record<string, number>);
-  log?.info(`${prefix} Detected media tags: ${Object.entries(tagCounts).map(([k, v]) => `${v} <${k}>`).join(", ")}`);
-
-  // 构建发送队列
-  type QueueItem = { type: "text" | "image" | "voice" | "video" | "file" | "media"; content: string };
-  const sendQueue: QueueItem[] = [];
-
-  let lastIndex = 0;
-  const regex2 = /<(qqimg|qqvoice|qqvideo|qqfile|qqmedia)>([^<>]+)<\/(?:qqimg|qqvoice|qqvideo|qqfile|qqmedia|img)>/gi;
-  let match;
-
-  while ((match = regex2.exec(text)) !== null) {
-    const textBefore = text.slice(lastIndex, match.index).replace(/\n{3,}/g, "\n\n").trim();
-    if (textBefore) {
-      sendQueue.push({ type: "text", content: filterInternalMarkers(textBefore) });
-    }
-
-    const tagName = match[1]!.toLowerCase();
-    let mediaPath = decodeMediaPath(match[2]?.trim() ?? "", log, prefix);
-
-    if (mediaPath) {
-      const typeMap: Record<string, QueueItem["type"]> = {
-        qqmedia: "media", qqvoice: "voice", qqvideo: "video", qqfile: "file",
-      };
-      const itemType = typeMap[tagName] ?? "image";
-      sendQueue.push({ type: itemType, content: mediaPath });
-      log?.info(`${prefix} Found ${itemType} in <${tagName}>: ${mediaPath}`);
-    }
-
-    lastIndex = match.index + match[0].length;
-  }
-
-  const textAfter = text.slice(lastIndex).replace(/\n{3,}/g, "\n\n").trim();
-  if (textAfter) {
-    sendQueue.push({ type: "text", content: filterInternalMarkers(textAfter) });
+  if (!hasMedia || sendQueue.length === 0) {
+    return { handled: false, normalizedText: replyText };
   }
 
   log?.info(`${prefix} Send queue: ${sendQueue.map(item => item.type).join(" -> ")}`);
 
-  // 按顺序发送
+  // 构建统一的媒体发送上下文
   const mediaTarget: MediaTargetContext = {
     targetType: event.type === "c2c" ? "c2c" : event.type === "group" ? "group" : "channel",
     targetId: event.type === "c2c" ? event.senderId : event.type === "group" ? event.groupOpenid! : event.channelId!,
@@ -118,34 +78,22 @@ export async function parseAndSendMediaTags(
     logPrefix: prefix,
   };
 
-  for (const item of sendQueue) {
-    if (item.type === "text") {
-      await sendTextChunks(item.content, event, actx, sendWithRetry, consumeQuoteRef);
-    } else if (item.type === "image") {
-      const result = await sendPhoto(mediaTarget, item.content);
-      if (result.error) log?.error(`${prefix} sendPhoto error: ${result.error}`);
-    } else if (item.type === "voice") {
-      await sendVoiceWithTimeout(mediaTarget, item.content, account, log, prefix);
-    } else if (item.type === "video") {
-      const result = await sendVideoMsg(mediaTarget, item.content);
-      if (result.error) log?.error(`${prefix} sendVideoMsg error: ${result.error}`);
-    } else if (item.type === "file") {
-      const result = await sendDocument(mediaTarget, item.content);
-      if (result.error) log?.error(`${prefix} sendDocument error: ${result.error}`);
-    } else if (item.type === "media") {
-      const result = await sendMediaAuto({
-        to: actx.qualifiedTarget,
-        text: "",
-        mediaUrl: item.content,
-        accountId: account.accountId,
-        replyToId: event.messageId,
-        account,
-      });
-      if (result.error) log?.error(`${prefix} sendMedia(auto) error: ${result.error}`);
-    }
-  }
+  const mediaSendCtx: MediaSendContext = {
+    mediaTarget,
+    qualifiedTarget: actx.qualifiedTarget,
+    account,
+    replyToId: event.messageId,
+    log,
+  };
 
-  return { handled: true, normalizedText: text };
+  // 使用 media-send.ts 的统一执行器
+  await executeSendQueue(sendQueue, mediaSendCtx, {
+    onSendText: async (textContent) => {
+      await sendTextChunks(filterInternalMarkers(textContent), event, actx, sendWithRetry, consumeQuoteRef);
+    },
+  });
+
+  return { handled: true, normalizedText: replyText };
 }
 
 // ============ 2. 非结构化消息发送（普通文本 + 图片） ============
@@ -171,6 +119,23 @@ export async function sendPlainReply(
 ): Promise<void> {
   const { account, qualifiedTarget, log } = actx;
   const prefix = `[qqbot:${account.accountId}]`;
+
+  // 预去重：把 payload 自带的媒体 URL 从 toolMediaUrls 中移除，
+  // 防止同一个文件既被 payload.mediaUrl/mediaUrls 发送，又被 toolMediaUrls 重复发送
+  if (toolMediaUrls.length > 0) {
+    const payloadUrls = new Set<string>();
+    if (payload.mediaUrl) payloadUrls.add(payload.mediaUrl);
+    if (payload.mediaUrls) for (const u of payload.mediaUrls) payloadUrls.add(u);
+    if (payloadUrls.size > 0) {
+      const before = toolMediaUrls.length;
+      const filtered = toolMediaUrls.filter(url => !payloadUrls.has(url));
+      if (filtered.length < before) {
+        log?.info(`${prefix} Pre-dedup: removed ${before - filtered.length} payload media URL(s) from toolMediaUrls`);
+        toolMediaUrls.length = 0;
+        toolMediaUrls.push(...filtered);
+      }
+    }
+  }
 
   const collectedImageUrls: string[] = [];
   const localMediaToSend: string[] = [];
@@ -250,27 +215,44 @@ export async function sendPlainReply(
           to: qualifiedTarget, text: "", mediaUrl: mediaPath,
           accountId: account.accountId, replyToId: event.messageId, account,
         });
-        if (result.error) log?.error(`${prefix} sendMedia(auto) error for ${mediaPath}: ${result.error}`);
-        else log?.info(`${prefix} Sent local media: ${mediaPath}`);
+        if (result.error) {
+          log?.error(`${prefix} sendMedia(auto) error for ${mediaPath}: ${result.error}`);
+          await sendTextChunks("发送失败，请稍后重试。", event, actx, sendWithRetry, consumeQuoteRef);
+        } else {
+          log?.info(`${prefix} Sent local media: ${mediaPath}`);
+        }
       } catch (err) {
         log?.error(`${prefix} sendMedia(auto) failed for ${mediaPath}: ${err}`);
+        await sendTextChunks("发送失败，请稍后重试。", event, actx, sendWithRetry, consumeQuoteRef);
       }
     }
   }
 
-  // 转发 tool 阶段收集的媒体
+  // 转发 tool 阶段收集的媒体（去重：跳过已在 localMediaToSend 或 collectedImageUrls 中发送过的路径）
   if (toolMediaUrls.length > 0) {
-    log?.info(`${prefix} Forwarding ${toolMediaUrls.length} tool-collected media URL(s) after block deliver`);
-    for (const mediaUrl of toolMediaUrls) {
-      try {
-        const result = await sendMediaAuto({
-          to: qualifiedTarget, text: "", mediaUrl,
-          accountId: account.accountId, replyToId: event.messageId, account,
-        });
-        if (result.error) log?.error(`${prefix} Tool media forward error: ${result.error}`);
-        else log?.info(`${prefix} Forwarded tool media: ${mediaUrl.slice(0, 80)}...`);
-      } catch (err) {
-        log?.error(`${prefix} Tool media forward failed: ${err}`);
+    const alreadySent = new Set([...localMediaToSend, ...collectedImageUrls]);
+    const dedupedToolMedia = toolMediaUrls.filter(url => !alreadySent.has(url));
+    if (dedupedToolMedia.length < toolMediaUrls.length) {
+      log?.info(`${prefix} Deduped tool media: ${toolMediaUrls.length} → ${dedupedToolMedia.length} (skipped ${toolMediaUrls.length - dedupedToolMedia.length} already sent via localMedia/collectedImages)`);
+    }
+    if (dedupedToolMedia.length > 0) {
+      log?.info(`${prefix} Forwarding ${dedupedToolMedia.length} tool-collected media URL(s) after block deliver`);
+      for (const mediaUrl of dedupedToolMedia) {
+        try {
+          const result = await sendMediaAuto({
+            to: qualifiedTarget, text: "", mediaUrl,
+            accountId: account.accountId, replyToId: event.messageId, account,
+          });
+          if (result.error) {
+            log?.error(`${prefix} Tool media forward error: ${result.error}`);
+            await sendTextChunks("发送失败，请稍后重试。", event, actx, sendWithRetry, consumeQuoteRef);
+          } else {
+            log?.info(`${prefix} Forwarded tool media: ${mediaUrl.slice(0, 80)}...`);
+          }
+        } catch (err) {
+          log?.error(`${prefix} Tool media forward failed: ${err}`);
+          await sendTextChunks("发送失败，请稍后重试。", event, actx, sendWithRetry, consumeQuoteRef);
+        }
       }
     }
     toolMediaUrls.length = 0;
@@ -278,48 +260,6 @@ export async function sendPlainReply(
 }
 
 // ============ 内部辅助函数 ============
-
-/** 解码媒体路径：剥离 MEDIA: 前缀、展开 ~、修复转义 */
-function decodeMediaPath(raw: string, log: DeliverAccountContext["log"], prefix: string): string {
-  let mediaPath = raw;
-  if (mediaPath.startsWith("MEDIA:")) {
-    mediaPath = mediaPath.slice("MEDIA:".length);
-  }
-  mediaPath = normalizePath(mediaPath);
-  mediaPath = mediaPath.replace(/\\\\/g, "\\");
-
-  try {
-    const hasOctal = /\\[0-7]{1,3}/.test(mediaPath);
-    const hasNonASCII = /[\u0080-\u00FF]/.test(mediaPath);
-
-    if (hasOctal || hasNonASCII) {
-      log?.debug?.(`${prefix} Decoding path with mixed encoding: ${mediaPath}`);
-      let decoded = mediaPath.replace(/\\([0-7]{1,3})/g, (_: string, octal: string) => {
-        return String.fromCharCode(parseInt(octal, 8));
-      });
-      const bytes: number[] = [];
-      for (let i = 0; i < decoded.length; i++) {
-        const code = decoded.charCodeAt(i);
-        if (code <= 0xFF) {
-          bytes.push(code);
-        } else {
-          const charBytes = Buffer.from(decoded[i], "utf8");
-          bytes.push(...charBytes);
-        }
-      }
-      const buffer = Buffer.from(bytes);
-      const utf8Decoded = buffer.toString("utf8");
-      if (!utf8Decoded.includes("\uFFFD") || utf8Decoded.length < decoded.length) {
-        mediaPath = utf8Decoded;
-        log?.debug?.(`${prefix} Successfully decoded path: ${mediaPath}`);
-      }
-    }
-  } catch (decodeErr) {
-    log?.error(`${prefix} Path decode error: ${decodeErr}`);
-  }
-
-  return mediaPath;
-}
 
 /** 发送文本分块（共用逻辑） */
 async function sendTextChunks(
@@ -348,30 +288,6 @@ async function sendTextChunks(
     } catch (err) {
       log?.error(`${prefix} Failed to send text chunk: ${err}`);
     }
-  }
-}
-
-/** 语音发送（带 45s 超时保护） */
-async function sendVoiceWithTimeout(
-  target: MediaTargetContext,
-  voicePath: string,
-  account: ResolvedQQBotAccount,
-  log: DeliverAccountContext["log"],
-  prefix: string,
-): Promise<void> {
-  const uploadFormats = account.config?.audioFormatPolicy?.uploadDirectFormats ?? account.config?.voiceDirectUploadFormats;
-  const transcodeEnabled = account.config?.audioFormatPolicy?.transcodeEnabled !== false;
-  const voiceTimeout = 45000;
-  try {
-    const result = await Promise.race([
-      sendVoice(target, voicePath, uploadFormats, transcodeEnabled),
-      new Promise<{ channel: string; error: string }>((resolve) =>
-        setTimeout(() => resolve({ channel: "qqbot", error: "语音发送超时，已跳过" }), voiceTimeout),
-      ),
-    ]);
-    if (result.error) log?.error(`${prefix} sendVoice error: ${result.error}`);
-  } catch (err) {
-    log?.error(`${prefix} sendVoice unexpected error: ${err}`);
   }
 }
 
@@ -523,10 +439,15 @@ async function sendPlainTextReply(
     for (const imageUrl of imageUrls) {
       try {
         const imgResult = await sendPhoto(imgMediaTarget, imageUrl);
-        if (imgResult.error) log?.error(`${prefix} Failed to send image: ${imgResult.error}`);
-        else log?.info(`${prefix} Sent image via sendPhoto: ${imageUrl.slice(0, 80)}...`);
+        if (imgResult.error) {
+          log?.error(`${prefix} Failed to send image: ${imgResult.error}`);
+          await sendTextChunks(`发送图片失败：${imgResult.error}`, event, actx, sendWithRetry, consumeQuoteRef);
+        } else {
+          log?.info(`${prefix} Sent image via sendPhoto: ${imageUrl.slice(0, 80)}...`);
+        }
       } catch (imgErr) {
         log?.error(`${prefix} Failed to send image: ${imgErr}`);
+        await sendTextChunks(`发送图片失败：${imgErr}`, event, actx, sendWithRetry, consumeQuoteRef);
       }
     }
 

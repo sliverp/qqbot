@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.6.6] - 2026-03-26
+
+### Added
+
+- **Large file chunked upload**: New `chunked-upload.ts` module that automatically splits large files into parallel uploads with per-part retry, progress callback, and timeout control. Supports both C2C and group scenarios.
+- **`/bot-clear-storage` command**: New storage cleanup command for clearing plugin local cache data.
+- **SSRF guard module `ssrf-guard.ts`**: Standalone SSRF protection utility that performs DNS resolution and IP validation before downloading remote files, blocking internal/reserved network addresses to prevent malicious URLs from reaching internal services.
+
+### Changed
+
+- **Download directory isolated by account/conversation**: Attachment download path changed from a shared `~/.openclaw/media/qqbot/downloads/` to `downloads/{appId}/{peerId}/`, isolating files by account and conversation to prevent multi-account file overwrites.
+- **Attachment download failure messages improved**: Download failures now distinguish "timeout" vs. "failure", providing clearer context hints to the model.
+
 ## [1.6.5] - 2026-03-24
 
 ### OpenClaw 3.23 Compatibility

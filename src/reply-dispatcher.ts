@@ -3,7 +3,7 @@ import type { ResolvedQQBotAccount } from "./types.js";
 import { getAccessToken, sendC2CMessage, sendChannelMessage, sendGroupMessage, clearTokenCache, sendC2CImageMessage, sendGroupImageMessage, sendC2CVoiceMessage, sendGroupVoiceMessage, sendC2CVideoMessage, sendGroupVideoMessage, sendC2CFileMessage, sendGroupFileMessage } from "./api.js";
 import { parseQQBotPayload, encodePayloadForCron, isCronReminderPayload, isMediaPayload, type MediaPayload } from "./utils/payload.js";
 import { resolveTTSConfig, textToSilk, formatDuration } from "./utils/audio-convert.js";
-import { checkFileSize, readFileAsync, fileExistsAsync, formatFileSize } from "./utils/file-utils.js";
+import { checkFileSize, readFileAsync, fileExistsAsync, formatFileSize, getMaxUploadSize } from "./utils/file-utils.js";
 import { getQQBotDataDir, normalizePath, sanitizeFileName } from "./utils/platform.js";
 
 export interface MessageTarget {
@@ -157,7 +157,7 @@ async function handleImagePayload(ctx: ReplyContext, payload: MediaPayload): Pro
         log?.error(`[qqbot:${account.accountId}] Image not found: ${imageUrl}`);
         return;
       }
-      const imgSzCheck = checkFileSize(imageUrl);
+      const imgSzCheck = checkFileSize(imageUrl, getMaxUploadSize(1)); // IMAGE = 1
       if (!imgSzCheck.ok) {
         log?.error(`[qqbot:${account.accountId}] Image size check failed: ${imgSzCheck.error}`);
         return;
@@ -259,7 +259,7 @@ async function handleVideoPayload(ctx: ReplyContext, payload: MediaPayload): Pro
           if (!(await fileExistsAsync(videoPath))) {
             throw new Error(`视频文件不存在: ${videoPath}`);
           }
-          const vPaySzCheck = checkFileSize(videoPath);
+          const vPaySzCheck = checkFileSize(videoPath, getMaxUploadSize(2)); // VIDEO = 2
           if (!vPaySzCheck.ok) {
             throw new Error(vPaySzCheck.error!);
           }
@@ -311,7 +311,7 @@ async function handleFilePayload(ctx: ReplyContext, payload: MediaPayload): Prom
           if (!(await fileExistsAsync(filePath))) {
             throw new Error(`文件不存在: ${filePath}`);
           }
-          const fPaySzCheck = checkFileSize(filePath);
+          const fPaySzCheck = checkFileSize(filePath, getMaxUploadSize(4)); // FILE = 4
           if (!fPaySzCheck.ok) {
             throw new Error(fPaySzCheck.error!);
           }

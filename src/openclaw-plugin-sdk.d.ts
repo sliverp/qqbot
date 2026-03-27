@@ -362,6 +362,35 @@ declare module "openclaw/plugin-sdk" {
     [key: string]: unknown;
   }
 
+  // ============ 群消息适配器 ============
+
+  /** 群消息策略适配器（resolveRequireMention / resolveToolPolicy / resolveGroupIntroHint） */
+  export interface ChannelGroupAdapter {
+    /** 是否需要 @机器人才响应 */
+    resolveRequireMention?: (ctx: { cfg: OpenClawConfig; accountId?: string; groupId: string }) => boolean;
+    /** 群聊 AI 工具使用范围 */
+    resolveToolPolicy?: (ctx: { cfg: OpenClawConfig; accountId?: string; groupId: string; senderId?: string }) => "full" | "restricted" | "none";
+    /** 平台特有的群聊行为提示 */
+    resolveGroupIntroHint?: (ctx: { cfg: OpenClawConfig; accountId?: string; groupId: string }) => string | undefined;
+    /** 其他适配器方法 */
+    [key: string]: unknown;
+  }
+
+  /** @mention 检测与清理适配器（stripMentionText / detectWasMentioned） */
+  export interface ChannelMentionAdapter {
+    /** 清理 @mention 文本：平台格式→可读格式，去除 @机器人自身 */
+    stripMentionText?: (text: string, mentions?: Array<{ member_openid?: string; nickname?: string; is_you?: boolean }>) => string;
+    /** 检测当前消息是否 @了机器人 */
+    detectWasMentioned?: (ctx: {
+      eventType?: string;
+      mentions?: Array<{ is_you?: boolean; bot?: boolean }>;
+      content?: string;
+      mentionPatterns?: string[];
+    }) => boolean;
+    /** 其他适配器方法 */
+    [key: string]: unknown;
+  }
+
   /**
    * 频道插件接口（泛型）
    */
@@ -388,6 +417,10 @@ declare module "openclaw/plugin-sdk" {
     outbound?: ChannelPluginOutbound;
     /** Gateway 配置 */
     gateway?: ChannelPluginGateway<TAccount>;
+    /** 群消息策略适配器 */
+    groups?: ChannelGroupAdapter;
+    /** @mention 检测与清理适配器 */
+    mentions?: ChannelMentionAdapter;
     /** 启动函数 */
     start?: (runtime: PluginRuntime) => void | Promise<void>;
     /** 停止函数 */
@@ -511,6 +544,38 @@ declare module "openclaw/plugin-sdk" {
     enabled: boolean;
     allowTopLevel?: boolean;
   }): OpenClawConfig;
+
+  // ============ 群访问策略引擎（核心框架标准） ============
+
+  /** 群组访问策略类型："open" | "disabled" | "allowlist" */
+  export type GroupPolicy = "open" | "disabled" | "allowlist";
+
+  /** 基于白名单匹配的群访问决策原因 */
+  export type MatchedGroupAccessReason =
+    | "allowed"
+    | "disabled"
+    | "missing_match_input"
+    | "empty_allowlist"
+    | "not_allowlisted";
+
+  /** 基于白名单匹配的群访问决策结果 */
+  export type MatchedGroupAccessDecision = {
+    allowed: boolean;
+    groupPolicy: GroupPolicy;
+    reason: MatchedGroupAccessReason;
+  };
+
+  /**
+   * 核心框架标准群访问策略评估引擎（基于 policy + allowlist 匹配）
+   * @see openclaw/src/plugin-sdk/group-access.ts
+   */
+  export function evaluateMatchedGroupAccessForPolicy(params: {
+    groupPolicy: GroupPolicy;
+    allowlistConfigured: boolean;
+    allowlistMatched: boolean;
+    requireMatchInput?: boolean;
+    hasMatchInput?: boolean;
+  }): MatchedGroupAccessDecision;
 
   // ============ 其他导出 ============
 

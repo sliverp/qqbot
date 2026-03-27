@@ -19,6 +19,17 @@ if [ "$(basename "$SCRIPT_DIR")" = "scripts" ]; then
 else
     PROJ_DIR="$SCRIPT_DIR"
 fi
+
+# 安全检查：PROJ_DIR 不应指向 extensions 目录（那是安装副本，cleanup 会删除）
+if echo "$PROJ_DIR" | grep -q '/.openclaw/extensions\|/.clawdbot/extensions\|/.moltbot/extensions'; then
+    echo "❌ 错误: 脚本正在从 extensions 安装副本运行，而非源码仓库"
+    echo "   当前路径: $PROJ_DIR"
+    echo ""
+    echo "请从源码仓库运行:"
+    echo "   cd /path/to/openclaw-qqbot && ./scripts/upgrade-via-source.sh"
+    exit 1
+fi
+
 cd "$PROJ_DIR"
 
 # 解析命令行参数
@@ -81,30 +92,44 @@ echo "========================================="
 echo ""
 echo "[1/6] 备份已有配置..."
 SAVED_QQBOT_TOKEN=""
+SAVED_QQBOT_CONFIG_FILE=""  # 有 qqbot 配置的文件路径
+SAVED_QQBOT_CHANNEL_JSON="" # 完整 channels.qqbot JSON
+
+# 完整备份 channels.qqbot 对象（含 token / groups / env / allowFrom 等）
 for APP_NAME in openclaw clawdbot moltbot; do
     CONFIG_FILE="$HOME/.$APP_NAME/$APP_NAME.json"
     if [ -f "$CONFIG_FILE" ]; then
-        SAVED_QQBOT_TOKEN=$(node -e "
+        SAVED_QQBOT_CHANNEL_JSON=$(node -e "
             const cfg = JSON.parse(require('fs').readFileSync('$CONFIG_FILE', 'utf8'));
-            // 尝试所有可能的 channel key（原仓库 + 本仓库）
             const keys = ['qqbot', 'openclaw-qqbot', 'openclaw-qq'];
             for (const key of keys) {
                 const ch = cfg.channels && cfg.channels[key];
-                if (!ch) continue;
-                if (ch.token) { process.stdout.write(ch.token); process.exit(0); }
-                if (ch.appId && ch.clientSecret) { process.stdout.write(ch.appId + ':' + ch.clientSecret); process.exit(0); }
+                if (ch && Object.keys(ch).length > 0) {
+                    process.stdout.write(JSON.stringify(ch));
+                    process.exit(0);
+                }
             }
         " 2>/dev/null || true)
-        if [ -n "$SAVED_QQBOT_TOKEN" ]; then
-            echo "已备份 qqbot 通道 token: ${SAVED_QQBOT_TOKEN:0:10}..."
+        if [ -n "$SAVED_QQBOT_CHANNEL_JSON" ]; then
+            SAVED_QQBOT_CONFIG_FILE="$CONFIG_FILE"
+            # 提取 token 供 Step 4 fallback
+            SAVED_QQBOT_TOKEN=$(node -e "
+                const ch = JSON.parse(process.argv[1]);
+                if (ch.token) { process.stdout.write(ch.token); }
+                else if (ch.appId && ch.clientSecret) { process.stdout.write(ch.appId + ':' + ch.clientSecret); }
+            " "$SAVED_QQBOT_CHANNEL_JSON" 2>/dev/null || true)
+            echo "已备份完整 qqbot 通道配置"
+            if [ -n "$SAVED_QQBOT_TOKEN" ]; then
+                echo "  token: ${SAVED_QQBOT_TOKEN:0:10}..."
+            fi
             break
         fi
     fi
 done
 
-# 若当前配置中没有，再尝试从 openclaw 备份文件恢复
-if [ -z "$SAVED_QQBOT_TOKEN" ] && [ -d "$HOME/.openclaw" ]; then
-    SAVED_QQBOT_TOKEN=$(node -e "
+# 若当前配置中没有，从 openclaw 备份文件恢复
+if [ -z "$SAVED_QQBOT_CHANNEL_JSON" ] && [ -d "$HOME/.openclaw" ]; then
+    SAVED_QQBOT_CHANNEL_JSON=$(node -e "
       const fs = require('fs');
       const path = require('path');
       const dir = path.join(process.env.HOME, '.openclaw');
@@ -118,16 +143,25 @@ if [ -z "$SAVED_QQBOT_TOKEN" ] && [ -d "$HOME/.openclaw" ]; then
           const keys = ['qqbot', 'openclaw-qqbot', 'openclaw-qq'];
           for (const key of keys) {
             const ch = cfg.channels && cfg.channels[key];
-            if (!ch) continue;
-            if (ch.token) { process.stdout.write(ch.token); process.exit(0); }
-            if (ch.appId && ch.clientSecret) { process.stdout.write(ch.appId + ':' + ch.clientSecret); process.exit(0); }
+            if (ch && Object.keys(ch).length > 0) {
+              process.stdout.write(JSON.stringify(ch));
+              process.exit(0);
+            }
           }
         } catch {}
       }
     " 2>/dev/null || true)
 
-    if [ -n "$SAVED_QQBOT_TOKEN" ]; then
-        echo "已从 ~/.openclaw/openclaw.json.bak* 找到 qqbot 备份 token: ${SAVED_QQBOT_TOKEN:0:10}..."
+    if [ -n "$SAVED_QQBOT_CHANNEL_JSON" ]; then
+        SAVED_QQBOT_TOKEN=$(node -e "
+            const ch = JSON.parse(process.argv[1]);
+            if (ch.token) { process.stdout.write(ch.token); }
+            else if (ch.appId && ch.clientSecret) { process.stdout.write(ch.appId + ':' + ch.clientSecret); }
+        " "$SAVED_QQBOT_CHANNEL_JSON" 2>/dev/null || true)
+        echo "已从 ~/.openclaw/openclaw.json.bak* 恢复 qqbot 通道配置"
+        if [ -n "$SAVED_QQBOT_TOKEN" ]; then
+            echo "  token: ${SAVED_QQBOT_TOKEN:0:10}..."
+        fi
     fi
 fi
 
@@ -139,6 +173,10 @@ if [ -f "$PROJ_DIR/scripts/cleanup-legacy-plugins.sh" ]; then
 else
     echo "警告: cleanup-legacy-plugins.sh 不存在，跳过移除步骤"
 fi
+
+# cleanup 可能删除了当前 cwd 所在的目录（如 extensions 下的旧副本），
+# 重新 cd 回源码目录以避免后续命令因 cwd 悬空而 ENOENT
+cd "$PROJ_DIR"
 
 # 3. 安装当前版本
 echo ""
@@ -227,8 +265,33 @@ fi
 # 清理之前可能残留的 staging 目录
 find "$HOME/.openclaw/extensions/" -maxdepth 1 -name ".openclaw-install-stage-*" -exec rm -rf {} + 2>/dev/null || true
 
+# ── 清空并重新构建 dist/ ──
+# openclaw plugins install . 只做文件复制，不执行 npm lifecycle scripts。
+# 必须每次清空 dist/ 再重新构建，否则旧的编译产物会被原样拷贝到安装目录，
+# 导致新增的模块（如 streaming.js）缺失。
+echo "  清空 dist/ 确保全量重新构建..."
+rm -rf "$PROJ_DIR/dist"
+if [ ! -f "$PROJ_DIR/dist/index.js" ]; then
+    echo "  dist/ 不存在，先执行构建..."
+    if [ ! -d "$PROJ_DIR/node_modules" ]; then
+        npm install --prefix "$PROJ_DIR" 2>&1 || true
+    fi
+    npm run --prefix "$PROJ_DIR" build 2>&1 || true
+    if [ ! -f "$PROJ_DIR/dist/index.js" ]; then
+        echo "  ❌ 构建失败：dist/index.js 未生成"
+        echo "  请手动执行: cd $PROJ_DIR && npm install && npm run build"
+        exit 1
+    fi
+    echo "  ✅ 构建完成"
+fi
+
 # 尝试安装并捕获详细输出
-if ! openclaw plugins install . 2>&1 | tee "$INSTALL_LOG"; then
+# 注意：openclaw plugins install 会在安装后尝试验证加载插件，
+# 由于 CJS/ESM 混用问题（Node 22 ERR_INTERNAL_ASSERTION），验证阶段可能失败
+# 但文件已成功拷贝。因此不依赖退出码，而是检查安装目录中关键文件是否存在。
+_INSTALL_DIR="$HOME/.openclaw/extensions/openclaw-qqbot"
+openclaw plugins install . 2>&1 | tee "$INSTALL_LOG" || true
+if [ ! -f "$_INSTALL_DIR/dist/index.js" ] || [ ! -f "$_INSTALL_DIR/preload.cjs" ]; then
     echo ""
     echo "❌ 插件安装失败！"
     echo "========================================="
@@ -465,6 +528,30 @@ else
     # 避免 gateway 发现两个同 id 插件不断刷 duplicate plugin id 警告
     find "$HOME/.openclaw/extensions/" -maxdepth 1 -name ".openclaw-qqbot-backup-*" -exec rm -rf {} + 2>/dev/null || true
 
+    # 恢复 channels.qqbot 完整配置（防止 plugins install 意外覆盖）
+    # 策略：直接用备份完整覆盖回去，确保 groups / env / prompts / allowFrom 等所有用户配置不丢失。
+    if [ -n "$SAVED_QQBOT_CHANNEL_JSON" ]; then
+        node -e "
+          const fs = require('fs');
+          const path = require('path');
+          const saved = JSON.parse(process.argv[1]);
+          for (const app of ['openclaw', 'clawdbot', 'moltbot']) {
+            const f = path.join(process.env.HOME, '.' + app, app + '.json');
+            if (!fs.existsSync(f)) continue;
+            const cfg = JSON.parse(fs.readFileSync(f, 'utf8'));
+            if (!cfg.channels) { cfg.channels = {}; }
+            if (JSON.stringify(cfg.channels.qqbot) === JSON.stringify(saved)) {
+              process.stderr.write('  channels.qqbot 配置无变化，无需恢复\\n');
+            } else {
+              cfg.channels.qqbot = saved;
+              fs.writeFileSync(f, JSON.stringify(cfg, null, 4) + '\\n');
+              process.stderr.write('  已完整恢复 channels.qqbot 配置（' + Object.keys(saved).join(', ') + '）\\n');
+            }
+            break;
+          }
+        " "$SAVED_QQBOT_CHANNEL_JSON" 2>&1 || true
+    fi
+
     # 记录更新后的 qqbot 插件版本
     NEW_QQBOT_VERSION=$(node -e '
         try {
@@ -483,40 +570,33 @@ else
     ' 2>/dev/null || echo "unknown")
 fi
 
-# ── 恢复 channels.qqbot 配置 ──
-# 安装完成（无论成功或失败），把之前暂存的 channels.qqbot 写回 openclaw.json
-if [ -n "$_QQBOT_CHANNEL_STASH" ] && [ -n "$_STASH_CFG" ] && [ -f "$_STASH_CFG" ]; then
-    node -e "
-        const fs = require('fs');
-        const cfg = JSON.parse(fs.readFileSync('$_STASH_CFG', 'utf8'));
-        if (!cfg.channels) cfg.channels = {};
-        cfg.channels.qqbot = $_QQBOT_CHANNEL_STASH;
-        fs.writeFileSync('$_STASH_CFG', JSON.stringify(cfg, null, 4) + '\n');
-    " 2>/dev/null && echo "  已恢复 channels.qqbot 配置" || echo "  ⚠️  恢复 channels.qqbot 配置失败"
-fi
+# ── 暂不恢复 channels.qqbot 配置 ──
+# openclaw 3.23+ 启动时在插件加载前就校验 channels，
+# 如果此时恢复 channels.qqbot，gateway 会因 "unknown channel id: qqbot" 拒绝启动。
+# 延迟到 gateway 启动、插件加载完成后再恢复（见 Step 6）。
+echo "  [兼容] channels.qqbot 将在 gateway 启动后恢复（避免启动校验失败）"
 
-# 4. 配置机器人通道（仅在需要变更时写入配置，避免无意义覆盖）
+# ── Step 4/5：不在此时写入 channels.qqbot 配置 ──
+# openclaw 3.23+ 在插件加载前校验 channels，此时写入 channels.qqbot 会导致
+# "unknown channel id: qqbot" 错误。所有 channels.qqbot 相关配置延迟到
+# gateway 启动、插件加载完成后统一写入（见 Step 6 末尾）。
+#
+# 这里只计算出 DESIRED_QQBOT_TOKEN 和 MARKDOWN_VALUE，不实际写入。
+
+# 4. 确定机器人通道配置
 echo ""
-echo "[4/6] 配置机器人通道..."
+echo "[4/6] 准备机器人通道配置..."
 
-# 读取当前 qqbot token（兼容多 key）
+# 读取当前 qqbot token（从暂存或配置文件）
+# 注意：channels.qqbot 已被暂存移除，所以从 _QQBOT_CHANNEL_STASH 读取
 CURRENT_QQBOT_TOKEN=""
-for _app in openclaw clawdbot moltbot; do
-    _cfg="$HOME/.$_app/$_app.json"
-    if [ -f "$_cfg" ]; then
-        CURRENT_QQBOT_TOKEN=$(node -e "
-            const cfg = JSON.parse(require('fs').readFileSync('$_cfg', 'utf8'));
-            const keys = ['qqbot', 'openclaw-qqbot', 'openclaw-qq'];
-            for (const key of keys) {
-              const ch = cfg.channels && cfg.channels[key];
-              if (!ch) continue;
-              if (ch.token) { process.stdout.write(ch.token); process.exit(0); }
-              if (ch.appId && ch.clientSecret) { process.stdout.write(ch.appId + ':' + ch.clientSecret); process.exit(0); }
-            }
-        " 2>/dev/null || true)
-        [ -n "$CURRENT_QQBOT_TOKEN" ] && break
-    fi
-done
+if [ -n "$_QQBOT_CHANNEL_STASH" ]; then
+    CURRENT_QQBOT_TOKEN=$(node -e "
+        const ch = $_QQBOT_CHANNEL_STASH;
+        if (ch.token) { process.stdout.write(ch.token); }
+        else if (ch.appId && ch.clientSecret) { process.stdout.write(ch.appId + ':' + ch.clientSecret); }
+    " 2>/dev/null || true)
+fi
 
 DESIRED_QQBOT_TOKEN=""
 if [ -n "$APPID" ] && [ -n "$SECRET" ]; then
@@ -531,104 +611,40 @@ elif [ -n "$SAVED_QQBOT_TOKEN" ]; then
 fi
 
 if [ -n "$DESIRED_QQBOT_TOKEN" ]; then
-    echo "配置机器人通道: qqbot"
-    echo "目标Token: ${DESIRED_QQBOT_TOKEN:0:10}..."
-    if [ "$CURRENT_QQBOT_TOKEN" = "$DESIRED_QQBOT_TOKEN" ]; then
-        echo "✅ 当前配置已是目标值，跳过写入（避免配置覆盖提示）"
-        _config_changed=0
-    elif ! openclaw channels add --channel qqbot --token "$DESIRED_QQBOT_TOKEN" 2>&1; then
-        echo "⚠️  警告: 机器人通道配置失败，继续使用已有配置"
-        _config_changed=0
-    else
-        echo "✅ 机器人通道配置成功"
-        _config_changed=1
-        # channels 配置变更在 reload plan 中匹配为 hot reload（非 restart），
-        # 由 channel 插件热重载处理，通常 <1 秒完成，无需长时间等待。
-        sleep 1
-    fi
+    echo "目标 Token: ${DESIRED_QQBOT_TOKEN:0:10}..."
+    echo "  [兼容] 将在 gateway 启动后写入 channels.qqbot"
+elif [ -z "$CURRENT_QQBOT_TOKEN" ] && [ -z "$_QQBOT_CHANNEL_STASH" ]; then
+    echo ""
+    echo "❌ 未检测到 qqbot 通道配置！"
+    echo ""
+    echo "首次运行请提供 appid 和 appsecret："
+    echo ""
+    echo "  bash $0 --appid <你的appid> --secret <你的appsecret>"
+    echo ""
+    echo "也可以通过环境变量："
+    echo ""
+    echo "  QQBOT_APPID=<appid> QQBOT_SECRET=<appsecret> bash $0"
+    echo ""
+    echo "appid 和 appsecret 可在 QQ 开放平台 (https://q.qq.com) 获取。"
+    exit 1
 else
-    # 未提供任何可用 token 时，检查是否已有可用配置
-    _has_channel=0
-    if [ -n "$CURRENT_QQBOT_TOKEN" ]; then
-        _has_channel=1
-    fi
-
-    if [ "$_has_channel" -eq 0 ]; then
-        echo ""
-        echo "❌ 未检测到 qqbot 通道配置！"
-        echo ""
-        echo "首次运行请提供 appid 和 appsecret："
-        echo ""
-        echo "  bash $0 --appid <你的appid> --secret <你的appsecret>"
-        echo ""
-        echo "也可以通过环境变量："
-        echo ""
-        echo "  QQBOT_APPID=<appid> QQBOT_SECRET=<appsecret> bash $0"
-        echo ""
-        echo "appid 和 appsecret 可在 QQ 开放平台 (https://q.qq.com) 获取。"
-        exit 1
-    else
-        echo "使用已有配置"
-    fi
+    echo "使用已有配置（暂存中）"
 fi
 
-# 5. 配置 markdown 选项（仅在明确指定时才配置）
+# 5. 确定 markdown 选项
 echo ""
-echo "[5/6] 配置 markdown 选项..."
+echo "[5/6] 准备 markdown 配置..."
 
+MARKDOWN_VALUE=""
 if [ -n "$MARKDOWN" ]; then
-    # 设置 markdown 配置
     if [ "$MARKDOWN" = "yes" ] || [ "$MARKDOWN" = "y" ] || [ "$MARKDOWN" = "true" ]; then
         MARKDOWN_VALUE="true"
-        echo "启用 markdown 消息格式..."
+        echo "将启用 markdown 消息格式"
     else
         MARKDOWN_VALUE="false"
-        echo "禁用 markdown 消息格式（使用纯文本）..."
+        echo "将禁用 markdown 消息格式（使用纯文本）"
     fi
-
-    CURRENT_MARKDOWN_VALUE=$(node -e "
-      const fs = require('fs');
-      const path = require('path');
-      const home = process.env.HOME;
-      for (const app of ['openclaw', 'clawdbot', 'moltbot']) {
-        const f = path.join(home, '.' + app, app + '.json');
-        if (!fs.existsSync(f)) continue;
-        try {
-          const cfg = JSON.parse(fs.readFileSync(f, 'utf8'));
-          const keys = ['qqbot', 'openclaw-qqbot', 'openclaw-qq'];
-          for (const key of keys) {
-            const ch = cfg.channels && cfg.channels[key];
-            if (!ch) continue;
-            if (typeof ch.markdownSupport === 'boolean') { process.stdout.write(String(ch.markdownSupport)); process.exit(0); }
-          }
-        } catch {}
-      }
-    " 2>/dev/null || true)
-
-    if [ "$CURRENT_MARKDOWN_VALUE" = "$MARKDOWN_VALUE" ]; then
-        echo "✅ markdown 配置已是目标值，跳过写入（避免配置覆盖提示）"
-    elif openclaw config set channels.qqbot.markdownSupport "$MARKDOWN_VALUE" 2>&1; then
-        echo "✅ markdown配置成功"
-        _config_changed=1
-    else
-        echo "⚠️  openclaw config set 失败，尝试直接编辑配置文件..."
-        OPENCLAW_CONFIG="$HOME/.openclaw/openclaw.json"
-        if [ -f "$OPENCLAW_CONFIG" ] && node -e "
-          const fs = require('fs');
-          const cfg = JSON.parse(fs.readFileSync('$OPENCLAW_CONFIG', 'utf-8'));
-          if (!cfg.channels) cfg.channels = {};
-          if (!cfg.channels.qqbot) cfg.channels.qqbot = {};
-          const target = $MARKDOWN_VALUE;
-          if (cfg.channels.qqbot.markdownSupport === target) process.exit(0);
-          cfg.channels.qqbot.markdownSupport = target;
-          fs.writeFileSync('$OPENCLAW_CONFIG', JSON.stringify(cfg, null, 4) + '\n');
-        " 2>&1; then
-            echo "✅ markdown配置成功（直接编辑配置文件）"
-            _config_changed=1
-        else
-            echo "⚠️  markdown配置设置失败，不影响后续运行"
-        fi
-    fi
+    echo "  [兼容] 将在 gateway 启动后写入配置"
 else
     echo "未指定 markdown 选项，使用已有配置"
 fi
@@ -666,6 +682,30 @@ read -t 120 -p "是否后台重启 openclaw 网关服务？[Y/n] " start_choice 
 start_choice="${start_choice:-y}"
 start_choice=$(printf '%s' "$start_choice" | tr '[:upper:]' '[:lower:]')
 
+    # 辅助函数：带超时执行 openclaw 命令（防止 CLI 阻塞卡死脚本）
+    _openclaw_with_timeout() {
+        local _timeout_sec="${1:-30}"
+        shift
+        if command -v timeout &>/dev/null; then
+            timeout "$_timeout_sec" "$@" 2>&1 || true
+        elif command -v gtimeout &>/dev/null; then
+            gtimeout "$_timeout_sec" "$@" 2>&1 || true
+        else
+            "$@" 2>&1 &
+            local _pid=$!
+            local _elapsed=0
+            while kill -0 "$_pid" 2>/dev/null && [ "$_elapsed" -lt "$_timeout_sec" ]; do
+                sleep 1
+                _elapsed=$((_elapsed + 1))
+            done
+            if kill -0 "$_pid" 2>/dev/null; then
+                echo "  ⚠️  命令超时（${_timeout_sec}s），继续执行..."
+                kill "$_pid" 2>/dev/null || true
+            fi
+            wait "$_pid" 2>/dev/null || true
+        fi
+    }
+
 case "$start_choice" in
     y|yes)
         echo ""
@@ -673,13 +713,13 @@ case "$start_choice" in
         # 因此先 install（注册服务）再 start，避免必现的恢复流程
         echo "正在启动 openclaw 网关服务..."
         openclaw gateway install 2>/dev/null || true
-        _start_output=$(openclaw gateway start 2>&1) || true
+        _start_output=$(_openclaw_with_timeout 30 openclaw gateway start)
         echo "$_start_output"
 
         if echo "$_start_output" | grep -qi "not loaded\|not found\|not installed\|error\|fail"; then
             echo ""
             echo "⚠️  启动异常，尝试 restart 恢复..."
-            _restart_output=$(openclaw gateway restart 2>&1) || true
+            _restart_output=$(_openclaw_with_timeout 30 openclaw gateway restart)
             echo "$_restart_output"
             if echo "$_restart_output" | grep -qi "not loaded\|not found\|not installed"; then
                 echo ""
@@ -715,7 +755,7 @@ case "$start_choice" in
             # doctor --fix 后再尝试 restart 一次
             echo ""
             echo "doctor 修复后重试 gateway restart..."
-            openclaw gateway restart 2>&1 || true
+            _openclaw_with_timeout 30 openclaw gateway restart
             sleep 5
             if lsof -i :18789 -sTCP:LISTEN >/dev/null 2>&1; then
                 echo "✅ doctor --fix 后 gateway 启动成功"
@@ -727,10 +767,74 @@ case "$start_choice" in
             fi
         fi
 
-        # 端口就绪后：检查 qqbot 连接 + 跟踪日志
+        # 端口就绪后：恢复 channels.qqbot 配置 + 检查连接 + 跟踪日志
         if [ "$_port_ready" -eq 1 ]; then
-            echo "✅ Gateway 端口已就绪"
+            echo "✅ Gateway 端口已就绪（插件已加载）"
             echo ""
+
+            # ── 恢复 channels.qqbot 配置 ──
+            # gateway 已启动、插件已注册 qqbot channel，现在可以安全写回配置
+            _need_reload=0
+            _target_cfg=""
+            for _app in openclaw clawdbot moltbot; do
+                _cfg="$HOME/.$_app/$_app.json"
+                if [ -f "$_cfg" ]; then
+                    _target_cfg="$_cfg"
+                    break
+                fi
+            done
+
+            if [ -n "$_target_cfg" ]; then
+                # 构建完整的 channels.qqbot 对象（合并暂存配置 + 新 token + markdown）
+                node -e "
+                    const fs = require('fs');
+                    const cfg = JSON.parse(fs.readFileSync('$_target_cfg', 'utf8'));
+                    if (!cfg.channels) cfg.channels = {};
+
+                    // 从暂存恢复基础配置
+                    const stash = '$_QQBOT_CHANNEL_STASH';
+                    if (stash) {
+                        try { cfg.channels.qqbot = JSON.parse(stash); } catch {}
+                    }
+                    if (!cfg.channels.qqbot) cfg.channels.qqbot = {};
+
+                    // 覆盖 token（如果有新值）
+                    const desired = '$DESIRED_QQBOT_TOKEN';
+                    if (desired && desired.includes(':')) {
+                        const [appId, ...rest] = desired.split(':');
+                        cfg.channels.qqbot.appId = appId;
+                        cfg.channels.qqbot.clientSecret = rest.join(':');
+                        delete cfg.channels.qqbot.token;
+                    }
+
+                    // 覆盖 markdown（如果有指定）
+                    const md = '$MARKDOWN_VALUE';
+                    if (md === 'true') cfg.channels.qqbot.markdownSupport = true;
+                    else if (md === 'false') cfg.channels.qqbot.markdownSupport = false;
+
+                    fs.writeFileSync('$_target_cfg', JSON.stringify(cfg, null, 4) + '\n');
+                " 2>/dev/null || true
+                echo "  ✅ 已恢复 channels.qqbot 配置（含 token/markdown）"
+                _need_reload=1
+            fi
+
+            # 配置写回后 reload gateway 使其生效
+            if [ "$_need_reload" -eq 1 ]; then
+                echo "  重载配置..."
+                sleep 1
+                # openclaw gateway restart 只是向 LaunchAgent 发送 restart 信号，
+                # CLI 本身可能阻塞在等待输出上，用短超时即可（信号已发出就够了）
+                _openclaw_with_timeout 10 openclaw gateway restart
+                # 等待重启后端口重新就绪（gateway 加载插件+连 WS 可能需要较长时间）
+                for _k in $(seq 1 30); do
+                    if lsof -i :18789 -sTCP:LISTEN >/dev/null 2>&1; then
+                        break
+                    fi
+                    printf "\r  等待端口 18789 重新就绪... (%d/30)" "$_k"
+                    sleep 2
+                done
+                echo ""
+            fi
             # 检查 qqbot WS 是否连接成功（最多等 20 秒）
             echo "检查 qqbot 插件连接状态..."
             _LOG_FILE="/tmp/openclaw/openclaw-$(date +%Y-%m-%d).log"
@@ -775,16 +879,33 @@ case "$start_choice" in
     n|no)
         echo ""
         echo "✅ 插件更新完毕，未启动服务"
+        # 不启动时也需要恢复 channels.qqbot，否则配置丢失
+        # 注意：下次 gateway 启动可能因 "unknown channel id" 失败，
+        # 需要用户手动 stop → 移除 channels.qqbot → start → 恢复
+        if [ -n "$_QQBOT_CHANNEL_STASH" ] && [ -n "$_STASH_CFG" ] && [ -f "$_STASH_CFG" ]; then
+            node -e "
+                const fs = require('fs');
+                const cfg = JSON.parse(fs.readFileSync('$_STASH_CFG', 'utf8'));
+                if (!cfg.channels) cfg.channels = {};
+                cfg.channels.qqbot = $_QQBOT_CHANNEL_STASH;
+                fs.writeFileSync('$_STASH_CFG', JSON.stringify(cfg, null, 4) + '\n');
+            " 2>/dev/null || true
+            echo "  已恢复 channels.qqbot 配置"
+        fi
         echo ""
-        echo "后续可手动启动:"
-        echo "  openclaw gateway restart    # 重启后台服务"
-        echo "  openclaw logs --follow      # 跟踪日志"
+        echo "后续启动方法（兼容 openclaw 3.23+）："
+        echo "  1. 先临时移除 channels.qqbot 再启动："
+        echo "     openclaw gateway restart"
+        echo "  2. 或使用本脚本自动处理："
+        echo "     bash $0"
+        echo "  3. 跟踪日志："
+        echo "     openclaw logs --follow"
         ;;
     *)
         echo "无效选择，按默认值 y 执行后台重启"
         echo ""
         echo "正在后台重启 openclaw 网关服务..."
-        if ! openclaw gateway restart 2>&1; then
+        if ! _openclaw_with_timeout 30 openclaw gateway restart; then
             echo "⚠️  后台重启失败，可能服务未安装"
             echo "尝试: openclaw gateway install && openclaw gateway start"
         fi

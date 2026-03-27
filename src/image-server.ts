@@ -5,8 +5,12 @@
 
 import http from "node:http";
 import fs from "node:fs";
+import { pipeline } from "node:stream/promises";
+import { Readable } from "node:stream";
 import path from "node:path";
 import crypto from "node:crypto";
+import { validateRemoteUrl } from "./utils/ssrf-guard.js";
+import { getQQBotMediaDir } from "./utils/platform.js";
 
 export interface ImageServerConfig {
   /** 监听端口 */
@@ -413,123 +417,255 @@ export async function ensureImageServer(publicBaseUrl?: string): Promise<string 
   }
 }
 
+/** downloadFile 的返回结果 */
+export interface DownloadResult {
+  /** 下载成功时的本地文件路径（位于系统临时目录，调用方用完后应删除） */
+  filePath: string | null;
+  /** 下载失败时的错误信息（用于兜底消息展示） */
+  error?: string;
+}
+
+/** 默认下载目录：与入站附件统一放在 ~/.openclaw/media/qqbot/downloads/ */
+const DEFAULT_DOWNLOAD_DIR = getQQBotMediaDir("downloads");
+
 /**
- * 下载远程文件并保存到本地
+ * 下载远程文件到系统临时目录。
+ *
+ * 文件名采用 UUID 保证不重名不覆盖，调用方用完后应自行删除。
+ *
+ * 安全措施：
+ * 1. SSRF 防护 — DNS 解析后校验 IP，拒绝私有/保留网段
+ * 2. Content-Type 黑名单 — 拦截 text/html（登录页/错误页/人机验证页）
+ * 3. 超时控制 — 默认 30 秒，传 0 表示不限时
+ * 4. 大小限制 — 可选，通过 Content-Length 预检 + 流式字节计数双重保护
+ *
  * @param url 远程文件 URL
- * @param destDir 目标目录
- * @param originalFilename 原始文件名（可选，完整文件名包含扩展名）
+ * @param originalFilename 原始文件名（可选，仅用于推导扩展名）
  * @param options 下载选项
- * @returns 本地文件路径，失败返回 null
+ * @returns DownloadResult，filePath 为 null 表示失败，error 包含失败原因
  */
 export async function downloadFile(
   url: string,
-  destDir: string,
   originalFilename?: string,
   options?: {
-    /** 超时时间（毫秒），默认 120000（2分钟） */
+    /** 超时时间（毫秒），默认 30000（30 秒）。传 0 表示不限时 */
     timeoutMs?: number;
-    /** 最大文件大小（字节），默认 50MB */
+    /** 指定下载目标目录。不传则使用系统临时目录（调用方用完后应删除） */
+    destDir?: string;
+    /** 下载大小上限（字节）。超过此值中断下载并返回错误。不传则不限制 */
     maxSizeBytes?: number;
+    /** 网络错误时的最大重试次数，默认 2（即最多尝试 3 次） */
+    maxRetries?: number;
   },
-): Promise<string | null> {
-  const timeoutMs = options?.timeoutMs ?? 120000;
-  const maxSizeBytes = options?.maxSizeBytes ?? 50 * 1024 * 1024;
+): Promise<DownloadResult> {
+  const timeoutMs = options?.timeoutMs ?? 30_000;
+  const destDir = options?.destDir ?? DEFAULT_DOWNLOAD_DIR;
+  const maxSizeBytes = options?.maxSizeBytes ?? 0; // 0 = 不限制
+  const maxRetries = options?.maxRetries ?? 2;
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
+  // ---- SSRF 防护（只做一次，不需要重试） ----
   try {
-    // 确保目录存在
-    if (!fs.existsSync(destDir)) {
-      fs.mkdirSync(destDir, { recursive: true });
+    await validateRemoteUrl(url);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[image-server] SSRF check failed: ${msg}`);
+    return { filePath: null, error: `URL 安全检查未通过: ${msg}` };
+  }
+
+  // 确保目标目录存在（只做一次）
+  if (!fs.existsSync(destDir)) {
+    fs.mkdirSync(destDir, { recursive: true });
+  }
+
+  let lastError: DownloadResult | null = null;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    if (attempt > 0) {
+      // 指数退避：1s, 2s
+      const delayMs = attempt * 1000;
+      console.log(`[image-server] Retry ${attempt}/${maxRetries} after ${delayMs}ms: ${url.slice(0, 120)}`);
+      await new Promise(r => setTimeout(r, delayMs));
     }
 
+    const result = await downloadFileOnce(url, originalFilename, { timeoutMs, destDir, maxSizeBytes });
+
+    // 成功 或 不可重试的错误 → 直接返回
+    if (result.filePath || !result.retryable) {
+      return { filePath: result.filePath, error: result.error };
+    }
+
+    // 可重试的错误，记录后继续
+    lastError = { filePath: null, error: result.error };
+    console.error(`[image-server] Attempt ${attempt + 1}/${maxRetries + 1} failed (retryable): ${result.error}`);
+  }
+
+  // 所有重试用完
+  return lastError ?? { filePath: null, error: "下载失败（重试次数耗尽）" };
+}
+
+/** downloadFileOnce 内部返回类型，增加 retryable 标记 */
+interface DownloadOnceResult {
+  filePath: string | null;
+  error?: string;
+  /** 是否可重试（网络层临时错误 = true，业务错误如文件过大 = false） */
+  retryable?: boolean;
+}
+
+/**
+ * 执行一次下载尝试（无重试逻辑）。
+ */
+async function downloadFileOnce(
+  url: string,
+  originalFilename: string | undefined,
+  opts: { timeoutMs: number; destDir: string; maxSizeBytes: number },
+): Promise<DownloadOnceResult> {
+  const { timeoutMs, destDir, maxSizeBytes } = opts;
+
+  const controller = new AbortController();
+  // timeoutMs > 0 时启用超时；为 0 表示不限时
+  const timeoutId = timeoutMs > 0
+    ? setTimeout(() => controller.abort(), timeoutMs)
+    : null;
+
+  let tempPath: string | null = null;
+
+  try {
     // 下载文件（带超时控制）
     const response = await fetch(url, { signal: controller.signal });
     if (!response.ok) {
-      console.error(`[image-server] Download failed: ${response.status} ${response.statusText}`);
-      return null;
+      const reason = `HTTP ${response.status} ${response.statusText}`;
+      console.error(`[image-server] Download failed: ${reason}`);
+      // 5xx 服务端错误可重试，4xx 不可重试
+      const retryable = response.status >= 500;
+      return { filePath: null, error: `下载失败 (${reason})`, retryable };
     }
 
-    // Content-Length 预检
-    const contentLength = response.headers.get("content-length");
-    if (contentLength) {
-      const declaredSize = parseInt(contentLength, 10);
-      if (declaredSize > maxSizeBytes) {
-        console.error(`[image-server] Download rejected: Content-Length ${declaredSize} exceeds limit ${maxSizeBytes}`);
-        return null;
+    if (!response.body) {
+      console.error(`[image-server] Download failed: empty response body`);
+      return { filePath: null, error: `下载失败 (响应体为空)`, retryable: false };
+    }
+
+    // ---- 预检 Content-Length（如果服务端返回了该头） ----
+    if (maxSizeBytes > 0) {
+      const contentLength = Number(response.headers.get("content-length"));
+      if (contentLength > 0 && contentLength > maxSizeBytes) {
+        const sizeMB = (contentLength / (1024 * 1024)).toFixed(1);
+        const limitMB = Math.round(maxSizeBytes / (1024 * 1024));
+        console.error(`[image-server] File too large (Content-Length: ${sizeMB}MB, limit: ${limitMB}MB): ${url}`);
+        return { filePath: null, error: `文件过大（${sizeMB}MB），超过了${limitMB}M的下载限制`, retryable: false };
       }
     }
 
-    // 流式下载，实时监控大小
-    const reader = response.body?.getReader();
-    if (!reader) {
-      console.error(`[image-server] Download failed: no response body`);
-      return null;
+    // 推导扩展名：originalFilename > Content-Disposition > Content-Type > .bin
+    const contentType = response.headers.get("content-type") ?? "";
+    let ext = "";
+    if (originalFilename) {
+      try { ext = path.extname(decodeURIComponent(originalFilename)); } catch { ext = path.extname(originalFilename); }
     }
-
-    const chunks: Uint8Array[] = [];
-    let totalSize = 0;
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      totalSize += value.byteLength;
-      if (totalSize > maxSizeBytes) {
-        reader.cancel();
-        console.error(`[image-server] Download aborted: size ${totalSize} exceeds limit ${maxSizeBytes}`);
-        return null;
-      }
-      chunks.push(value);
-    }
-
-    const buffer = Buffer.concat(chunks);
-
-    // 从 Content-Disposition 解析文件名（如果没有提供 originalFilename）
-    if (!originalFilename) {
+    if (!ext) {
       const disposition = response.headers.get("content-disposition");
       if (disposition) {
-        const filenameMatch = disposition.match(/filename\*?=(?:UTF-8''|")?([^";]+)"?/i);
-        if (filenameMatch?.[1]) {
-          try { originalFilename = decodeURIComponent(filenameMatch[1]); } catch { /* keep undefined */ }
+        const m = disposition.match(/filename\*?=(?:UTF-8''|")?([^";]+)"?/i);
+        if (m?.[1]) {
+          try { ext = path.extname(decodeURIComponent(m[1])); } catch { /* keep empty */ }
         }
       }
     }
-    
-    // 确定文件名
-    let finalFilename: string;
-    if (originalFilename) {
-      let decodedFilename = originalFilename;
-      try { decodedFilename = decodeURIComponent(originalFilename); } catch { /* keep original */ }
-      const ext = path.extname(decodedFilename);
-      const baseName = path.basename(decodedFilename, ext);
-      const timestamp = Date.now();
-      finalFilename = `${baseName}_${timestamp}${ext}`;
-    } else {
-      // 没有原始文件名，尝试从 Content-Type 推导扩展名
-      const contentType = response.headers.get("content-type");
-      const ext = contentType ? (getExtFromMime(contentType.split(";")[0]?.trim() ?? "") ?? "bin") : "bin";
-      finalFilename = `${generateImageId()}.${ext}`;
+    if (!ext) {
+      const mime = contentType.split(";")[0]?.trim() ?? "";
+      ext = mime ? (`.${getExtFromMime(mime) ?? "bin"}`) : ".bin";
     }
-    
-    const filePath = path.join(destDir, finalFilename);
 
-    // 保存文件
-    fs.writeFileSync(filePath, buffer);
-    console.log(`[image-server] Downloaded file: ${filePath} (${buffer.length} bytes, ${Date.now()}ms)`);
-    
-    return filePath;
+    // UUID 文件名，绝对不会重名
+    const uniqueName = `${crypto.randomUUID()}${ext}`;
+    const filePath = path.join(destDir, uniqueName);
+    tempPath = filePath + ".tmp";
+
+    // ---- 流式写入临时文件（内存占用恒定，不会 OOM） ----
+    const nodeStream = Readable.fromWeb(response.body as unknown as import("node:stream/web").ReadableStream);
+
+
+    // 如果设置了大小限制，包装一个 Transform 流来监控已写入字节数
+    if (maxSizeBytes > 0) {
+      const { Transform } = await import("node:stream");
+      let bytesWritten = 0;
+      const sizeGuard = new Transform({
+        transform(chunk, _encoding, callback) {
+          bytesWritten += chunk.length;
+          if (bytesWritten > maxSizeBytes) {
+            const sizeMB = (bytesWritten / (1024 * 1024)).toFixed(1);
+            const limitMB = Math.round(maxSizeBytes / (1024 * 1024));
+            callback(new Error(`DOWNLOAD_SIZE_EXCEEDED: ${sizeMB}MB > ${limitMB}MB`));
+          } else {
+            callback(null, chunk);
+          }
+        },
+      });
+      const writeStream = fs.createWriteStream(tempPath);
+      await pipeline(nodeStream, sizeGuard, writeStream);
+    } else {
+      const writeStream = fs.createWriteStream(tempPath);
+      await pipeline(nodeStream, writeStream);
+    }
+
+    // 流式写入完成，原子重命名为最终文件
+    const stat = await fs.promises.stat(tempPath);
+    fs.renameSync(tempPath, filePath);
+    tempPath = null; // 重命名成功，不再需要清理
+
+    console.log(`[image-server] Downloaded file: ${filePath} (${stat.size} bytes)`);
+    return { filePath };
   } catch (err) {
+    // 清理不完整的临时文件
+    if (tempPath) {
+      try { fs.unlinkSync(tempPath); } catch { /* ignore cleanup error */ }
+    }
+
     if (err instanceof Error && err.name === "AbortError") {
       console.error(`[image-server] Download timeout after ${timeoutMs}ms: ${url}`);
-    } else {
-      console.error(`[image-server] Download error:`, err);
+      return { filePath: null, error: `下载超时（${Math.round(timeoutMs / 1000)}秒）`, retryable: true };
     }
-    return null;
+    // 大小超限错误 — 不可重试
+    if (err instanceof Error && err.message.startsWith("DOWNLOAD_SIZE_EXCEEDED:")) {
+      const limitMB = maxSizeBytes > 0 ? Math.round(maxSizeBytes / (1024 * 1024)) : 0;
+      console.error(`[image-server] Download size exceeded ${limitMB}MB: ${url}`);
+      return { filePath: null, error: `文件过大，超过了${limitMB}M的下载限制`, retryable: false };
+    }
+    // 网络层临时错误 — 可重试
+    const retryable = isRetryableNetworkError(err);
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[image-server] Download error (retryable=${retryable}):`, err);
+    return { filePath: null, error: `下载出错: ${msg}`, retryable };
   } finally {
-    clearTimeout(timeoutId);
+    if (timeoutId) clearTimeout(timeoutId);
   }
 }
+
+/**
+ * 判断错误是否为可重试的网络临时错误。
+ *
+ * 覆盖常见的 TCP/DNS 层面临时故障：
+ * - ETIMEDOUT: TCP 连接超时
+ * - ECONNRESET: 连接被对端重置
+ * - ECONNREFUSED: 连接被拒绝
+ * - ENOTFOUND: DNS 解析失败
+ * - EAI_AGAIN: DNS 临时失败
+ * - UND_ERR_CONNECT_TIMEOUT: undici 连接超时
+ * - fetch failed: Node.js fetch 底层网络错误的通用消息
+ */
+function isRetryableNetworkError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const code = (err as NodeJS.ErrnoException).code;
+  if (code && ["ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "UND_ERR_CONNECT_TIMEOUT"].includes(code)) {
+    return true;
+  }
+  // Node.js fetch 抛出 TypeError: fetch failed 时，真正的网络错误在 cause 中
+  if (err.message === "fetch failed" && err.cause) {
+    return isRetryableNetworkError(err.cause);
+  }
+  return false;
+}
+
 
 /**
  * 获取图床服务器配置

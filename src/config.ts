@@ -1,10 +1,177 @@
-import type { ResolvedQQBotAccount, QQBotAccountConfig } from "./types.js";
-import type { OpenClawConfig } from "openclaw/plugin-sdk";
+import type { ResolvedQQBotAccount, QQBotAccountConfig, ToolPolicy, GroupConfig } from "./types.js";
+import type { OpenClawConfig, GroupPolicy } from "openclaw/plugin-sdk";
+
+// ============ Agent-aware mentionPatterns 解析 ============
+
+type AgentEntry = { id?: string; groupChat?: { mentionPatterns?: string[]; historyLimit?: number } };
+
+/**
+ * 解析 mentionPatterns（agent → global → 空数组）
+ *
+ * 优先级：
+ *   1. agents.list[agentId].groupChat.mentionPatterns
+ *   2. messages.groupChat.mentionPatterns
+ *   3. []
+ */
+export function resolveMentionPatterns(cfg: OpenClawConfig, agentId?: string): string[] {
+  // 1. agent 级别
+  if (agentId) {
+    const agents = (cfg as Record<string, unknown>).agents as { list?: AgentEntry[] } | undefined;
+    const entry = agents?.list?.find((a) => a.id?.trim().toLowerCase() === agentId.trim().toLowerCase());
+    const agentGroupChat = entry?.groupChat;
+    if (agentGroupChat && Object.hasOwn(agentGroupChat, "mentionPatterns")) {
+      return agentGroupChat.mentionPatterns ?? [];
+    }
+  }
+  // 2. 全局级别
+  const globalGroupChat = (cfg as any)?.messages?.groupChat;
+  if (globalGroupChat && typeof globalGroupChat === "object" && Object.hasOwn(globalGroupChat, "mentionPatterns")) {
+    return (globalGroupChat as { mentionPatterns?: string[] }).mentionPatterns ?? [];
+  }
+  // 3. 空数组
+  return [];
+}
 
 export const DEFAULT_ACCOUNT_ID = "default";
 
+// 内联 evaluateMatchedGroupAccessForPolicy（openclaw dist 尚未导出，本地实现）
+
+type MatchedGroupAccessReason = "allowed" | "disabled" | "missing_match_input" | "empty_allowlist" | "not_allowlisted";
+
+interface MatchedGroupAccessDecision {
+  allowed: boolean;
+  groupPolicy: GroupPolicy;
+  reason: MatchedGroupAccessReason;
+}
+
+function evaluateMatchedGroupAccessForPolicy(params: {
+  groupPolicy: GroupPolicy;
+  allowlistConfigured: boolean;
+  allowlistMatched: boolean;
+  requireMatchInput?: boolean;
+  hasMatchInput?: boolean;
+}): MatchedGroupAccessDecision {
+  if (params.groupPolicy === "disabled") {
+    return { allowed: false, groupPolicy: params.groupPolicy, reason: "disabled" };
+  }
+  if (params.groupPolicy === "allowlist") {
+    if (params.requireMatchInput && !params.hasMatchInput) {
+      return { allowed: false, groupPolicy: params.groupPolicy, reason: "missing_match_input" };
+    }
+    if (!params.allowlistConfigured) {
+      return { allowed: false, groupPolicy: params.groupPolicy, reason: "empty_allowlist" };
+    }
+    if (!params.allowlistMatched) {
+      return { allowed: false, groupPolicy: params.groupPolicy, reason: "not_allowlisted" };
+    }
+  }
+  return { allowed: true, groupPolicy: params.groupPolicy, reason: "allowed" };
+}
+
 interface QQBotChannelConfig extends QQBotAccountConfig {
   accounts?: Record<string, QQBotAccountConfig>;
+}
+
+// ============ 群消息策略 ============
+
+const DEFAULT_GROUP_POLICY: GroupPolicy = "open";
+
+/** 群历史缓存条数默认值 */
+const DEFAULT_GROUP_HISTORY_LIMIT = 50;
+
+const DEFAULT_GROUP_CONFIG: Omit<Required<GroupConfig>, "prompt"> = {
+  requireMention: true,
+  ignoreOtherMentions: false,
+  toolPolicy: "restricted",
+  name: "",
+  historyLimit: DEFAULT_GROUP_HISTORY_LIMIT,
+};
+
+/** 默认群消息行为 PE（可通过配置覆盖） */
+const DEFAULT_GROUP_PROMPT = [
+  "若发送者为机器人，仅在对方明确@你提问或请求协助具体任务时，以简洁明了的内容回复，",
+  "避免与其他机器人产生抢答或多轮无意义对话。",
+  "在群聊中优先让人类用户的消息得到响应，机器人之间保持协作而非竞争，确保对话有序不刷屏。",
+].join("");
+
+/** 解析群消息策略 */
+export function resolveGroupPolicy(cfg: OpenClawConfig, accountId?: string): GroupPolicy {
+  const account = resolveQQBotAccount(cfg, accountId);
+  return account.config?.groupPolicy ?? DEFAULT_GROUP_POLICY;
+}
+
+/** 解析群白名单（统一转大写） */
+export function resolveGroupAllowFrom(cfg: OpenClawConfig, accountId?: string): string[] {
+  const account = resolveQQBotAccount(cfg, accountId);
+  return (account.config?.groupAllowFrom ?? []).map((id) => String(id).trim().toUpperCase());
+}
+
+/** 检查指定群是否被允许（使用标准策略引擎） */
+export function isGroupAllowed(cfg: OpenClawConfig, groupOpenid: string, accountId?: string): boolean {
+  const policy = resolveGroupPolicy(cfg, accountId);
+  const allowList = resolveGroupAllowFrom(cfg, accountId);
+  const allowlistConfigured = allowList.length > 0;
+  const allowlistMatched = allowList.some((id) => id === "*" || id === groupOpenid.toUpperCase());
+
+  return evaluateMatchedGroupAccessForPolicy({
+    groupPolicy: policy,
+    allowlistConfigured,
+    allowlistMatched,
+  }).allowed;
+}
+
+type ResolvedGroupConfig = Omit<Required<GroupConfig>, "prompt"> & Pick<GroupConfig, "prompt">;
+
+/** 解析指定群配置（具体 groupOpenid > 通配符 "*" > 默认值） */
+export function resolveGroupConfig(cfg: OpenClawConfig, groupOpenid: string, accountId?: string): ResolvedGroupConfig {
+  const account = resolveQQBotAccount(cfg, accountId);
+  const groups = account.config?.groups ?? {};
+
+  const wildcardCfg = groups["*"] ?? {};
+  const specificCfg = groups[groupOpenid] ?? {};
+
+  return {
+    requireMention: specificCfg.requireMention ?? wildcardCfg.requireMention ?? DEFAULT_GROUP_CONFIG.requireMention,
+    ignoreOtherMentions: specificCfg.ignoreOtherMentions ?? wildcardCfg.ignoreOtherMentions ?? DEFAULT_GROUP_CONFIG.ignoreOtherMentions,
+    toolPolicy: specificCfg.toolPolicy ?? wildcardCfg.toolPolicy ?? DEFAULT_GROUP_CONFIG.toolPolicy,
+    name: specificCfg.name ?? wildcardCfg.name ?? DEFAULT_GROUP_CONFIG.name,
+    prompt: specificCfg.prompt ?? wildcardCfg.prompt,
+    historyLimit: specificCfg.historyLimit ?? wildcardCfg.historyLimit ?? DEFAULT_GROUP_CONFIG.historyLimit,
+  };
+}
+
+/** 解析群历史消息缓存条数 */
+export function resolveHistoryLimit(cfg: OpenClawConfig, groupOpenid: string, accountId?: string): number {
+  return Math.max(0, resolveGroupConfig(cfg, groupOpenid, accountId).historyLimit);
+}
+
+/** 解析群行为 PE（具体群 > "*" > 默认值） */
+export function resolveGroupPrompt(cfg: OpenClawConfig, groupOpenid: string, accountId?: string): string {
+  const account = resolveQQBotAccount(cfg, accountId);
+  const groups = account.config?.groups ?? {};
+
+  return groups[groupOpenid]?.prompt ?? groups["*"]?.prompt ?? DEFAULT_GROUP_PROMPT;
+}
+
+/** 解析群是否需要 @机器人才响应 */
+export function resolveRequireMention(cfg: OpenClawConfig, groupOpenid: string, accountId?: string): boolean {
+  return resolveGroupConfig(cfg, groupOpenid, accountId).requireMention;
+}
+
+/** 解析群是否忽略 @了其他人（非 bot）的消息 */
+export function resolveIgnoreOtherMentions(cfg: OpenClawConfig, groupOpenid: string, accountId?: string): boolean {
+  return resolveGroupConfig(cfg, groupOpenid, accountId).ignoreOtherMentions;
+}
+
+/** 解析群工具策略 */
+export function resolveToolPolicy(cfg: OpenClawConfig, groupOpenid: string, accountId?: string): ToolPolicy {
+  return resolveGroupConfig(cfg, groupOpenid, accountId).toolPolicy;
+}
+
+/** 解析群名称（优先配置，fallback 为 openid 前 8 位） */
+export function resolveGroupName(cfg: OpenClawConfig, groupOpenid: string, accountId?: string): string {
+  const name = resolveGroupConfig(cfg, groupOpenid, accountId).name;
+  return name || groupOpenid.slice(0, 8);
 }
 
 function normalizeAppId(raw: unknown): string {
@@ -70,17 +237,10 @@ export function resolveQQBotAccount(
   let secretSource: "config" | "file" | "env" | "none" = "none";
 
   if (resolvedAccountId === DEFAULT_ACCOUNT_ID) {
-    // 默认账户从顶层读取
+    // 默认账户从顶层读取（展开所有字段，避免遗漏新增配置项）
+    const { accounts: _accounts, ...topLevelConfig } = qqbot ?? {} as QQBotChannelConfig;
     accountConfig = {
-      enabled: qqbot?.enabled,
-      name: qqbot?.name,
-      appId: qqbot?.appId,
-      clientSecret: qqbot?.clientSecret,
-      clientSecretFile: qqbot?.clientSecretFile,
-      dmPolicy: qqbot?.dmPolicy,
-      allowFrom: qqbot?.allowFrom,
-      systemPrompt: qqbot?.systemPrompt,
-      imageServerBaseUrl: qqbot?.imageServerBaseUrl,
+      ...topLevelConfig,
       markdownSupport: qqbot?.markdownSupport ?? true,
     };
     appId = normalizeAppId(qqbot?.appId);

@@ -7,6 +7,24 @@ import os from "node:os";
 import { computeFileHash, getCachedFileInfo, setCachedFileInfo } from "./utils/upload-cache.js";
 import { sanitizeFileName } from "./utils/platform.js";
 
+// ============ 自定义错误 ============
+
+/** API 请求错误，携带 HTTP status code 和业务错误码 */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+    public readonly path: string,
+    /** 业务错误码（回包中的 code / err_code 字段），不一定存在 */
+    public readonly bizCode?: number,
+    /** 回包中的原始 message 字段（用于向用户展示兜底文案） */
+    public readonly bizMessage?: string,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 const API_BASE = "https://api.sgroup.qq.com";
 const TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken";
 
@@ -51,7 +69,6 @@ export function onMessageSent(callback: OnMessageSentCallback): void {
 
 /**
  * 初始化 API 配置
- * @param options.markdownSupport - 是否支持 markdown 消息（默认 false，需要机器人具备该权限才能启用）
  */
 export function initApiConfig(options: { markdownSupport?: boolean }): void {
   currentMarkdownSupport = options.markdownSupport === true;
@@ -303,15 +320,16 @@ export async function apiRequest<T = unknown>(
         : res.status === 429
           ? "请求过于频繁，已被限流"
           : `开放平台返回 HTTP ${res.status}`;
-      throw new Error(`${statusHint}（${path}），请稍后重试`);
+      throw new ApiError(`${statusHint}（${path}），请稍后重试`, res.status, path);
     }
     // JSON 错误响应
     try {
-      const error = JSON.parse(rawBody) as { message?: string; code?: number };
-      throw new Error(`API Error [${path}]: ${error.message ?? rawBody}`);
+      const error = JSON.parse(rawBody) as { message?: string; code?: number; err_code?: number };
+      const bizCode = error.code ?? error.err_code;
+      throw new ApiError(`API Error [${path}]: ${error.message ?? rawBody}`, res.status, path, bizCode, error.message);
     } catch (parseErr) {
-      if (parseErr instanceof Error && parseErr.message.startsWith("API Error")) throw parseErr;
-      throw new Error(`API Error [${path}] HTTP ${res.status}: ${rawBody.slice(0, 200)}`);
+      if (parseErr instanceof ApiError) throw parseErr;
+      throw new ApiError(`API Error [${path}] HTTP ${res.status}: ${rawBody.slice(0, 200)}`, res.status, path);
     }
   }
 
@@ -366,9 +384,188 @@ async function apiRequestWithRetry<T = unknown>(
   throw lastError!;
 }
 
+// ============ 完成上传重试（无条件，任何错误都重试） ============
+
+const COMPLETE_UPLOAD_MAX_RETRIES = 2;
+const COMPLETE_UPLOAD_BASE_DELAY_MS = 2000;
+
+/**
+ * 完成上传专用重试：无条件重试所有错误（包括 4xx、5xx、网络错误、超时等）
+ * 分片上传完成接口的失败往往是平台侧异步处理未就绪，重试通常能成功
+ */
+async function completeUploadWithRetry(
+  accessToken: string,
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<MediaUploadResponse> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= COMPLETE_UPLOAD_MAX_RETRIES; attempt++) {
+    try {
+      return await apiRequest<MediaUploadResponse>(accessToken, method, path, body);
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+
+      if (attempt < COMPLETE_UPLOAD_MAX_RETRIES) {
+        const delay = COMPLETE_UPLOAD_BASE_DELAY_MS * Math.pow(2, attempt);
+        console.warn(`[qqbot-api] CompleteUpload attempt ${attempt + 1} failed, retrying in ${delay}ms: ${lastError.message.slice(0, 200)}`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+
+  throw lastError!;
+}
+
+// ============ 分片完成重试 ============
+
+/** 普通错误最大重试次数 */
+const PART_FINISH_MAX_RETRIES = 2;
+const PART_FINISH_BASE_DELAY_MS = 1000;
+
+/**
+ * 需要持续重试的业务错误码集合
+ * 当 upload_part_finish 返回这些错误码时，会以固定 1s 间隔持续重试直到成功或超时
+ */
+export const PART_FINISH_RETRYABLE_CODES: Set<number> = new Set([
+  40093001,
+]);
+
+/**
+ * upload_prepare 接口命中此错误码时，携带文件信息抛出 UploadDailyLimitExceededError，
+ * 由上层（outbound.ts）构造包含文件路径和大小的兜底文案发送给用户，
+ * 而非走通用的"文件发送失败，请稍后重试"
+ */
+export const UPLOAD_PREPARE_FALLBACK_CODE = 40093002;
+
+/** 特定错误码持续重试的默认超时（服务端未返回 retry_timeout 时的兜底） */
+const PART_FINISH_RETRYABLE_DEFAULT_TIMEOUT_MS = 2 * 60 * 1000;
+
+/** 特定错误码重试的固定间隔（1 秒） */
+const PART_FINISH_RETRYABLE_INTERVAL_MS = 1000;
+
+/**
+ * 判断错误是否命中"需要持续重试"的业务错误码
+ */
+function isRetryableBizCode(err: unknown): boolean {
+  if (PART_FINISH_RETRYABLE_CODES.size === 0) return false;
+  if (err instanceof ApiError && err.bizCode !== undefined) {
+    return PART_FINISH_RETRYABLE_CODES.has(err.bizCode);
+  }
+  return false;
+}
+
+/**
+ * 分片完成接口重试策略：
+ * 
+ * 1. 命中 PART_FINISH_RETRYABLE_CODES 的错误码 → 每 1s 重试一次，直到成功或超时
+ *    超时时间 = min(API 返回的 retry_timeout, 10 分钟)
+ * 2. 其他错误 → 最多重试 PART_FINISH_MAX_RETRIES 次（与之前逻辑一致）
+ * 
+ * 若持续重试超时或普通重试耗尽，抛出错误，调用方（chunkedUpload）
+ * 可据此中止后续分片上传。
+ * 
+ * @param retryTimeoutMs - 持续重试的超时时间（毫秒），由 upload_prepare 返回的 retry_timeout 计算得出
+ */
+async function partFinishWithRetry(
+  accessToken: string,
+  method: string,
+  path: string,
+  body?: unknown,
+  retryTimeoutMs?: number,
+): Promise<void> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= PART_FINISH_MAX_RETRIES; attempt++) {
+    try {
+      await apiRequest<Record<string, unknown>>(accessToken, method, path, body);
+      return;
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+
+      // 命中特定错误码 → 进入持续重试模式
+      if (isRetryableBizCode(err)) {
+        const timeoutMs = retryTimeoutMs ?? PART_FINISH_RETRYABLE_DEFAULT_TIMEOUT_MS;
+        console.warn(`[qqbot-api] PartFinish hit retryable bizCode=${(err as ApiError).bizCode}, entering persistent retry (timeout=${timeoutMs / 1000}s, interval=1s)...`);
+        await partFinishPersistentRetry(accessToken, method, path, body, timeoutMs);
+        return;
+      }
+
+      if (attempt < PART_FINISH_MAX_RETRIES) {
+        const delay = PART_FINISH_BASE_DELAY_MS * Math.pow(2, attempt);
+        console.warn(`[qqbot-api] PartFinish attempt ${attempt + 1} failed, retrying in ${delay}ms: ${lastError.message.slice(0, 200)}`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+
+  throw lastError!;
+}
+
+/**
+ * 特定错误码的持续重试模式
+ * 不限次数，仅受总超时时间约束，固定每 1 秒重试一次
+ */
+async function partFinishPersistentRetry(
+  accessToken: string,
+  method: string,
+  path: string,
+  body: unknown,
+  timeoutMs: number,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let attempt = 0;
+  let lastError: Error | null = null;
+
+  while (Date.now() < deadline) {
+    try {
+      await apiRequest<Record<string, unknown>>(accessToken, method, path, body);
+      console.log(`[qqbot-api] PartFinish persistent retry succeeded after ${attempt} retries`);
+      return;
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+
+      // 如果不再是可重试的错误码，直接抛出（可能是其他类型的错误）
+      if (!isRetryableBizCode(err)) {
+        console.error(`[qqbot-api] PartFinish persistent retry: error is no longer retryable (bizCode=${(err as ApiError).bizCode ?? "N/A"}), aborting`);
+        throw lastError;
+      }
+
+      attempt++;
+      const remaining = deadline - Date.now();
+
+      if (remaining <= 0) break;
+
+      const actualDelay = Math.min(PART_FINISH_RETRYABLE_INTERVAL_MS, remaining);
+      console.warn(`[qqbot-api] PartFinish persistent retry #${attempt}: bizCode=${(err as ApiError).bizCode}, retrying in ${actualDelay}ms (remaining=${Math.round(remaining / 1000)}s)`);
+      await new Promise(resolve => setTimeout(resolve, actualDelay));
+    }
+  }
+
+  // 超时
+  console.error(`[qqbot-api] PartFinish persistent retry timed out after ${timeoutMs / 1000}s (${attempt} attempts)`);
+  throw new Error(`upload_part_finish 持续重试超时（${timeoutMs / 1000}s, ${attempt} 次重试），中止上传`);
+}
+
 export async function getGatewayUrl(accessToken: string): Promise<string> {
   const data = await apiRequest<{ url: string }>(accessToken, "GET", "/gateway");
   return data.url;
+}
+
+/** 回应按钮交互（INTERACTION_CREATE），避免客户端按钮持续 loading */
+export async function acknowledgeInteraction(
+  accessToken: string,
+  interactionId: string,
+  code: 0 | 1 | 2 | 3 | 4 | 5 = 0,
+  data?: Record<string, unknown>
+): Promise<void> {
+  await apiRequest(accessToken, "PUT", `/interactions/${interactionId}`, { code, ...(data ? { data } : {}) });
+}
+
+/** 获取插件版本号（从 package.json 读取，和 PLUGIN_USER_AGENT 同源） */
+export function getApiPluginVersion(): string {
+  return _pluginVersion;
 }
 
 // ============ 消息发送接口 ============
@@ -496,11 +693,12 @@ export async function sendGroupMessage(
   accessToken: string,
   groupOpenid: string,
   content: string,
-  msgId?: string
+  msgId?: string,
+  messageReference?: string
 ): Promise<MessageResponse> {
   const msgSeq = msgId ? getNextMsgSeq(msgId) : 1;
-  const body = buildMessageBody(content, msgId, msgSeq);
-  return apiRequest(accessToken, "POST", `/v2/groups/${groupOpenid}/messages`, body);
+  const body = buildMessageBody(content, msgId, msgSeq, messageReference);
+  return sendAndNotify(accessToken, "POST", `/v2/groups/${groupOpenid}/messages`, body, { text: content });
 }
 
 function buildProactiveMessageBody(content: string): Record<string, unknown> {
@@ -546,6 +744,176 @@ export interface UploadMediaResponse {
   file_info: string;
   ttl: number;
   id?: string;
+}
+
+// ============ 大文件分片上传 API ============
+
+/** 分片信息 */
+export interface UploadPart {
+  /** 分片索引（从 1 开始） */
+  index: number;
+  /** 预签名上传链接 */
+  presigned_url: string;
+}
+
+/** 申请上传响应 */
+export interface UploadPrepareResponse {
+  /** 上传任务 ID */
+  upload_id: string;
+  /** 分块大小（字节） */
+  block_size: number;
+  /** 分片列表（含预签名链接） */
+  parts: UploadPart[];
+  /** 上传并发数（由服务端控制，可选，不返回时使用客户端默认值） */
+  concurrency?: number;
+  /** upload_part_finish 特定错误码的重试超时时间（秒），由服务端控制，客户端上限 10 分钟 */
+  retry_timeout?: number;
+}
+
+/** 完成文件上传响应（与 UploadMediaResponse 一致） */
+export interface MediaUploadResponse {
+  /** 文件 UUID */
+  file_uuid: string;
+  /** 文件信息（用于发送消息），是 InnerUploadRsp 的序列化 */
+  file_info: string;
+  /** 文件信息过期时长（秒） */
+  ttl: number;
+}
+
+/** 申请上传时的文件哈希信息 */
+export interface UploadPrepareHashes {
+  /** 整个文件的 MD5（十六进制） */
+  md5: string;
+  /** 整个文件的 SHA1（十六进制） */
+  sha1: string;
+  /** 文件前 10002432 Bytes 的 MD5（十六进制）；文件不足该大小时为整文件 MD5 */
+  md5_10m: string;
+}
+
+/**
+ * 申请上传（C2C）
+ * POST /v2/users/{user_id}/upload_prepare
+ * 
+ * @param accessToken - 访问令牌
+ * @param userId - 用户 openid
+ * @param fileType - 业务类型（1=图片, 2=视频, 3=语音, 4=文件）
+ * @param fileName - 文件名
+ * @param fileSize - 文件大小（字节）
+ * @param hashes - 文件哈希信息（md5, sha1, md5_10m）
+ * @returns 上传任务 ID、分块大小、分片预签名链接列表
+ */
+export async function c2cUploadPrepare(
+  accessToken: string,
+  userId: string,
+  fileType: MediaFileType,
+  fileName: string,
+  fileSize: number,
+  hashes: UploadPrepareHashes,
+): Promise<UploadPrepareResponse> {
+  return apiRequest<UploadPrepareResponse>(
+    accessToken, "POST", `/v2/users/${userId}/upload_prepare`,
+    { file_type: fileType, file_name: fileName, file_size: fileSize, md5: hashes.md5, sha1: hashes.sha1, md5_10m: hashes.md5_10m },
+  );
+}
+
+/**
+ * 完成分片上传（C2C）
+ * POST /v2/users/{user_id}/upload_part_finish
+ * 
+ * @param accessToken - 访问令牌
+ * @param userId - 用户 openid
+ * @param uploadId - 上传任务 ID
+ * @param partIndex - 分片索引（从 1 开始）
+ * @param blockSize - 分块大小（字节）
+ * @param md5 - 分片数据的 MD5（十六进制）
+ */
+export async function c2cUploadPartFinish(
+  accessToken: string,
+  userId: string,
+  uploadId: string,
+  partIndex: number,
+  blockSize: number,
+  md5: string,
+  retryTimeoutMs?: number,
+): Promise<void> {
+  await partFinishWithRetry(
+    accessToken, "POST", `/v2/users/${userId}/upload_part_finish`,
+    { upload_id: uploadId, part_index: partIndex, block_size: blockSize, md5 },
+    retryTimeoutMs,
+  );
+}
+
+/**
+ * 完成文件上传（C2C）
+ * POST /v2/users/{user_id}/files
+ * 
+ * @param accessToken - 访问令牌
+ * @param userId - 用户 openid
+ * @param uploadId - 上传任务 ID
+ * @returns 文件信息（file_uuid, file_info, ttl）
+ */
+export async function c2cCompleteUpload(
+  accessToken: string,
+  userId: string,
+  uploadId: string,
+): Promise<MediaUploadResponse> {
+  return completeUploadWithRetry(
+    accessToken, "POST", `/v2/users/${userId}/files`,
+    { upload_id: uploadId },
+  );
+}
+
+/**
+ * 申请上传（Group）
+ * POST /v2/groups/{group_id}/upload_prepare
+ */
+export async function groupUploadPrepare(
+  accessToken: string,
+  groupId: string,
+  fileType: MediaFileType,
+  fileName: string,
+  fileSize: number,
+  hashes: UploadPrepareHashes,
+): Promise<UploadPrepareResponse> {
+  return apiRequest<UploadPrepareResponse>(
+    accessToken, "POST", `/v2/groups/${groupId}/upload_prepare`,
+    { file_type: fileType, file_name: fileName, file_size: fileSize, md5: hashes.md5, sha1: hashes.sha1, md5_10m: hashes.md5_10m },
+  );
+}
+
+/**
+ * 完成分片上传（Group）
+ * POST /v2/groups/{group_id}/upload_part_finish
+ */
+export async function groupUploadPartFinish(
+  accessToken: string,
+  groupId: string,
+  uploadId: string,
+  partIndex: number,
+  blockSize: number,
+  md5: string,
+  retryTimeoutMs?: number,
+): Promise<void> {
+  await partFinishWithRetry(
+    accessToken, "POST", `/v2/groups/${groupId}/upload_part_finish`,
+    { upload_id: uploadId, part_index: partIndex, block_size: blockSize, md5 },
+    retryTimeoutMs,
+  );
+}
+
+/**
+ * 完成文件上传（Group）
+ * POST /v2/groups/{group_id}/files
+ */
+export async function groupCompleteUpload(
+  accessToken: string,
+  groupId: string,
+  uploadId: string,
+): Promise<MediaUploadResponse> {
+  return completeUploadWithRetry(
+    accessToken, "POST", `/v2/groups/${groupId}/files`,
+    { upload_id: uploadId },
+  );
 }
 
 export async function uploadC2CMedia(
@@ -840,4 +1208,43 @@ async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
       signal.addEventListener("abort", onAbort, { once: true });
     }
   });
+}
+
+// ============ 流式消息 API ============
+
+import type { StreamMessageRequest, StreamMessageResponse } from "./types.js";
+
+/**
+ * 发送流式消息（C2C 私聊）
+ * 
+ * 流式协议：
+ * - 首次调用时不传 stream_msg_id，由平台返回
+ * - 后续分片携带 stream_msg_id 和递增 msg_seq
+ * - input_state="1" 表示生成中，"10" 表示生成结束（终结状态）
+ * 
+ * @param accessToken - access_token
+ * @param openid - 用户 openid
+ * @param req - 流式消息请求体
+ * @returns 流式消息响应
+ */
+export async function sendC2CStreamMessage(
+  accessToken: string,
+  openid: string,
+  req: StreamMessageRequest,
+): Promise<StreamMessageResponse> {
+  const path = `/v2/users/${openid}/stream_messages`;
+  const body: Record<string, unknown> = {
+    input_mode: req.input_mode,
+    input_state: req.input_state,
+    content_type: req.content_type,
+    content_raw: req.content_raw,
+    event_id: req.event_id,
+    msg_id: req.msg_id,
+    msg_seq: req.msg_seq,
+    index: req.index,
+  };
+  if (req.stream_msg_id) {
+    body.stream_msg_id = req.stream_msg_id;
+  }
+  return apiRequest<StreamMessageResponse>(accessToken, "POST", path, body);
 }

@@ -18,6 +18,14 @@
 
 set -eo pipefail
 
+# 异常退出时清理临时配置文件（防止泄露或残留）
+cleanup_on_exit() {
+    if [ -n "$TEMP_CONFIG_FILE" ] && [ -f "$TEMP_CONFIG_FILE" ]; then
+        rm -f "$TEMP_CONFIG_FILE" 2>/dev/null || true
+    fi
+}
+trap cleanup_on_exit EXIT
+
 PKG_NAME="@tencent-connect/openclaw-qqbot"
 PLUGIN_ID="openclaw-qqbot"
 INSTALL_SRC=""
@@ -61,14 +69,16 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --tag)
             [ -z "$2" ] && echo "❌ --tag 需要参数" && exit 1
-            TARGET_VERSION="$2"
-            INSTALL_SRC="${PKG_NAME}@$2"
+            _ver="${2#v}"  # 去掉 v 前缀（npm 版本号不带 v）
+            TARGET_VERSION="$_ver"
+            INSTALL_SRC="${PKG_NAME}@$_ver"
             shift 2
             ;;
         --version)
             [ -z "$2" ] && echo "❌ --version 需要参数" && exit 1
-            TARGET_VERSION="$2"
-            INSTALL_SRC="${PKG_NAME}@$2"
+            _ver="${2#v}"  # 去掉 v 前缀（npm 版本号不带 v）
+            TARGET_VERSION="$_ver"
+            INSTALL_SRC="${PKG_NAME}@$_ver"
             shift 2
             ;;
         --self-version)
@@ -146,40 +156,66 @@ echo "[1/4] 安装/升级插件..."
 # ── 兼容 openclaw 3.23+ 配置严格校验 ──
 # 3.23+ 在 plugins install/update 时会校验整个配置文件，
 # 如果 channels.qqbot 已存在但 qqbot 插件尚未加载，校验会失败。
-# 解决：install/update 前临时移除 channels.qqbot，成功后恢复。
+#
+# ⚠️ 关键：绝不能直接修改真实的 openclaw.json，否则 gateway 的 config file watcher
+#    会检测到变更并触发 SIGUSR1 重启，导致正在执行的升级脚本被杀死。
+#
+# 解决：创建临时配置副本（不含 channels.qqbot），通过 OPENCLAW_CONFIG_PATH
+#       环境变量让 plugins install/update 使用临时配置，真实配置文件不受影响。
 CONFIG_FILE="$HOME/.$CMD/$CMD.json"
-QQBOT_CHANNEL_BACKUP=""
+TEMP_CONFIG_FILE=""
+HAS_QQBOT_CHANNEL=false
+
 if [ -f "$CONFIG_FILE" ]; then
-    QQBOT_CHANNEL_BACKUP="$(node -e "
+    HAS_QQBOT_CHANNEL="$(node -e "
       try {
         const fs = require('fs');
         const cfg = JSON.parse(fs.readFileSync('$CONFIG_FILE', 'utf8'));
-        if (cfg.channels && cfg.channels.qqbot) {
-          process.stdout.write(JSON.stringify(cfg.channels.qqbot));
-          delete cfg.channels.qqbot;
-          if (Object.keys(cfg.channels).length === 0) delete cfg.channels;
-          fs.writeFileSync('$CONFIG_FILE', JSON.stringify(cfg, null, 4) + '\n');
-        }
+        if (cfg.channels && cfg.channels.qqbot) process.stdout.write('true');
       } catch {}
     " 2>/dev/null || true)"
-    if [ -n "$QQBOT_CHANNEL_BACKUP" ]; then
-        echo "  [兼容] 临时移除 channels.qqbot 以通过配置校验"
-    fi
-fi
 
-# 恢复 channels.qqbot 的函数（install/update 完成后调用）
-restore_qqbot_channel() {
-    if [ -n "$QQBOT_CHANNEL_BACKUP" ] && [ -f "$CONFIG_FILE" ]; then
+    if [ "$HAS_QQBOT_CHANNEL" = "true" ]; then
+        TEMP_CONFIG_FILE="$(mktemp)"
         node -e "
           try {
             const fs = require('fs');
             const cfg = JSON.parse(fs.readFileSync('$CONFIG_FILE', 'utf8'));
-            if (!cfg.channels) cfg.channels = {};
-            cfg.channels.qqbot = $QQBOT_CHANNEL_BACKUP;
-            fs.writeFileSync('$CONFIG_FILE', JSON.stringify(cfg, null, 4) + '\n');
+            delete cfg.channels.qqbot;
+            if (Object.keys(cfg.channels).length === 0) delete cfg.channels;
+            fs.writeFileSync('$TEMP_CONFIG_FILE', JSON.stringify(cfg, null, 4) + '\n');
+          } catch(e) { process.exit(1); }
+        " 2>/dev/null
+        if [ $? -eq 0 ]; then
+            echo "  [兼容] 创建临时配置副本（不含 channels.qqbot）以通过配置校验"
+            export OPENCLAW_CONFIG_PATH="$TEMP_CONFIG_FILE"
+        else
+            echo "  ⚠️  创建临时配置失败，继续使用原配置"
+            TEMP_CONFIG_FILE=""
+        fi
+    fi
+fi
+
+# 清理临时配置的函数
+# plugins install/update 可能把 install 记录写入了临时配置，需要同步回真实配置
+restore_qqbot_channel() {
+    if [ -n "$TEMP_CONFIG_FILE" ] && [ -f "$TEMP_CONFIG_FILE" ]; then
+        # 将临时配置中 plugins.installs 的变更同步回真实配置
+        node -e "
+          try {
+            const fs = require('fs');
+            const tmp = JSON.parse(fs.readFileSync('$TEMP_CONFIG_FILE', 'utf8'));
+            const real = JSON.parse(fs.readFileSync('$CONFIG_FILE', 'utf8'));
+            if (tmp.plugins && tmp.plugins.installs) {
+              if (!real.plugins) real.plugins = {};
+              real.plugins.installs = { ...(real.plugins.installs || {}), ...tmp.plugins.installs };
+              fs.writeFileSync('$CONFIG_FILE', JSON.stringify(real, null, 4) + '\n');
+            }
           } catch {}
         " 2>/dev/null || true
-        echo "  [兼容] 已恢复 channels.qqbot 配置"
+        rm -f "$TEMP_CONFIG_FILE"
+        unset OPENCLAW_CONFIG_PATH
+        echo "  [兼容] 已同步 install 记录并清理临时配置副本"
     fi
 }
 
@@ -226,8 +262,26 @@ fi
 if [ "$USE_UPDATE" = "true" ]; then
     echo "  尝试 update..."
     if $CMD plugins update "$PLUGIN_ID" 2>&1; then
-        UPGRADE_OK=true
-        echo "  ✅ update 成功"
+        # update 返回 0 不一定真的更新了，检查版本是否变化
+        POST_UPDATE_VERSION=""
+        if [ -f "$OLD_PKG" ]; then
+            POST_UPDATE_VERSION="$(node -e "
+              try {
+                const v = JSON.parse(require('fs').readFileSync('$OLD_PKG', 'utf8')).version;
+                if (v) process.stdout.write(String(v));
+              } catch {}
+            " 2>/dev/null || true)"
+        fi
+        if [ -n "$POST_UPDATE_VERSION" ] && [ "$POST_UPDATE_VERSION" != "$OLD_VERSION" ]; then
+            UPGRADE_OK=true
+            echo "  ✅ update 成功 ($OLD_VERSION → $POST_UPDATE_VERSION)"
+        elif [ -z "$OLD_VERSION" ]; then
+            # 之前没有旧版本，无法比较，信任 update 结果
+            UPGRADE_OK=true
+            echo "  ✅ update 成功"
+        else
+            echo "  ⚠️  update 返回成功但版本未变 ($POST_UPDATE_VERSION)，回退到 reinstall..."
+        fi
     else
         echo "  ⚠️  update 失败，回退到 reinstall..."
     fi
@@ -248,6 +302,7 @@ if [ "$UPGRADE_OK" != "true" ]; then
     done
 
     echo "  执行 install: $INSTALL_SRC"
+
     if $CMD plugins install "$INSTALL_SRC" --pin 2>&1; then
         UPGRADE_OK=true
         echo "  ✅ install 成功"
