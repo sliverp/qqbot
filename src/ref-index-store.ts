@@ -17,7 +17,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { getQQBotDataDir } from "./utils/platform.js";
 import { formatAttachmentTags } from "./group-history.js";
-import { parseFaceTags } from "./utils/text-parsing.js";
+import { parseFaceTags, buildAttachmentSummaries } from "./utils/text-parsing.js";
 import { processAttachments, formatVoiceText } from "./inbound-attachments.js";
 
 // ============ 存储的消息摘要 ============
@@ -306,7 +306,7 @@ export function formatRefEntryForAgent(entry: RefIndexEntry): string {
     parts.push(attachmentDesc);
   }
 
-  return parts.join(" ") || "[空消息]";
+  return parts.join("\n");
 }
 
 /**
@@ -343,11 +343,11 @@ export async function formatMessageReferenceForAgent(
     };
   },
 ): Promise<string> {
-  if (!ref) return "[空消息]";
+  if (!ref) return "";
 
   // 处理附件（图片等）- 下载到本地供 openclaw 访问（参考 gateway 中 processAttachments 调用）
   const processed = await processAttachments(ref.attachments, ctx);
-  const { attachmentInfo, voiceTranscripts } = processed;
+  const { attachmentInfo, voiceTranscripts, voiceTranscriptSources, attachmentLocalPaths } = processed;
 
   // 语音转录文本注入（参考 gateway 中 formatVoiceText 调用）
   const voiceText = formatVoiceText(voiceTranscripts);
@@ -360,7 +360,28 @@ export async function formatMessageReferenceForAgent(
     ? (parsedContent.trim() ? `${parsedContent}\n${voiceText}` : voiceText) + attachmentInfo
     : parsedContent + attachmentInfo;
 
-  return userContent.trim() || "[空消息]";
+  // 构建附件摘要并通过 formatAttachmentTags 统一生成标签
+  // 与缓存命中路径 (formatRefEntryForAgent → formatAttachmentTags) 格式完全一致
+  const attSummaries = buildAttachmentSummaries(ref.attachments, attachmentLocalPaths);
+  if (attSummaries && voiceTranscripts.length > 0) {
+    let voiceIdx = 0;
+    for (const att of attSummaries) {
+      if (att.type === "voice" && voiceIdx < voiceTranscripts.length) {
+        att.transcript = voiceTranscripts[voiceIdx];
+        if (voiceIdx < voiceTranscriptSources.length) {
+          att.transcriptSource = voiceTranscriptSources[voiceIdx];
+        }
+        voiceIdx++;
+      }
+    }
+  }
+  const attachmentDesc = formatAttachmentTags(attSummaries);
+
+  const parts: string[] = [];
+  if (userContent.trim()) parts.push(userContent.trim());
+  if (attachmentDesc) parts.push(attachmentDesc);
+
+  return parts.join(" ");
 }
 
 /**

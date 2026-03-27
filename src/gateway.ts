@@ -835,6 +835,17 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
           ? (parsedContent.trim() ? `${parsedContent}\n${voiceText}` : voiceText) + attachmentInfo
           : parsedContent + attachmentInfo;
 
+        // 统一处理 <@member_openid> → @username / 移除 @bot mention
+        if (event.type === "group" && event.mentions?.length) {
+          userContent = stripMentionText(userContent, event.mentions as any) ?? userContent;
+        } else if (event.mentions?.length) {
+          for (const m of event.mentions) {
+            if (m.member_openid && m.username) {
+              userContent = userContent.replace(new RegExp(`<@${m.member_openid}>`, "g"), `@${m.username}`);
+            }
+          }
+        }
+
         // ============ 引用消息处理 ============
         let replyToId: string | undefined;
         let replyToBody: string | undefined;
@@ -1062,7 +1073,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
               limit: historyLimit,
               entry: {
                 sender: senderForHistory,
-                body: parseFaceTags(event.content),
+                body: userContent,
                 timestamp: new Date(event.timestamp).getTime(),
                 messageId: event.messageId,
                 attachments: historyAttachments,
@@ -1091,7 +1102,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
               limit: historyLimit,
               entry: {
                 sender: senderForHistory,
-                body: parseFaceTags(event.content),
+                body: userContent,
                 timestamp: new Date(event.timestamp).getTime(),
                 messageId: event.messageId,
                 attachments: historyAttachments,
@@ -1130,17 +1141,6 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         }
 
         const mergedCount = (event as QueuedMessage)._mergedCount;
-
-        // 将 <@member_openid> 替换为 @username（使用 mentions 适配器）
-        if (event.type === "group" && event.mentions?.length) {
-          userContent = stripMentionText(userContent, event.mentions as any) ?? userContent;
-        } else if (event.mentions?.length) {
-          for (const m of event.mentions) {
-            if (m.member_openid && m.username) {
-              userContent = userContent.replace(new RegExp(`<@${m.member_openid}>`, "g"), `@${m.username}`);
-            }
-          }
-        }
 
         // 群消息 user prompt 带上发送者昵称（合并消息已内嵌发送者前缀，不再重复添加）
         const isMergedMsg = mergedCount && mergedCount > 1;
