@@ -17,6 +17,7 @@ param(
     [string]$Secret = "",
     [switch]$NoRestart,
     [string]$Tag = "",
+    [string]$Pkg = "",
     [switch]$Help
 )
 
@@ -24,6 +25,13 @@ $ErrorActionPreference = "Stop"
 $PKG_NAME = "@tencent-connect/openclaw-qqbot"
 $SCRIPT_DIR = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $PROJECT_DIR = Split-Path -Parent $SCRIPT_DIR
+
+# -Pkg 覆盖包名（支持 "scope/name" 自动补 @）
+if ($Pkg) {
+    $Pkg = $Pkg.Trim()
+    if (-not $Pkg.StartsWith("@")) { $Pkg = "@$Pkg" }
+    $PKG_NAME = $Pkg
+}
 
 # Read local version
 $LOCAL_VERSION = ""
@@ -41,6 +49,7 @@ if ($Help) {
     Write-Host "  .\upgrade-via-npm.ps1 -Version [version]           # upgrade to specific version"
     Write-Host "  .\upgrade-via-npm.ps1 -SelfVersion                 # upgrade to repo version ($LOCAL_VERSION)"
     Write-Host ""
+    Write-Host "  -Pkg [scope/name]    Custom npm package (e.g. ryantest/openclaw-qqbot)"
     Write-Host "  -AppId [appid]       QQ bot appid (required on first install)"
     Write-Host "  -Secret [secret]     QQ bot secret (required on first install)"
     exit 0

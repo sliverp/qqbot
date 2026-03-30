@@ -10,7 +10,7 @@
 // globally installed openclaw package, allowing Node's native ESM resolver
 // (used by jiti with tryNative:true for .js files) to find `openclaw/plugin-sdk`.
 
-import { existsSync, symlinkSync, mkdirSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, symlinkSync, unlinkSync, rmSync, mkdirSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execSync } from "node:child_process";
@@ -18,17 +18,30 @@ import { execSync } from "node:child_process";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pluginRoot = resolve(__dirname, "..");
 
-// Only run when installed under an openclaw-like extensions directory
-// (supports openclaw, clawdbot, moltbot, etc.)
-if (!pluginRoot.includes("extensions")) {
-  process.exit(0);
-}
-
 const linkTarget = join(pluginRoot, "node_modules", "openclaw");
 
-// Already linked or exists
+// Check if already a valid symlink pointing to a directory with plugin-sdk/core
 if (existsSync(linkTarget)) {
-  process.exit(0);
+  try {
+    const stat = lstatSync(linkTarget);
+    if (stat.isSymbolicLink()) {
+      // Symlink exists — verify it has plugin-sdk/core
+      if (existsSync(join(linkTarget, "plugin-sdk", "core.js"))) {
+        process.exit(0);
+      }
+      // Symlink is stale or points to wrong target, remove and re-create
+      unlinkSync(linkTarget);
+    } else if (existsSync(join(linkTarget, "plugin-sdk", "core.js"))) {
+      // Real directory with correct structure (e.g. npm installed a good version)
+      process.exit(0);
+    } else {
+      // Real directory from npm install but missing plugin-sdk/core — replace with symlink
+      rmSync(linkTarget, { recursive: true, force: true });
+    }
+  } catch {
+    // If stat fails, try to remove and re-create
+    try { rmSync(linkTarget, { recursive: true, force: true }); } catch {}
+  }
 }
 
 // CLI names to try (openclaw and its aliases)

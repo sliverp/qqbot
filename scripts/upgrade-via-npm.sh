@@ -18,13 +18,67 @@
 
 set -eo pipefail
 
-# 异常退出时清理临时配置文件（防止泄露或残留）
+# ⚠️ 必须在 cd 之前解析脚本路径，否则相对路径的 $0 在 cd 后无法正确解析
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# 确保 cwd 是一个存在的目录。
+# 当从 gateway 进程 fork 时，继承的 cwd 可能已被删除（如旧插件目录被 mv/rm），
+# 导致 openclaw CLI 启动时 process.cwd() 报 ENOENT: uv_cwd 错误。
+cd "$HOME" 2>/dev/null || cd / 2>/dev/null || true
+
+# 异常退出时清理临时文件并回滚（防止泄露或残留）
+INSTALL_COMPLETED=false  # 标记 install 是否已完成（用于区分正常退出和异常退出）
 cleanup_on_exit() {
+    local exit_code=$?
+
+    # 异常退出时同步临时配置中的 install 记录回真实配置
     if [ -n "$TEMP_CONFIG_FILE" ] && [ -f "$TEMP_CONFIG_FILE" ]; then
+        # 尝试同步 install 记录（即使异常退出也要保留）
+        node -e "
+          try {
+            const fs = require('fs');
+            const tmp = JSON.parse(fs.readFileSync('$TEMP_CONFIG_FILE', 'utf8'));
+            const real = JSON.parse(fs.readFileSync('$CONFIG_FILE', 'utf8'));
+            if (tmp.plugins && tmp.plugins.installs) {
+              if (!real.plugins) real.plugins = {};
+              real.plugins.installs = { ...(real.plugins.installs || {}), ...tmp.plugins.installs };
+            }
+            if (tmp.plugins && tmp.plugins.entries) {
+              if (!real.plugins) real.plugins = {};
+              real.plugins.entries = { ...(real.plugins.entries || {}), ...tmp.plugins.entries };
+            }
+            fs.writeFileSync('$CONFIG_FILE', JSON.stringify(real, null, 4) + '\n');
+          } catch {}
+        " 2>/dev/null || true
         rm -f "$TEMP_CONFIG_FILE" 2>/dev/null || true
     fi
+
+    # 异常退出且 install 未完成时，回滚备份目录（而非删除）
+    if [ "$INSTALL_COMPLETED" != "true" ] && [ -n "$BACKUP_DIR" ] && [ -d "$BACKUP_DIR" ]; then
+        if [ ! -d "$EXTENSIONS_DIR/$PLUGIN_ID" ] || [ ! -f "$EXTENSIONS_DIR/$PLUGIN_ID/package.json" ]; then
+            # 插件目录不存在或不完整，回滚
+            rm -rf "$EXTENSIONS_DIR/$PLUGIN_ID" 2>/dev/null || true
+            mv "$BACKUP_DIR/$PLUGIN_ID" "$EXTENSIONS_DIR/$PLUGIN_ID" 2>/dev/null || \
+            mv "$BACKUP_DIR"/* "$EXTENSIONS_DIR/$PLUGIN_ID" 2>/dev/null || true
+            echo "  ↩️  [cleanup] 异常退出，已回滚到旧版本"
+        else
+            # 插件目录完整，清理备份
+            rm -rf "$BACKUP_DIR" 2>/dev/null || true
+        fi
+    elif [ "$INSTALL_COMPLETED" = "true" ] && [ -n "$BACKUP_DIR" ] && [ -d "$BACKUP_DIR" ]; then
+        # 正常完成，清理备份
+        rm -rf "$BACKUP_DIR" 2>/dev/null || true
+    fi
+
+    # 清理 openclaw install 可能残留的暂存目录（extensions 和 /tmp 中都可能存在）
+    find "${EXTENSIONS_DIR:-/dev/null}" -maxdepth 1 -name ".openclaw-install-stage-*" -exec rm -rf {} + 2>/dev/null || true
+    find "${TMPDIR:-/tmp}" -maxdepth 1 -name ".openclaw-install-stage-*" -exec rm -rf {} + 2>/dev/null || true
 }
 trap cleanup_on_exit EXIT
+
+# 清理上次升级可能遗留的备份目录（如上次脚本被 kill 等极端情况）
+find "${TMPDIR:-/tmp}" -maxdepth 1 -name ".qqbot-upgrade-backup-*" -exec rm -rf {} + 2>/dev/null || true
 
 PKG_NAME="@tencent-connect/openclaw-qqbot"
 PLUGIN_ID="openclaw-qqbot"
@@ -33,8 +87,6 @@ TARGET_VERSION=""
 APPID=""
 SECRET=""
 NO_RESTART=false
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 LOCAL_VERSION="$(node -e "
   try {
@@ -56,6 +108,7 @@ print_usage() {
         echo "  upgrade-via-npm.sh --self-version               # 升级到当前仓库版本"
     fi
     echo ""
+    echo "  --pkg <scope/name>    指定 npm 包名（如 ryantest/openclaw-qqbot）"
     echo "  --appid <appid>       QQ机器人 appid（首次安装时必填）"
     echo "  --secret <secret>     QQ机器人 secret（首次安装时必填）"
     echo ""
@@ -69,22 +122,17 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --tag)
             [ -z "$2" ] && echo "❌ --tag 需要参数" && exit 1
-            _ver="${2#v}"  # 去掉 v 前缀（npm 版本号不带 v）
-            TARGET_VERSION="$_ver"
-            INSTALL_SRC="${PKG_NAME}@$_ver"
+            TARGET_VERSION="${2#v}"  # 去掉 v 前缀（npm 版本号不带 v）
             shift 2
             ;;
         --version)
             [ -z "$2" ] && echo "❌ --version 需要参数" && exit 1
-            _ver="${2#v}"  # 去掉 v 前缀（npm 版本号不带 v）
-            TARGET_VERSION="$_ver"
-            INSTALL_SRC="${PKG_NAME}@$_ver"
+            TARGET_VERSION="${2#v}"  # 去掉 v 前缀（npm 版本号不带 v）
             shift 2
             ;;
         --self-version)
             [ -z "$LOCAL_VERSION" ] && echo "❌ 无法从 package.json 读取版本" && exit 1
             TARGET_VERSION="$LOCAL_VERSION"
-            INSTALL_SRC="${PKG_NAME}@${LOCAL_VERSION}"
             shift 1
             ;;
         --appid)
@@ -95,6 +143,14 @@ while [[ $# -gt 0 ]]; do
         --secret)
             [ -z "$2" ] && echo "❌ --secret 需要参数" && exit 1
             SECRET="$2"
+            shift 2
+            ;;
+        --pkg)
+            [ -z "$2" ] && echo "❌ --pkg 需要参数" && exit 1
+            _pkg="$2"
+            # 支持 "scope/name" 自动补 @
+            if [[ "$_pkg" != @* ]]; then _pkg="@$_pkg"; fi
+            PKG_NAME="$_pkg"
             shift 2
             ;;
         --no-restart)
@@ -108,7 +164,12 @@ while [[ $# -gt 0 ]]; do
         *) echo "未知选项: $1"; print_usage; exit 1 ;;
     esac
 done
-INSTALL_SRC="${INSTALL_SRC:-${PKG_NAME}@latest}"
+# 参数解析完毕后统一拼接 INSTALL_SRC（确保 --pkg 无论在 --version 前后都能生效）
+if [ -n "$TARGET_VERSION" ]; then
+    INSTALL_SRC="${PKG_NAME}@${TARGET_VERSION}"
+else
+    INSTALL_SRC="${PKG_NAME}@latest"
+fi
 
 # 环境变量 fallback
 APPID="${APPID:-$QQBOT_APPID}"
@@ -164,30 +225,46 @@ echo "[1/4] 安装/升级插件..."
 #       环境变量让 plugins install/update 使用临时配置，真实配置文件不受影响。
 CONFIG_FILE="$HOME/.$CMD/$CMD.json"
 TEMP_CONFIG_FILE=""
-HAS_QQBOT_CHANNEL=false
+NEEDS_TEMP_CONFIG=false
 
 if [ -f "$CONFIG_FILE" ]; then
-    HAS_QQBOT_CHANNEL="$(node -e "
+    NEEDS_TEMP_CONFIG="$(node -e "
       try {
         const fs = require('fs');
         const cfg = JSON.parse(fs.readFileSync('$CONFIG_FILE', 'utf8'));
-        if (cfg.channels && cfg.channels.qqbot) process.stdout.write('true');
+        const hasChannel = !!(cfg.channels && cfg.channels.qqbot);
+        const hasAllow = Array.isArray(cfg.plugins?.allow) && cfg.plugins.allow.includes('$PLUGIN_ID');
+        const hasEntry = !!(cfg.plugins?.entries?.['$PLUGIN_ID']);
+        if (hasChannel || hasAllow || hasEntry) process.stdout.write('true');
       } catch {}
     " 2>/dev/null || true)"
 
-    if [ "$HAS_QQBOT_CHANNEL" = "true" ]; then
+    if [ "$NEEDS_TEMP_CONFIG" = "true" ]; then
         TEMP_CONFIG_FILE="$(mktemp)"
         node -e "
           try {
             const fs = require('fs');
             const cfg = JSON.parse(fs.readFileSync('$CONFIG_FILE', 'utf8'));
-            delete cfg.channels.qqbot;
-            if (Object.keys(cfg.channels).length === 0) delete cfg.channels;
+            // 移除 channels.qqbot（插件自定义通道，校验时会 unknown channel id）
+            if (cfg.channels?.qqbot) {
+              delete cfg.channels.qqbot;
+              if (Object.keys(cfg.channels).length === 0) delete cfg.channels;
+            }
+            // 移除 plugins.allow 中的 openclaw-qqbot（插件目录被备份后校验找不到）
+            if (Array.isArray(cfg.plugins?.allow)) {
+              cfg.plugins.allow = cfg.plugins.allow.filter(p => p !== '$PLUGIN_ID');
+              if (cfg.plugins.allow.length === 0) delete cfg.plugins.allow;
+            }
+            // 移除 plugins.entries 中的 openclaw-qqbot（同理）
+            if (cfg.plugins?.entries?.['$PLUGIN_ID']) {
+              delete cfg.plugins.entries['$PLUGIN_ID'];
+              if (Object.keys(cfg.plugins.entries).length === 0) delete cfg.plugins.entries;
+            }
             fs.writeFileSync('$TEMP_CONFIG_FILE', JSON.stringify(cfg, null, 4) + '\n');
           } catch(e) { process.exit(1); }
         " 2>/dev/null
         if [ $? -eq 0 ]; then
-            echo "  [兼容] 创建临时配置副本（不含 channels.qqbot）以通过配置校验"
+            echo "  [兼容] 创建临时配置副本（不含 channels.qqbot / plugins.allow / plugins.entries）以通过配置校验"
             export OPENCLAW_CONFIG_PATH="$TEMP_CONFIG_FILE"
         else
             echo "  ⚠️  创建临时配置失败，继续使用原配置"
@@ -200,22 +277,32 @@ fi
 # plugins install/update 可能把 install 记录写入了临时配置，需要同步回真实配置
 restore_qqbot_channel() {
     if [ -n "$TEMP_CONFIG_FILE" ] && [ -f "$TEMP_CONFIG_FILE" ]; then
-        # 将临时配置中 plugins.installs 的变更同步回真实配置
+        # 将临时配置中 plugins.installs 和 plugins.entries 的变更同步回真实配置
         node -e "
           try {
             const fs = require('fs');
             const tmp = JSON.parse(fs.readFileSync('$TEMP_CONFIG_FILE', 'utf8'));
             const real = JSON.parse(fs.readFileSync('$CONFIG_FILE', 'utf8'));
+            let changed = false;
             if (tmp.plugins && tmp.plugins.installs) {
               if (!real.plugins) real.plugins = {};
               real.plugins.installs = { ...(real.plugins.installs || {}), ...tmp.plugins.installs };
+              changed = true;
+            }
+            // 同步 plugins.entries（openclaw plugins install 会写入 entries）
+            if (tmp.plugins && tmp.plugins.entries) {
+              if (!real.plugins) real.plugins = {};
+              real.plugins.entries = { ...(real.plugins.entries || {}), ...tmp.plugins.entries };
+              changed = true;
+            }
+            if (changed) {
               fs.writeFileSync('$CONFIG_FILE', JSON.stringify(real, null, 4) + '\n');
             }
           } catch {}
         " 2>/dev/null || true
         rm -f "$TEMP_CONFIG_FILE"
         unset OPENCLAW_CONFIG_PATH
-        echo "  [兼容] 已同步 install 记录并清理临时配置副本"
+        echo "  [兼容] 已同步 install/entries 记录并清理临时配置副本"
     fi
 }
 
@@ -291,7 +378,7 @@ if [ "$UPGRADE_OK" != "true" ]; then
     # 备份旧目录（而非直接删除），install 失败时可回滚
     BACKUP_DIR=""
     if [ -d "$EXTENSIONS_DIR/$PLUGIN_ID" ]; then
-        BACKUP_DIR="$EXTENSIONS_DIR/.openclaw-qqbot-backup-$$"
+        BACKUP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/.qqbot-upgrade-backup-XXXXXX")"
         mv "$EXTENSIONS_DIR/$PLUGIN_ID" "$BACKUP_DIR"
         echo "  已备份旧目录: $BACKUP_DIR"
     fi
@@ -304,20 +391,57 @@ if [ "$UPGRADE_OK" != "true" ]; then
     echo "  执行 install: $INSTALL_SRC"
 
     if $CMD plugins install "$INSTALL_SRC" --pin 2>&1; then
-        UPGRADE_OK=true
-        echo "  ✅ install 成功"
-        # install 成功，清理备份
-        if [ -n "$BACKUP_DIR" ] && [ -d "$BACKUP_DIR" ]; then
-            rm -rf "$BACKUP_DIR"
-            echo "  已清理旧版备份"
+        # install 返回 0，但需要验证插件目录是否真的存在且完整
+        if [ -d "$EXTENSIONS_DIR/$PLUGIN_ID" ] && [ -f "$EXTENSIONS_DIR/$PLUGIN_ID/package.json" ]; then
+            UPGRADE_OK=true
+            INSTALL_COMPLETED=true
+            echo "  ✅ install 成功"
+            # install 成功，清理备份
+            if [ -n "$BACKUP_DIR" ] && [ -d "$BACKUP_DIR" ]; then
+                rm -rf "$BACKUP_DIR"
+                echo "  已清理旧版备份"
+            fi
+            # 清理 openclaw CLI install 可能留下的额外 backup 目录（extensions 内遗留 + 新路径）
+            find "$EXTENSIONS_DIR" -maxdepth 1 -name ".openclaw-qqbot-backup-*" -exec rm -rf {} + 2>/dev/null || true
+            find "${EXTENSIONS_DIR:-/dev/null}" -maxdepth 1 -name ".openclaw-install-stage-*" -exec rm -rf {} + 2>/dev/null || true
+            find "${TMPDIR:-/tmp}" -maxdepth 1 -name ".openclaw-install-stage-*" -exec rm -rf {} + 2>/dev/null || true
+            find "${TMPDIR:-/tmp}" -maxdepth 1 -name ".qqbot-upgrade-backup-*" -exec rm -rf {} + 2>/dev/null || true
+        else
+            echo "  ❌ install 命令返回成功但插件目录不完整"
+            echo "  [诊断] 目录存在: $([ -d "$EXTENSIONS_DIR/$PLUGIN_ID" ] && echo '是' || echo '否')"
+            echo "  [诊断] package.json 存在: $([ -f "$EXTENSIONS_DIR/$PLUGIN_ID/package.json" ] && echo '是' || echo '否')"
+            # 清理可能残留的暂存目录（extensions 和 /tmp 中都可能存在）
+            find "${EXTENSIONS_DIR:-/dev/null}" -maxdepth 1 -name ".openclaw-install-stage-*" -exec rm -rf {} + 2>/dev/null || true
+            find "${TMPDIR:-/tmp}" -maxdepth 1 -name ".openclaw-install-stage-*" -exec rm -rf {} + 2>/dev/null || true
+            # 回滚
+            if [ -n "$BACKUP_DIR" ] && [ -d "$BACKUP_DIR" ]; then
+                rm -rf "$EXTENSIONS_DIR/$PLUGIN_ID" 2>/dev/null || true
+                # 备份目录内可能是 PLUGIN_ID 子目录或直接是内容
+                if [ -d "$BACKUP_DIR/$PLUGIN_ID" ]; then
+                    mv "$BACKUP_DIR/$PLUGIN_ID" "$EXTENSIONS_DIR/$PLUGIN_ID"
+                else
+                    mv "$BACKUP_DIR" "$EXTENSIONS_DIR/$PLUGIN_ID"
+                fi
+                echo "  ↩️  已回滚到旧版本"
+            fi
+            restore_qqbot_channel
+            echo "QQBOT_NEW_VERSION=unknown"
+            echo "QQBOT_REPORT=❌ QQBot 安装异常（目录不完整，已回滚），请重试或手动安装"
+            exit 1
         fi
-        # 清理 openclaw CLI install 可能留下的额外 backup 目录
-        find "$EXTENSIONS_DIR" -maxdepth 1 -name ".openclaw-qqbot-backup-*" -exec rm -rf {} + 2>/dev/null || true
     else
         echo "  ❌ install 失败"
+        # 清理可能残留的暂存目录（extensions 和 /tmp 中都可能存在）
+        find "${EXTENSIONS_DIR:-/dev/null}" -maxdepth 1 -name ".openclaw-install-stage-*" -exec rm -rf {} + 2>/dev/null || true
+        find "${TMPDIR:-/tmp}" -maxdepth 1 -name ".openclaw-install-stage-*" -exec rm -rf {} + 2>/dev/null || true
         # 回滚：恢复旧目录
         if [ -n "$BACKUP_DIR" ] && [ -d "$BACKUP_DIR" ]; then
-            mv "$BACKUP_DIR" "$EXTENSIONS_DIR/$PLUGIN_ID"
+            rm -rf "$EXTENSIONS_DIR/$PLUGIN_ID" 2>/dev/null || true
+            if [ -d "$BACKUP_DIR/$PLUGIN_ID" ]; then
+                mv "$BACKUP_DIR/$PLUGIN_ID" "$EXTENSIONS_DIR/$PLUGIN_ID"
+            else
+                mv "$BACKUP_DIR" "$EXTENSIONS_DIR/$PLUGIN_ID"
+            fi
             echo "  ↩️  已回滚到旧版本"
         fi
         restore_qqbot_channel

@@ -122,9 +122,12 @@ export async function getUpdateInfo(): Promise<UpdateInfo> {
 /**
  * 检查指定版本是否存在于 npm registry
  * 用于 /bot-upgrade --version 的前置校验
+ * @param version 要检查的版本号
+ * @param pkgName 可选的包名（如 "@ryantest/openclaw-qqbot"），默认使用内置包名
  */
-export async function checkVersionExists(version: string): Promise<boolean> {
-  for (const baseUrl of REGISTRIES) {
+export async function checkVersionExists(version: string, pkgName?: string): Promise<boolean> {
+  const registries = pkgName ? buildRegistries(pkgName) : REGISTRIES;
+  for (const baseUrl of registries) {
     try {
       const url = `${baseUrl}/${version}`;
       const json = await fetchJson(url, 10_000);
@@ -134,6 +137,15 @@ export async function checkVersionExists(version: string): Promise<boolean> {
     }
   }
   return false;
+}
+
+/** 根据自定义包名构建 registry URL 列表 */
+function buildRegistries(pkgName: string): string[] {
+  const encoded = encodeURIComponent(pkgName);
+  return [
+    `https://registry.npmjs.org/${encoded}`,
+    `https://registry.npmmirror.com/${encoded}`,
+  ];
 }
 
 function compareVersions(a: string, b: string): number {

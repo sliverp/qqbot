@@ -8,10 +8,22 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import fs from "node:fs";
 
-let _cached: string | null = null;
+/** 已定位到的 package.json 路径，避免重复遍历目录树 */
+let _resolvedPkgPath: string | null = null;
 
 export function getPackageVersion(metaUrl?: string): string {
-  if (_cached !== null) return _cached;
+  // 如果之前已定位到 package.json 路径，直接重新读取（快速路径）
+  if (_resolvedPkgPath) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(_resolvedPkgPath, "utf8"));
+      if (pkg.name === "@tencent-connect/openclaw-qqbot" && pkg.version) {
+        return pkg.version as string;
+      }
+    } catch {
+      // 文件可能已被删除（升级过程中），清除路径缓存，走完整查找
+      _resolvedPkgPath = null;
+    }
+  }
 
   // Strategy 1: 从调用者的 import.meta.url（或本模块）向上遍历找 package.json
   const startFile = metaUrl ? fileURLToPath(metaUrl) : fileURLToPath(import.meta.url);
@@ -25,8 +37,8 @@ export function getPackageVersion(metaUrl?: string): string {
         const pkg = JSON.parse(fs.readFileSync(candidate, "utf8"));
         // 确认是我们自己的包（避免找到其他 package.json）
         if (pkg.name === "@tencent-connect/openclaw-qqbot" && pkg.version) {
-          _cached = pkg.version as string;
-          return _cached;
+          _resolvedPkgPath = candidate;
+          return pkg.version as string;
         }
       }
     } catch {
@@ -42,13 +54,11 @@ export function getPackageVersion(metaUrl?: string): string {
       try {
         const pkg = require(rel);
         if (pkg?.version) {
-          _cached = pkg.version as string;
-          return _cached;
+          return pkg.version as string;
         }
       } catch { /* next */ }
     }
   } catch { /* fallback */ }
 
-  _cached = "unknown";
-  return _cached;
+  return "unknown";
 }

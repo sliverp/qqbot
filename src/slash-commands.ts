@@ -25,10 +25,8 @@ const require = createRequire(import.meta.url);
 
 let PLUGIN_VERSION = getPackageVersion(import.meta.url);
 
-// 获取 openclaw 框架版本（缓存结果，只执行一次）
-let _frameworkVersion: string | null = null;
+// 获取 openclaw 框架版本（不缓存，每次实时获取）
 export function getFrameworkVersion(): string {
-  if (_frameworkVersion !== null) return _frameworkVersion;
   try {
     // 先尝试 PATH 中的 CLI
     // Windows 上 npm 安装的 CLI 通常是 .cmd wrapper，execFileSync 需要 shell:true 才能执行
@@ -40,8 +38,7 @@ export function getFrameworkVersion(): string {
         }).trim();
         // 输出格式: "OpenClaw 2026.3.13 (61d171a)"
         if (out) {
-          _frameworkVersion = out;
-          return _frameworkVersion;
+          return out;
         }
       } catch {
         continue;
@@ -52,15 +49,13 @@ export function getFrameworkVersion(): string {
     if (cliPath) {
       const out = execCliSync(cliPath, ["--version"]);
       if (out) {
-        _frameworkVersion = out;
-        return _frameworkVersion;
+        return out;
       }
     }
   } catch {
     // fallback
   }
-  _frameworkVersion = "unknown";
-  return _frameworkVersion;
+  return "unknown";
 }
 
 // ============ 热更新兼容性检查 ============
@@ -162,7 +157,7 @@ function checkUpgradeCompatibility(): UpgradeCompatResult {
   // 3. 检查 Node.js 版本
   const nodeVer = process.version.replace(/^v/, "");
   if (compareSemver(nodeVer, req.minNodeVersion) < 0) {
-    errors.push(`❌ Node.js 版本过低：当前 **v${nodeVer}**，热更新要求最低 **v${req.minNodeVersion}**`);
+    errors.push(`❌ NoVBNde.js 版本过低：当前 **v${nodeVer}**，热更新要求最低 **v${req.minNodeVersion}**`);
   }
 
   // 4. 检查系统架构（arm 等特殊架构提示）
@@ -746,14 +741,22 @@ function cleanupTempScript(): void {
  *
  * 安全机制：脚本会被复制到临时目录再执行，避免升级过程中插件目录被操作导致脚本自身丢失。
  */
-function fireHotUpgrade(targetVersion?: string): HotUpgradeStartResult {
-  // 优先从远端下载升级脚本，避免使用本地可能过时的版本
-  const scriptPath = downloadRemoteUpgradeScript() || (() => {
-    const local = getUpgradeScriptPath();
-    if (!local) return null;
-    console.log(`[qqbot] fireHotUpgrade: remote download failed, falling back to local script: ${local}`);
-    return copyScriptToTemp(local) || local;
-  })();
+function fireHotUpgrade(targetVersion?: string, pkg?: string, useLocal?: boolean): HotUpgradeStartResult {
+  // --local: 直接使用本地脚本，跳过远端下载
+  // 默认: 优先从远端下载升级脚本，避免使用本地可能过时的版本
+  const scriptPath = useLocal
+    ? (() => {
+      const local = getUpgradeScriptPath();
+      if (!local) return null;
+      console.log(`[qqbot] fireHotUpgrade: --local specified, using local script: ${local}`);
+      return copyScriptToTemp(local) || local;
+    })()
+    : downloadRemoteUpgradeScript() || (() => {
+      const local = getUpgradeScriptPath();
+      if (!local) return null;
+      console.log(`[qqbot] fireHotUpgrade: remote download failed, falling back to local script: ${local}`);
+      return copyScriptToTemp(local) || local;
+    })();
   if (!scriptPath) return { ok: false, reason: "no-script" };
 
   const cli = findCli();
@@ -772,27 +775,149 @@ function fireHotUpgrade(targetVersion?: string): HotUpgradeStartResult {
       "-File", scriptPath,
       "-NoRestart",
       ...(targetVersion ? ["-Version", targetVersion] : []),
+      ...(pkg ? ["-Pkg", pkg] : []),
     ];
   } else {
     // Mac / Linux: bash 执行 .sh
     const bash = findBash();
     if (!bash) return { ok: false, reason: "no-bash" };
     shell = bash;
-    shellArgs = [scriptPath, "--no-restart", ...(targetVersion ? ["--version", targetVersion] : [])];
+    shellArgs = [scriptPath, "--no-restart", ...(targetVersion ? ["--version", targetVersion] : []), ...(pkg ? ["--pkg", pkg] : [])];
   }
 
-  console.log(`[qqbot] fireHotUpgrade: shell=${shell}, script=${scriptPath}, cli=${cli}, target=${targetVersion || "latest"}`);
+  console.log(`[qqbot] fireHotUpgrade: shell=${shell}, script=${scriptPath}, cli=${cli}, target=${targetVersion || "latest"}, pkg=${pkg || "default"}`);
+
+  // ── 兼容 openclaw 3.23+ 配置严格校验 ──
+  // openclaw plugins install/update 启动时会校验整个配置文件，
+  // 如果 channels.qqbot 已存在但 qqbot 插件尚未加载，校验会报 "unknown channel id: qqbot"。
+  //
+  // ⚠️ 关键：绝不能直接修改真实的 openclaw.json！
+  //    gateway 的 config file watcher 会检测到变更并触发 SIGUSR1 重启，
+  //    导致当前进程被杀、execFile 回调（restoreConfigAndCleanup）永远不会执行，
+  //    channels.qqbot 配置就此丢失。
+  //
+  // 策略：创建临时配置副本（不含 channels.qqbot），通过 OPENCLAW_CONFIG_PATH
+  //       环境变量传递给子进程，真实配置文件不受影响。
+  //       shell 脚本（upgrade-via-npm.sh）内部也有同样的临时配置机制作为双保险。
+  const homeDir = getHomeDir();
+  const realConfigPath = path.join(homeDir, ".openclaw", "openclaw.json");
+  let tempConfigPath: string | null = null;
+  const childEnv: NodeJS.ProcessEnv = { ...process.env };
+
+  try {
+    if (fs.existsSync(realConfigPath)) {
+      const cfg = JSON.parse(fs.readFileSync(realConfigPath, "utf8"));
+      const needsTempConfig =
+        !!(cfg.channels?.qqbot) ||
+        !!(cfg.plugins?.entries?.["openclaw-qqbot"]);
+
+      if (needsTempConfig) {
+        // 创建临时配置副本（移除 channels.qqbot 和 plugins.entries.openclaw-qqbot）
+        const cleanCfg = JSON.parse(JSON.stringify(cfg)); // deep clone
+        if (cleanCfg.channels?.qqbot) {
+          delete cleanCfg.channels.qqbot;
+          if (Object.keys(cleanCfg.channels).length === 0) delete cleanCfg.channels;
+        }
+        if (cleanCfg.plugins?.entries?.["openclaw-qqbot"]) {
+          delete cleanCfg.plugins.entries["openclaw-qqbot"];
+          if (cleanCfg.plugins.entries && Object.keys(cleanCfg.plugins.entries).length === 0) delete cleanCfg.plugins.entries;
+        }
+
+        const tmpDir = path.join(homeDir, ".openclaw", ".qqbot-upgrade-tmp");
+        fs.mkdirSync(tmpDir, { recursive: true });
+        tempConfigPath = path.join(tmpDir, "openclaw-tmp.json");
+        fs.writeFileSync(tempConfigPath, JSON.stringify(cleanCfg, null, 4) + "\n");
+        childEnv.OPENCLAW_CONFIG_PATH = tempConfigPath;
+        console.log(`[qqbot] fireHotUpgrade: created temp config without channels.qqbot (OPENCLAW_CONFIG_PATH=${tempConfigPath}), real config untouched`);
+      }
+    }
+  } catch (e: any) {
+    console.warn(`[qqbot] fireHotUpgrade: failed to create temp config: ${e.message}, proceeding with original`);
+    tempConfigPath = null;
+  }
+
+  /**
+   * 将 openclaw plugins install 写入临时配置的 installs/entries 记录同步回真实配置，
+   * 然后清理临时文件。
+   *
+   * 注意：真实配置中的 channels.qqbot 从未被移除，无需恢复。
+   */
+  function syncTempConfigAndCleanup(): void {
+    try {
+      if (tempConfigPath && fs.existsSync(tempConfigPath) && fs.existsSync(realConfigPath)) {
+        const tmp = JSON.parse(fs.readFileSync(tempConfigPath, "utf8"));
+        const real = JSON.parse(fs.readFileSync(realConfigPath, "utf8"));
+        let changed = false;
+
+        // 同步 plugins.installs（openclaw plugins install 会写入安装记录）
+        if (tmp.plugins?.installs) {
+          if (!real.plugins) real.plugins = {};
+          real.plugins.installs = { ...(real.plugins.installs || {}), ...tmp.plugins.installs };
+          changed = true;
+        }
+        // 同步 plugins.entries（openclaw plugins install 会写入 entries）
+        // 注意：不同步 openclaw-qqbot 自身的 entry，因为插件通过 auto-discover 加载，
+        // 显式写入 entries 会导致 "duplicate plugin id" 警告刷屏。
+        if (tmp.plugins?.entries) {
+          if (!real.plugins) real.plugins = {};
+          if (!real.plugins.entries) real.plugins.entries = {};
+          for (const [k, v] of Object.entries(tmp.plugins.entries)) {
+            if (k === "openclaw-qqbot") continue; // 跳过自身，避免 duplicate
+            if (!real.plugins.entries[k]) {
+              real.plugins.entries[k] = v;
+              changed = true;
+            }
+          }
+        }
+
+        if (changed) {
+          fs.writeFileSync(realConfigPath, JSON.stringify(real, null, 4) + "\n");
+          console.log("[qqbot] fireHotUpgrade: synced install/entries records from temp config to real config");
+        }
+      }
+    } catch (e: any) {
+      console.warn(`[qqbot] fireHotUpgrade: failed to sync temp config: ${e.message}`);
+    }
+    // 清理临时文件
+    try { if (tempConfigPath) fs.unlinkSync(tempConfigPath); } catch { /* ignore */ }
+  }
 
   // 异步执行升级脚本
-  execFile(shell, shellArgs, {
-    timeout: 120_000,
-    env: { ...process.env },
+  // 必须显式设置 cwd 为一个确定存在的目录（如 homeDir），
+  // 否则子进程继承 gateway 的 cwd，如果该目录在升级过程中被删除/移动，
+  // openclaw CLI 启动时 process.cwd() 会报 ENOENT: uv_cwd 错误。
+  // 超时设为 5 分钟：openclaw plugins install 需要下载 npm 包，
+  // 网络慢时（如国内访问 npm registry）可能需要 2-3 分钟。
+  // 120 秒超时会导致脚本被杀但 openclaw CLI 子进程继续运行，
+  // 同时 bash 的 cleanup_on_exit 回滚了备份目录，造成 "plugin already exists" 错误。
+  const child = execFile(shell, shellArgs, {
+    timeout: 300_000,
+    cwd: homeDir,
+    env: childEnv,
+    killSignal: "SIGTERM",
     ...(isWindows() ? { windowsHide: true } : {}),
   }, (error, stdout, _stderr) => {
     if (error) {
       console.error(`[qqbot] fireHotUpgrade: script failed: ${error.message}`);
       if (stdout) console.error(`[qqbot] fireHotUpgrade: stdout: ${stdout.slice(0, 2000)}`);
       if (_stderr) console.error(`[qqbot] fireHotUpgrade: stderr: ${_stderr.slice(0, 2000)}`);
+
+      // 超时时确保子进程树被清理，防止 openclaw plugins install 继续运行
+      // 与 cleanup_on_exit 的回滚逻辑冲突（回滚恢复了旧目录，install 又尝试写入）
+      if ((error as any).killed || error.message.includes("TIMEOUT")) {
+        try {
+          // 尝试杀掉子进程树（SIGKILL 确保立即终止）
+          child.kill("SIGKILL");
+          // 额外尝试通过 pkill 杀掉可能残留的 openclaw plugins install 子进程
+          if (!isWindows()) {
+            try { execFileSync("pkill", ["-9", "-f", "openclaw.*plugins.*install"], { timeout: 3000, stdio: "pipe" }); } catch { /* ignore */ }
+          }
+        } catch {
+          // 进程可能已退出
+        }
+      }
+
+      syncTempConfigAndCleanup();
       cleanupTempScript();
       _upgrading = false;
       return;
@@ -805,6 +930,7 @@ function fireHotUpgrade(targetVersion?: string): HotUpgradeStartResult {
     const newVersion = versionMatch?.[1];
     if (newVersion === "unknown") {
       console.error(`[qqbot] fireHotUpgrade: script output QQBOT_NEW_VERSION=unknown, aborting restart`);
+      syncTempConfigAndCleanup();
       cleanupTempScript();
       _upgrading = false;
       return;
@@ -812,7 +938,8 @@ function fireHotUpgrade(targetVersion?: string): HotUpgradeStartResult {
 
     console.log(`[qqbot] fireHotUpgrade: new version=${newVersion || "(not detected)"}, triggering restart...`);
 
-    // 脚本执行成功，清理临时脚本副本
+    // 脚本执行成功，同步临时配置中的 install 记录并清理
+    syncTempConfigAndCleanup();
     cleanupTempScript();
 
     // 文件替换成功，在 restart 之前把 source 从 path 切换为 npm，
@@ -855,17 +982,175 @@ function fireHotUpgrade(targetVersion?: string): HotUpgradeStartResult {
         execCliAsync(cli, ["gateway", "restart"], { timeout: 30_000 }, () => {});
       }
     } else {
-      // Mac/Linux: 直接 restart（框架通常以 daemon 模式运行）
-      execCliAsync(cli, ["gateway", "restart"], { timeout: 30_000 }, (restartErr) => {
-        if (restartErr) {
-          console.error(`[qqbot] fireHotUpgrade: restart failed: ${restartErr.message}, trying stop+start fallback`);
-          execCliAsync(cli, ["gateway", "stop"], { timeout: 10_000 }, () => {
-            setTimeout(() => {
-              execCliAsync(cli, ["gateway", "start"], { timeout: 30_000 }, () => {});
-            }, 1000);
-          });
+      // Mac/Linux: 使用 detached shell 脚本执行 stop+start
+      //
+      // 兼容 openclaw 2026.3.24+ 配置严格校验：
+      //   gateway restart 时 openclaw 先校验配置（loadConfig）再加载插件。
+      //   如果 channels.qqbot 存在但 qqbot channel type 尚未注册，校验会失败。
+      //   解决：stop 后临时移除 channels.qqbot → start（插件加载、qqbot type 注册）→ 恢复。
+      const cliInvoke = cli.endsWith(".mjs")
+        ? `"${process.execPath}" "${cli}"`
+        : `"${cli}"`;
+      const homeDir = getHomeDir();
+      const configPath = path.join(homeDir, ".openclaw", "openclaw.json");
+      const qqbotChannelBackup = path.join(homeDir, ".openclaw", ".qqbot-channel-backup.json");
+      const restartScript = path.join(homeDir, ".openclaw", ".qqbot-restart.sh");
+
+      // 先保存 channels.qqbot 到临时文件（在当前进程中，JSON 处理更安全）
+      let hasChannel = false;
+      try {
+        const cfgRaw = fs.readFileSync(configPath, "utf8");
+        const cfg = JSON.parse(cfgRaw);
+        const qqbot = cfg?.channels?.qqbot;
+        if (qqbot) {
+          fs.writeFileSync(qqbotChannelBackup, JSON.stringify(qqbot, null, 2), "utf8");
+          hasChannel = true;
         }
-      });
+      } catch {
+        // 配置文件不存在或 JSON 解析失败，不做处理
+      }
+
+      const shContent = `#!/bin/bash
+# 注意：不使用 set -e，因为 gateway start 失败时仍需恢复 channels.qqbot
+CLI="${cliInvoke}"
+CONFIG="${configPath}"
+BACKUP="${qqbotChannelBackup}"
+
+# ── 兼容 openclaw 3.23+ 配置严格校验 ──
+# 所有 openclaw CLI 命令（包括 gateway stop/start）启动时都会 loadConfig 校验配置，
+# 如果 channels.qqbot 存在但 qqbot 插件尚未加载，校验会报 "unknown channel id: qqbot"。
+#
+# 策略：
+#   1. gateway stop：使用 OPENCLAW_CONFIG_PATH 临时配置（不含 channels.qqbot）
+#   2. gateway start：先尝试直接启动（真实配置），如果 CLI 校验失败，
+#      则临时修改真实配置（此时 gateway 已停止，无 config watcher），启动后恢复。
+#      这样 gateway 进程读取的是完整配置（含 channels.qqbot）。
+
+# 为 gateway stop 创建临时配置
+TEMP_RESTART_CONFIG=""
+if [ -f "$BACKUP" ]; then
+  TEMP_RESTART_CONFIG="\$(mktemp)"
+  node -e "
+    const fs = require('fs');
+    const cfg = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+    if (cfg.channels && cfg.channels.qqbot) {
+      delete cfg.channels.qqbot;
+      if (Object.keys(cfg.channels).length === 0) delete cfg.channels;
+    }
+    if (cfg.plugins && cfg.plugins.entries && cfg.plugins.entries['openclaw-qqbot']) {
+      delete cfg.plugins.entries['openclaw-qqbot'];
+      if (Object.keys(cfg.plugins.entries).length === 0) delete cfg.plugins.entries;
+    }
+    fs.writeFileSync(process.argv[2], JSON.stringify(cfg, null, 4) + '\\n');
+  " "$CONFIG" "$TEMP_RESTART_CONFIG" 2>/dev/null
+  if [ \$? -ne 0 ] || [ ! -s "$TEMP_RESTART_CONFIG" ]; then
+    echo "[qqbot-upgrade] WARNING: failed to create temp config"
+    TEMP_RESTART_CONFIG=""
+  fi
+fi
+
+echo "[qqbot-upgrade] Stopping gateway..."
+if [ -n "$TEMP_RESTART_CONFIG" ]; then
+  OPENCLAW_CONFIG_PATH="$TEMP_RESTART_CONFIG" $CLI gateway stop 2>/dev/null || true
+else
+  $CLI gateway stop 2>/dev/null || true
+fi
+sleep 2
+
+# 清理临时配置（不再需要）
+if [ -n "$TEMP_RESTART_CONFIG" ] && [ -f "$TEMP_RESTART_CONFIG" ]; then
+  rm -f "$TEMP_RESTART_CONFIG"
+fi
+
+echo "[qqbot-upgrade] Starting gateway..."
+START_OK=false
+
+# 先尝试直接启动（使用真实配置，含 channels.qqbot）
+# 如果 openclaw 版本不做严格校验，或者插件已注册，这会直接成功
+if $CLI gateway start 2>/dev/null; then
+  START_OK=true
+  echo "[qqbot-upgrade] Gateway started successfully (direct start)"
+elif [ -f "$BACKUP" ]; then
+  # 直接启动失败（可能是 channels.qqbot 校验失败），
+  # 临时修改真实配置（此时 gateway 已停止，无 config watcher，安全）
+  echo "[qqbot-upgrade] Direct start failed, temporarily removing channels.qqbot from real config..."
+  node -e "
+    const fs = require('fs');
+    const cfg = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+    let changed = false;
+    if (cfg.channels && cfg.channels.qqbot) {
+      delete cfg.channels.qqbot;
+      if (Object.keys(cfg.channels).length === 0) delete cfg.channels;
+      changed = true;
+    }
+    if (cfg.plugins && cfg.plugins.entries && cfg.plugins.entries['openclaw-qqbot']) {
+      delete cfg.plugins.entries['openclaw-qqbot'];
+      if (Object.keys(cfg.plugins.entries).length === 0) delete cfg.plugins.entries;
+      changed = true;
+    }
+    if (changed) {
+      fs.writeFileSync(process.argv[1], JSON.stringify(cfg, null, 4) + '\\n');
+    }
+  " "$CONFIG" 2>/dev/null
+
+  if $CLI gateway start 2>/dev/null; then
+    START_OK=true
+    echo "[qqbot-upgrade] Gateway started successfully (after config fix)"
+  else
+    echo "[qqbot-upgrade] WARNING: gateway start still failed after config fix"
+  fi
+
+  # 等待 gateway 进程启动并加载插件（插件注册 qqbot channel type）
+  echo "[qqbot-upgrade] Waiting for plugin to load (8s)..."
+  sleep 8
+
+  # 恢复 channels.qqbot 到真实配置
+  # gateway 的 config file watcher 会检测到变更并热加载
+  echo "[qqbot-upgrade] Restoring channels.qqbot to real config..."
+  node -e "
+    const fs = require('fs');
+    const cfg = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+    const qqbot = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+    if (!cfg.channels) cfg.channels = {};
+    cfg.channels.qqbot = qqbot;
+    // 注意：不写入 plugins.entries.openclaw-qqbot，
+    // 插件通过 auto-discover 加载，显式 entry 会导致 duplicate plugin id 警告。
+    fs.writeFileSync(process.argv[1], JSON.stringify(cfg, null, 4) + '\\n');
+  " "$CONFIG" "$BACKUP" 2>/dev/null
+  rm -f "$BACKUP"
+  echo "[qqbot-upgrade] channels.qqbot restored"
+else
+  echo "[qqbot-upgrade] WARNING: gateway start failed, no backup to restore"
+fi
+
+# 直接启动成功的情况下，清理备份文件
+if [ "$START_OK" = "true" ] && [ -f "$BACKUP" ]; then
+  rm -f "$BACKUP"
+fi
+
+# 如果 start 失败，尝试再次启动
+if [ "$START_OK" != "true" ]; then
+  echo "[qqbot-upgrade] Retrying gateway start..."
+  sleep 2
+  $CLI gateway start 2>/dev/null || echo "[qqbot-upgrade] WARNING: retry also failed"
+fi
+
+# 清理自身
+rm -f "$0"
+echo "[qqbot-upgrade] Done."
+`;
+      try {
+        fs.writeFileSync(restartScript, shContent, { mode: 0o755 });
+        const child = spawn("bash", [restartScript], {
+          detached: true,
+          stdio: "ignore",
+        });
+        child.unref();
+        console.log(`[qqbot] fireHotUpgrade: launched detached restart script (pid=${child.pid}), hasChannel=${hasChannel}`);
+      } catch (shErr: any) {
+        console.error(`[qqbot] fireHotUpgrade: failed to launch restart script: ${shErr.message}, falling back to direct restart`);
+        execCliAsync(cli, ["gateway", "restart"], { timeout: 30_000 }, () => {});
+      }
     }
   });
 
@@ -894,11 +1179,13 @@ registerCommand({
     `/bot-upgrade              检查是否有新版本`,
     `/bot-upgrade --latest     确认升级到最新版本（需 upgradeMode=hot-reload）`,
     `/bot-upgrade --version X  升级到指定版本（需 upgradeMode=hot-reload）`,
+    `/bot-upgrade --pkg scope/name  指定 npm 包（如 ryantest/openclaw-qqbot）`,
     `/bot-upgrade --force      强制重新安装当前版本（需 upgradeMode=hot-reload）`,
+    `/bot-upgrade --local      使用本地升级脚本（跳过远端下载）`,
   ].join("\n"),
   handler: async (ctx) => {
     const url = ctx.accountConfig?.upgradeUrl || DEFAULT_UPGRADE_URL;
-    const upgradeMode = ctx.accountConfig?.upgradeMode || "doc";
+    const upgradeMode = ctx.accountConfig?.upgradeMode || "hot-reload";
     const args = ctx.args.trim();
     const info = await getUpdateInfo();
 
@@ -949,7 +1236,9 @@ registerCommand({
 
     let isForce = false;
     let isLatest = false;
+    let isLocal = false;
     let versionArg: string | undefined;
+    let pkgArg: string | undefined;
     const tokens = args ? args.split(/\s+/).filter(Boolean) : [];
     for (let i = 0; i < tokens.length; i += 1) {
       const t = tokens[i]!;
@@ -959,6 +1248,27 @@ registerCommand({
       }
       if (t === "--latest") {
         isLatest = true;
+        continue;
+      }
+      if (t === "--local") {
+        isLocal = true;
+        continue;
+      }
+      if (t === "--pkg") {
+        const next = tokens[i + 1];
+        if (!next || next.startsWith("--")) {
+          return `❌ 参数错误：--pkg 需要包名\n\n示例：/bot-upgrade --pkg ryantest/openclaw-qqbot`;
+        }
+        pkgArg = next;
+        i += 1;
+        continue;
+      }
+      if (t.startsWith("--pkg=")) {
+        const v = t.slice("--pkg=".length).trim();
+        if (!v) {
+          return `❌ 参数错误：--pkg 需要包名\n\n示例：/bot-upgrade --pkg ryantest/openclaw-qqbot`;
+        }
+        pkgArg = v;
         continue;
       }
       if (t === "--version") {
@@ -1022,9 +1332,17 @@ registerCommand({
       ].join("\n");
     }
 
+    // 解析 npm 包名：--pkg 参数 > 配置项 upgradePkg > 默认
+    // 支持 "scope/name"（自动补 @）和 "@scope/name" 两种格式
+    let upgradePkg = pkgArg || ctx.accountConfig?.upgradePkg;
+    if (upgradePkg) {
+      upgradePkg = upgradePkg.trim();
+      if (!upgradePkg.startsWith("@")) upgradePkg = `@${upgradePkg}`;
+    }
+
     // ── --version 指定版本：先校验版本号是否存在 ──
     if (versionArg) {
-      const exists = await checkVersionExists(versionArg);
+      const exists = await checkVersionExists(versionArg, upgradePkg);
       if (!exists) {
         return `❌ 版本 ${versionArg} 不存在，请检查版本号`;
       }
@@ -1077,7 +1395,7 @@ registerCommand({
     preUpgradeCredentialBackup(ctx.accountId, ctx.appId);
 
     // 异步执行升级
-    const startResult = fireHotUpgrade(targetVersion);
+    const startResult = fireHotUpgrade(targetVersion, upgradePkg, isLocal);
     if (!startResult.ok) {
       _upgrading = false;
       if (startResult.reason === "no-script") {
