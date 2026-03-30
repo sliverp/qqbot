@@ -157,7 +157,7 @@ function checkUpgradeCompatibility(): UpgradeCompatResult {
   // 3. 检查 Node.js 版本
   const nodeVer = process.version.replace(/^v/, "");
   if (compareSemver(nodeVer, req.minNodeVersion) < 0) {
-    errors.push(`❌ NoVBNde.js 版本过低：当前 **v${nodeVer}**，热更新要求最低 **v${req.minNodeVersion}**`);
+    errors.push(`❌ Node.js 版本过低：当前 **v${nodeVer}**，热更新要求最低 **v${req.minNodeVersion}**`);
   }
 
   // 4. 检查系统架构（arm 等特殊架构提示）
