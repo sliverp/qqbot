@@ -13,14 +13,13 @@ import {
   sendChannelMessage,
   sendC2CImageMessage,
   sendGroupImageMessage,
-  UPLOAD_PREPARE_FALLBACK_CODE,
 } from "./api.js";
 import {
   sendPhoto,
   sendMedia as sendMediaAuto,
-  OUTBOUND_ERROR_CODES,
+  DEFAULT_MEDIA_SEND_ERROR,
+  resolveUserFacingMediaError,
   type MediaTargetContext,
-  type OutboundResult,
 } from "./outbound.js";
 import { chunkText, TEXT_CHUNK_LIMIT } from "./channel.js";
 import { getQQBotRuntime } from "./runtime.js";
@@ -230,7 +229,7 @@ export async function sendPlainReply(
         });
         if (result.error) {
           log?.error(`${prefix} sendMedia(auto) error for ${mediaPath}: ${result.error}`);
-          await sendTextChunks(resolveDeliverMediaErrorMessage(result), event, actx, sendWithRetry, consumeQuoteRef);
+          await sendTextChunks(resolveUserFacingMediaError(result), event, actx, sendWithRetry, consumeQuoteRef);
         } else {
           log?.info(`${prefix} Sent local media: ${mediaPath}`);
         }
@@ -258,7 +257,7 @@ export async function sendPlainReply(
           });
           if (result.error) {
             log?.error(`${prefix} Tool media forward error: ${result.error}`);
-            await sendTextChunks(resolveDeliverMediaErrorMessage(result), event, actx, sendWithRetry, consumeQuoteRef);
+            await sendTextChunks(resolveUserFacingMediaError(result), event, actx, sendWithRetry, consumeQuoteRef);
           } else {
             log?.info(`${prefix} Forwarded tool media: ${mediaUrl.slice(0, 80)}...`);
           }
@@ -274,27 +273,6 @@ export async function sendPlainReply(
 
 // ============ 内部辅助函数 ============
 
-const DEFAULT_MEDIA_SEND_ERROR = "发送失败，请稍后重试。";
-
-/**
- * 将 sendMedia 的结构化错误结果映射为 deliver 阶段对用户展示的文案。
- * 只对明确标记为可直接展示的错误码透传原文，其余统一走通用兜底。
- */
-function resolveDeliverMediaErrorMessage(result: Pick<OutboundResult, "error" | "errorCode" | "qqBizCode">): string {
-  if (!result.error) return DEFAULT_MEDIA_SEND_ERROR;
-
-  if (result.qqBizCode === UPLOAD_PREPARE_FALLBACK_CODE) {
-    return result.error;
-  }
-
-  switch (result.errorCode) {
-    case OUTBOUND_ERROR_CODES.FILE_TOO_LARGE:
-    case OUTBOUND_ERROR_CODES.UPLOAD_DAILY_LIMIT_EXCEEDED:
-      return result.error;
-    default:
-      return DEFAULT_MEDIA_SEND_ERROR;
-  }
-}
 
 /** 发送文本分块（共用逻辑） */
 async function sendTextChunks(
@@ -476,13 +454,13 @@ async function sendPlainTextReply(
         const imgResult = await sendPhoto(imgMediaTarget, imageUrl);
         if (imgResult.error) {
           log?.error(`${prefix} Failed to send image: ${imgResult.error}`);
-          await sendTextChunks(`发送图片失败：${imgResult.error}`, event, actx, sendWithRetry, consumeQuoteRef);
+          await sendTextChunks(resolveUserFacingMediaError(imgResult), event, actx, sendWithRetry, consumeQuoteRef);
         } else {
           log?.info(`${prefix} Sent image via sendPhoto: ${imageUrl.slice(0, 80)}...`);
         }
       } catch (imgErr) {
         log?.error(`${prefix} Failed to send image: ${imgErr}`);
-        await sendTextChunks(`发送图片失败：${imgErr}`, event, actx, sendWithRetry, consumeQuoteRef);
+        await sendTextChunks(DEFAULT_MEDIA_SEND_ERROR, event, actx, sendWithRetry, consumeQuoteRef);
       }
     }
 

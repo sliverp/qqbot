@@ -172,6 +172,8 @@ export const OUTBOUND_ERROR_CODES = {
   UPLOAD_DAILY_LIMIT_EXCEEDED: "upload_daily_limit_exceeded",
 } as const;
 
+export const DEFAULT_MEDIA_SEND_ERROR = "发送失败，请稍后重试。";
+
 export type OutboundErrorCode = typeof OUTBOUND_ERROR_CODES[keyof typeof OUTBOUND_ERROR_CODES];
 
 export interface OutboundResult {
@@ -185,6 +187,26 @@ export interface OutboundResult {
   qqBizCode?: number;
   /** 出站消息的引用索引（ext_info.ref_idx），供引用消息缓存使用 */
   refIdx?: string;
+}
+
+/**
+ * 将媒体发送结果映射为可展示给用户的文案。
+ * 只对明确标记为可直接展示的错误码透传原文，其余统一走通用兜底。
+ */
+export function resolveUserFacingMediaError(result: Pick<OutboundResult, "error" | "errorCode" | "qqBizCode">): string {
+  if (!result.error) return DEFAULT_MEDIA_SEND_ERROR;
+
+  if (result.qqBizCode === UPLOAD_PREPARE_FALLBACK_CODE) {
+    return result.error;
+  }
+
+  switch (result.errorCode) {
+    case OUTBOUND_ERROR_CODES.FILE_TOO_LARGE:
+    case OUTBOUND_ERROR_CODES.UPLOAD_DAILY_LIMIT_EXCEEDED:
+      return result.error;
+    default:
+      return DEFAULT_MEDIA_SEND_ERROR;
+  }
 }
 
 /**
