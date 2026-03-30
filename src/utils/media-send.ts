@@ -14,6 +14,8 @@ import {
   sendVideoMsg,
   sendDocument,
   sendMedia as sendMediaAuto,
+  DEFAULT_MEDIA_SEND_ERROR,
+  resolveUserFacingMediaError,
   type MediaTargetContext,
 } from "../outbound.js";
 import type { ResolvedQQBotAccount } from "../types.js";
@@ -410,7 +412,6 @@ export async function executeSendQueue(
   };
 
   for (const item of queue) {
-    const FALLBACK_MSG = "发送失败，请稍后重试。";
     try {
       if (item.type === "text") {
         if (options.skipInterTagText) {
@@ -431,7 +432,7 @@ export async function executeSendQueue(
         const result = await sendPhoto(mediaTarget, item.content);
         if (result.error) {
           log?.error(`${prefix} sendPhoto error: ${result.error}`);
-          await sendFallbackText(FALLBACK_MSG);
+          await sendFallbackText(resolveUserFacingMediaError(result));
         }
       } else if (item.type === "voice") {
         const uploadFormats =
@@ -452,23 +453,23 @@ export async function executeSendQueue(
           ]);
           if (result.error) {
             log?.error(`${prefix} sendVoice error: ${result.error}`);
-            await sendFallbackText(FALLBACK_MSG);
+            await sendFallbackText(resolveUserFacingMediaError(result));
           }
         } catch (err) {
           log?.error(`${prefix} sendVoice unexpected error: ${err}`);
-          await sendFallbackText(FALLBACK_MSG);
+          await sendFallbackText(DEFAULT_MEDIA_SEND_ERROR);
         }
       } else if (item.type === "video") {
         const result = await sendVideoMsg(mediaTarget, item.content);
         if (result.error) {
           log?.error(`${prefix} sendVideoMsg error: ${result.error}`);
-          await sendFallbackText(FALLBACK_MSG);
+          await sendFallbackText(resolveUserFacingMediaError(result));
         }
       } else if (item.type === "file") {
         const result = await sendDocument(mediaTarget, item.content);
         if (result.error) {
           log?.error(`${prefix} sendDocument error: ${result.error}`);
-          await sendFallbackText(FALLBACK_MSG);
+          await sendFallbackText(resolveUserFacingMediaError(result));
         }
       } else if (item.type === "media") {
         const result = await sendMediaAuto({
@@ -481,12 +482,12 @@ export async function executeSendQueue(
         });
         if (result.error) {
           log?.error(`${prefix} sendMedia(auto) error: ${result.error}`);
-          await sendFallbackText(FALLBACK_MSG);
+          await sendFallbackText(resolveUserFacingMediaError(result));
         }
       }
     } catch (err) {
       log?.error(`${prefix} executeSendQueue: failed to send ${item.type}: ${err}`);
-      await sendFallbackText(FALLBACK_MSG);
+      await sendFallbackText(DEFAULT_MEDIA_SEND_ERROR);
     }
   }
 }

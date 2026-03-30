@@ -8,7 +8,7 @@ import {
 
 import type { ResolvedQQBotAccount } from "./types.js";
 import { DEFAULT_ACCOUNT_ID, listQQBotAccountIds, resolveQQBotAccount, applyQQBotAccountConfig, resolveDefaultQQBotAccountId, resolveRequireMention, resolveToolPolicy, resolveGroupConfig } from "./config.js";
-import { sendText, sendMedia } from "./outbound.js";
+import { sendText, sendMedia, resolveUserFacingMediaError } from "./outbound.js";
 import { startGateway } from "./gateway.js";
 import { qqbotOnboardingAdapter } from "./onboarding.js";
 import { getQQBotRuntime } from "./runtime.js";
@@ -26,6 +26,17 @@ export const TEXT_CHUNK_LIMIT = 5000;
 export function chunkText(text: string, limit: number): string[] {
   const runtime = getQQBotRuntime();
   return runtime.channel.text.chunkMarkdownText(text, limit);
+}
+
+function buildChannelMediaError(result: Parameters<typeof resolveUserFacingMediaError>[0]): Error {
+  const err = new Error(resolveUserFacingMediaError(result));
+  if (result.errorCode) {
+    (err as Error & { code?: string }).code = result.errorCode;
+  }
+  if (result.qqBizCode !== undefined) {
+    (err as Error & { qqBizCode?: number }).qqBizCode = result.qqBizCode;
+  }
+  return err;
 }
 
 export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
@@ -288,7 +299,7 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
       // tool 的 { status: "error" } 返回给 AI 模型，模型会自行生成错误回复给用户。
       // 因此此处不应主动发送兜底文本，否则会与模型的回复重复。
       if (result.error) {
-        throw new Error(result.error);
+        throw buildChannelMediaError(result);
       }
       return {
         channel: "qqbot" as const,
