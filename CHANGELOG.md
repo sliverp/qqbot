@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.6.7] - 2026-03-27
+
+### Fixed
+
+- **Multi-account reminder delivery failure**: Fixed missing `accountId` in cron job delivery, causing reminders to fail sending through the correct bot account in multi-account setups. `accountId` is now required, using `getRequestAccountId() || "default"` to ensure it's never empty; delivery structure moved to job top level.
+- **Upgrade scripts & `/bot-upgrade` improvements**: Fixed `--version` argument parsing logic, improved version check flow; upgrade scripts (npm/source) enhanced for better compatibility.
+- **`postinstall-link-sdk` script optimization**: Improved robustness of the post-install SDK linking script.
+
 ## [1.6.6] - 2026-03-26
 
 ### Added

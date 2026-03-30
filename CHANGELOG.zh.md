@@ -4,6 +4,14 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/)。
 
+## [1.6.7] - 2026-03-27
+
+### 修复
+
+- **多账户提醒投递失败**：修复 cron 任务 delivery 缺少 `accountId`，导致多账户场景下提醒消息无法通过正确的机器人账户发送。`accountId` 改为必填，使用 `getRequestAccountId() || "default"` 确保永不为空；delivery 结构迁移到 job 顶层。
+- **升级脚本与 `/bot-upgrade` 改进**：完善 `--version` 参数解析逻辑，优化版本检查流程；升级脚本（npm/source）增强兼容性。
+- **`postinstall-link-sdk` 脚本优化**：改进安装后 SDK 链接脚本的健壮性。
+
 ## [1.6.6] - 2026-03-26
 
 ### 新增

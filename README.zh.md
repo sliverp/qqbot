@@ -9,7 +9,7 @@
 
 **让你的 AI 助手接入 QQ — 私聊、群聊、富媒体，一个插件全搞定。**
 
-### 🚀 当前版本： `v1.6.6`
+### 🚀 当前版本： `v1.6.7`
 
 [![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![QQ Bot](https://img.shields.io/badge/QQ_Bot-API_v2-red)](https://bot.q.qq.com/wiki/)
