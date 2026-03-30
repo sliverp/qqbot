@@ -187,6 +187,11 @@ AI 可直接发送视频，支持本地文件和公网 URL。
 
 > ⚠️ 热更新指令暂不支持 Windows 系统，在 Windows 上发送 `/bot-upgrade` 会返回手动升级指引。
 
+> ⚠️ v1.6.6 及以下版本暂不支持通过 `/bot-upgrade` 执行热更新，请通过以下命令升级：
+> ```bash
+> curl -fsSL https://raw.githubusercontent.com/tencent-connect/openclaw-qqbot/main/scripts/upgrade-via-npm.sh | bash
+> ```
+
 <img width="360" src="docs/images/hot-update.jpg" alt="一键热更新演示" />
 
 #### `/bot-logs` — 日志导出
@@ -247,7 +252,7 @@ curl -fsSL https://raw.githubusercontent.com/tencent-connect/openclaw-qqbot/main
 
 一行命令搞定：下载脚本 → 清理旧插件 → 安装 → 配置通道 → 启动服务。完成后打开 QQ 即可开始聊天！
 
-> 首次安装**必须**传 `--appid` 和 `--secret`。后续升级如已有配置：
+> 首次安装**必须**传 `--appid` 和 `--secret`。后续升级执行此指令可以升级为最新版：
 > ```bash
 > curl -fsSL https://raw.githubusercontent.com/tencent-connect/openclaw-qqbot/main/scripts/upgrade-via-npm.sh | bash
 > ```
