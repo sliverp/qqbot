@@ -41,19 +41,29 @@ export function filterInternalMarkers(text: string): string {
 }
 
 /**
- * 从 message_scene.ext 数组中解析引用索引
- * ext 格式示例: ["", "ref_msg_idx=REFIDX_xxx", "msg_idx=REFIDX_yyy"]
+ * 从 message_scene.ext 和 message_reference 中解析引用索引。
+ *
+ * @param ext     message_scene.ext 数组，格式示例: ["", "ref_msg_idx=REFIDX_xxx", "msg_idx=REFIDX_yyy"]
+ * @param msgRef  message_reference 对象，其 msg_idx 比 ext 中解析的更权威，有值时优先使用
  */
-export function parseRefIndices(ext?: string[]): { refMsgIdx?: string; msgIdx?: string } {
-  if (!ext || ext.length === 0) return {};
+export function parseRefIndices(
+  ext?: string[],
+  msgRef?: { msg_idx?: string },
+): { refMsgIdx?: string; msgIdx?: string } {
   let refMsgIdx: string | undefined;
   let msgIdx: string | undefined;
-  for (const item of ext) {
-    if (item.startsWith("ref_msg_idx=")) {
-      refMsgIdx = item.slice("ref_msg_idx=".length);
-    } else if (item.startsWith("msg_idx=")) {
-      msgIdx = item.slice("msg_idx=".length);
+  if (ext && ext.length > 0) {
+    for (const item of ext) {
+      if (item.startsWith("ref_msg_idx=")) {
+        refMsgIdx = item.slice("ref_msg_idx=".length);
+      } else if (item.startsWith("msg_idx=")) {
+        msgIdx = item.slice("msg_idx=".length);
+      }
     }
+  }
+  // messageReference.msg_idx 更权威，有值时覆盖 ext 解析结果
+  if (msgRef?.msg_idx) {
+    refMsgIdx = msgRef.msg_idx;
   }
   return { refMsgIdx, msgIdx };
 }
