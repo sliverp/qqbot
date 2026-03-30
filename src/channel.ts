@@ -283,16 +283,11 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
       const result = await sendMedia({ to, text: text ?? "", mediaUrl: mediaUrl ?? "", accountId, replyToId, account });
       console.log(`[qqbot:channel] sendMedia result: messageId=${result.messageId}, error=${result.error ?? "none"}`);
       // 此 sendMedia 是框架 Channel Plugin 的标准出站接口，
-      // 用于非 gateway deliver 场景（如 API 直接发送、cron 等）。
-      // gateway 消息响应走的是 deliver 回调 → sendPlainReply，不经过此处。
-      // 框架拿到 error 后不一定会给用户发文字兜底，所以这里主动发一条。
+      // 由框架 deliver.js (deliverOutboundPayloads) 或 message-actions 调用。
+      // 当 throw Error 后，框架 pi-tool-definition-adapter 会将错误转化为
+      // tool 的 { status: "error" } 返回给 AI 模型，模型会自行生成错误回复给用户。
+      // 因此此处不应主动发送兜底文本，否则会与模型的回复重复。
       if (result.error) {
-        try {
-          const fallbackResult = await sendText({ to, text: result.error, accountId, replyToId, account });
-          console.log(`[qqbot:channel] sendMedia fallback text sent: messageId=${fallbackResult.messageId}, error=${fallbackResult.error ?? "none"}`);
-        } catch (fallbackErr) {
-          console.error(`[qqbot:channel] sendMedia fallback text failed: ${fallbackErr}`);
-        }
         throw new Error(result.error);
       }
       return {
