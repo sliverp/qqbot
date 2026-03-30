@@ -1333,7 +1333,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 
         // 使用 AsyncLocalStorage 建立请求级上下文，作用域内所有异步代码
         // （包括 AI agent 调用、tool execute）都能安全获取当前会话信息，无并发竞态。
-        await runWithRequestContext({ target: qualifiedTarget }, async () => {
+        await runWithRequestContext({ target: qualifiedTarget, accountId: account.accountId }, async () => {
         try {
           const messagesConfig = pluginRuntime.channel.reply.resolveEffectiveMessagesConfig(cfg, route.agentId);
 

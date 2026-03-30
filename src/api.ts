@@ -137,7 +137,7 @@ async function doFetchToken(appId: string, clientSecret: string): Promise<string
   const requestHeaders = { "Content-Type": "application/json", "User-Agent": PLUGIN_USER_AGENT };
   
   // 打印请求信息（隐藏敏感信息）
-  console.log(`[qqbot-api:${appId}] >>> POST ${TOKEN_URL}`);
+  console.log(`[qqbot-api:${appId}] >>> POST ${TOKEN_URL} [secret: ${clientSecret.slice(0, 6)}...len=${clientSecret.length}]`);
 
   let response: Response;
   try {

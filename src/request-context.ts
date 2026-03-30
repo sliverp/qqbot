@@ -11,6 +11,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 export interface RequestContext {
   /** 投递目标地址，如 qqbot:c2c:xxx 或 qqbot:group:xxx */
   target: string;
+  /** 当前请求的 QQBot 账户 ID（多账户场景） */
+  accountId?: string;
 }
 
 const asyncLocalStorage = new AsyncLocalStorage<RequestContext>();
@@ -36,4 +38,12 @@ export function getRequestContext(): RequestContext | undefined {
  */
 export function getRequestTarget(): string | undefined {
   return asyncLocalStorage.getStore()?.target;
+}
+
+/**
+ * 获取当前请求的账户 ID。
+ * 便捷方法，等价于 getRequestContext()?.accountId。
+ */
+export function getRequestAccountId(): string | undefined {
+  return asyncLocalStorage.getStore()?.accountId;
 }

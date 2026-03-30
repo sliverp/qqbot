@@ -1,5 +1,5 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { getRequestTarget } from "../request-context.js";
+import { getRequestTarget, getRequestAccountId } from "../request-context.js";
 
 // ========== 类型定义 ==========
 
@@ -134,7 +134,7 @@ function generateJobName(content: string): string {
 /**
  * 构建一次性提醒的 cron 工具参数
  */
-function buildOnceJob(params: RemindParams, delayMs: number, to: string) {
+function buildOnceJob(params: RemindParams, delayMs: number, to: string, accountId: string) {
   const atMs = Date.now() + delayMs;
   const content = params.content!;
   const name = params.name || generateJobName(content);
@@ -150,9 +150,12 @@ function buildOnceJob(params: RemindParams, delayMs: number, to: string) {
       payload: {
         kind: "agentTurn",
         message: buildReminderPrompt(content),
-        deliver: true,
+      },
+      delivery: {
+        mode: "announce",
         channel: "qqbot",
         to,
+        accountId,
       },
     },
   };
@@ -161,7 +164,7 @@ function buildOnceJob(params: RemindParams, delayMs: number, to: string) {
 /**
  * 构建周期提醒的 cron 工具参数
  */
-function buildCronJob(params: RemindParams, to: string) {
+function buildCronJob(params: RemindParams, to: string, accountId: string) {
   const content = params.content!;
   const name = params.name || generateJobName(content);
   const tz = params.timezone || "Asia/Shanghai";
@@ -176,9 +179,12 @@ function buildCronJob(params: RemindParams, to: string) {
       payload: {
         kind: "agentTurn",
         message: buildReminderPrompt(content),
-        deliver: true,
+      },
+      delivery: {
+        mode: "announce",
         channel: "qqbot",
         to,
+        accountId,
       },
     },
   };
@@ -256,6 +262,8 @@ export function registerRemindTool(api: OpenClawPluginApi): void {
         if (!resolvedTo) {
           return json({ error: "action=add 时无法确定投递目标地址。请稍后重试。" });
         }
+        // 从请求上下文获取当前账户 ID（多账户场景），fallback 到 "default"
+        const resolvedAccountId = getRequestAccountId() || "default";
         if (!p.time) {
           return json({ error: "action=add 时 time（时间）为必填参数。示例：\"5m\"、\"1h30m\"、\"0 8 * * *\"" });
         }
@@ -263,9 +271,9 @@ export function registerRemindTool(api: OpenClawPluginApi): void {
         // 判断是 cron 表达式还是相对时间
         if (isCronExpression(p.time)) {
           // 周期提醒
-          const cronJob = buildCronJob(p, resolvedTo);
+          const cronJob = buildCronJob(p, resolvedTo, resolvedAccountId);
           return json({
-            _instruction: "请立即使用 cron 工具执行以下参数，然后回复用户提醒已设置",
+            _instruction: "请立即使用 cron 工具，将 cronParams 的值原样作为参数传入（不要修改或省略任何字段，特别是 delivery.accountId），然后回复用户提醒已设置",
             cronParams: cronJob,
             summary: `⏰ 周期提醒: "${p.content}" (${p.time}, tz=${p.timezone || "Asia/Shanghai"})`,
           });
@@ -285,9 +293,9 @@ export function registerRemindTool(api: OpenClawPluginApi): void {
           return json({ error: "提醒时间不能少于 30 秒" });
         }
 
-        const onceJob = buildOnceJob(p, delayMs, resolvedTo);
+        const onceJob = buildOnceJob(p, delayMs, resolvedTo, resolvedAccountId);
         return json({
-          _instruction: "请立即使用 cron 工具执行以下参数，然后回复用户提醒已设置",
+          _instruction: "请立即使用 cron 工具，将 cronParams 的值原样作为参数传入（不要修改或省略任何字段，特别是 delivery.accountId），然后回复用户提醒已设置",
           cronParams: onceJob,
           summary: `⏰ ${formatDelay(delayMs)}后提醒: "${p.content}"`,
         });

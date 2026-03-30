@@ -97,10 +97,17 @@ export interface QQBotAccountConfig {
   upgradeUrl?: string;
   /**
    * /bot-upgrade 指令的行为模式
-   * - "doc"：展示升级文档链接（默认，安全模式）
-   * - "hot-reload"：检测到新版本时直接执行 npm 升级脚本进行热更新
+   * - "doc"：展示升级文档链接（安全模式）
+   * - "hot-reload"：检测到新版本时直接执行 npm 升级脚本进行热更新（默认）
    */
   upgradeMode?: "doc" | "hot-reload";
+  /**
+   * /bot-upgrade 热更新时使用的 npm 包名
+   * 支持 "scope/name"（自动补 @）或 "@scope/name" 格式
+   * 默认: "@tencent-connect/openclaw-qqbot"
+   * 示例: "ryantest/openclaw-qqbot"
+   */
+  upgradePkg?: string;
   /**
    * 出站消息合并回复（debounce）配置
    * 当短时间内收到多次 deliver 时，将文本合并为一条消息发送，避免消息轰炸

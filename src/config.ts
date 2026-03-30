@@ -227,7 +227,7 @@ export function resolveQQBotAccount(
   cfg: OpenClawConfig,
   accountId?: string | null
 ): ResolvedQQBotAccount {
-  const resolvedAccountId = accountId ?? DEFAULT_ACCOUNT_ID;
+  const resolvedAccountId = accountId ?? resolveDefaultQQBotAccountId(cfg);
   const qqbot = cfg.channels?.qqbot as QQBotChannelConfig | undefined;
 
   // 基础配置
