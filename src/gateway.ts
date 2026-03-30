@@ -865,7 +865,6 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
             log?.info(`[qqbot:${account.accountId}] Quote detected via refMsgIdx cache: refMsgIdx=${event.refMsgIdx}, sender=${replyToSender}, content="${replyToBody.slice(0, 80)}..."`);
           } else if (event.messageReference) {
             // 缓存未命中，降级到 messageReference：需异步下载附件、语音转录、表情解析
-            replyToId = event.messageReference.msg_idx ?? event.refMsgIdx;
             replyToBody = await formatMessageReferenceForAgent(event.messageReference, { appId: account.appId, peerId, cfg, log });
             log?.info(`[qqbot:${account.accountId}] Quote detected via message_reference (cache miss): id=${replyToId}, content="${replyToBody.slice(0, 80)}..."`);
           } else {
@@ -1957,7 +1956,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                   accountId: account.accountId,
                 });
                 // 解析引用索引
-                const c2cRefs = parseRefIndices(event.message_scene?.ext);
+                const c2cRefs = parseRefIndices(event.message_scene?.ext, event.message_reference);
                 // 斜杠指令拦截 → 不匹配则入队
                 trySlashCommandOrEnqueue({
                   type: "c2c",
@@ -1979,7 +1978,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                   nickname: event.author.username,
                   accountId: account.accountId,
                 });
-                const guildRefs = parseRefIndices((event as any).message_scene?.ext);
+                const guildRefs = parseRefIndices((event as any).message_scene?.ext, (event as any).message_reference);
                 trySlashCommandOrEnqueue({
                   type: "guild",
                   senderId: event.author.id,
@@ -2002,7 +2001,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                   nickname: event.author.username,
                   accountId: account.accountId,
                 });
-                const dmRefs = parseRefIndices((event as any).message_scene?.ext);
+                const dmRefs = parseRefIndices((event as any).message_scene?.ext, (event as any).message_reference);
                 trySlashCommandOrEnqueue({
                   type: "dm",
                   senderId: event.author.id,
@@ -2025,7 +2024,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                   groupOpenid: event.group_openid,
                   accountId: account.accountId,
                 });
-                const groupRefs = parseRefIndices(event.message_scene?.ext);
+                const groupRefs = parseRefIndices(event.message_scene?.ext, event.message_reference);
                 trySlashCommandOrEnqueue({
                   type: "group",
                   senderId: event.author.member_openid,
@@ -2051,7 +2050,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                   groupOpenid: event.group_openid,
                   accountId: account.accountId,
                 });
-                const groupRefs = parseRefIndices(event.message_scene?.ext);
+                const groupRefs = parseRefIndices(event.message_scene?.ext, event.message_reference);
                 trySlashCommandOrEnqueue({
                   type: "group",
                   senderId: event.author.member_openid,
