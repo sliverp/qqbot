@@ -59,6 +59,20 @@ function isOpenclawVersionRequiresSymlink() {
     } catch {}
   }
 
+  // Strategy 3: 从 pnpm 全局安装读取版本
+  try {
+    const pnpmRoot = execSync("pnpm root -g", { encoding: "utf-8", timeout: 5000 }).trim();
+    if (pnpmRoot) {
+      for (const name of CLI_NAMES) {
+        const pkgPath = path.join(pnpmRoot, name, "package.json");
+        if (fs.existsSync(pkgPath)) {
+          const v = JSON.parse(fs.readFileSync(pkgPath, "utf-8")).version;
+          if (v) return compareVersionGte(v, REQUIRED);
+        }
+      }
+    }
+  } catch {}
+
   return true;
 }
 
@@ -106,6 +120,41 @@ function findOpenclawRoot(pluginRoot) {
       if (fs.existsSync(path.join(candidate, "package.json"))) return candidate;
     } catch {}
   }
+
+  // Strategy 4: pnpm 全局安装
+  // pnpm 的全局安装路径结构与 npm 不同：
+  //   pnpm root -g → /root/.local/share/pnpm/global/5/node_modules
+  //   实际包在 .pnpm/<name>@<version>/node_modules/<name>/ 下
+  try {
+    const pnpmRoot = execSync("pnpm root -g", { encoding: "utf-8", timeout: 5000 }).trim();
+    if (pnpmRoot) {
+      for (const name of CLI_NAMES) {
+        // 先检查 pnpm root -g 直接返回的路径（pnpm 会创建顶层 symlink）
+        const directCandidate = path.join(pnpmRoot, name);
+        if (fs.existsSync(path.join(directCandidate, "package.json"))) {
+          try {
+            const realPath = fs.realpathSync(directCandidate);
+            if (fs.existsSync(path.join(realPath, "package.json"))) return realPath;
+          } catch {
+            return directCandidate;
+          }
+        }
+        // 扫描 .pnpm 目录查找匹配的包
+        const pnpmDir = path.join(pnpmRoot, ".pnpm");
+        if (fs.existsSync(pnpmDir)) {
+          try {
+            const entries = fs.readdirSync(pnpmDir);
+            for (const entry of entries) {
+              if (entry.startsWith(name + "@")) {
+                const candidate = path.join(pnpmDir, entry, "node_modules", name);
+                if (fs.existsSync(path.join(candidate, "package.json"))) return candidate;
+              }
+            }
+          } catch {}
+        }
+      }
+    }
+  } catch {}
 
   return null;
 }

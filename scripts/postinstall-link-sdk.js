@@ -10,7 +10,7 @@
 // globally installed openclaw package, allowing Node's native ESM resolver
 // (used by jiti with tryNative:true for .js files) to find `openclaw/plugin-sdk`.
 
-import { existsSync, lstatSync, symlinkSync, unlinkSync, rmSync, mkdirSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, symlinkSync, unlinkSync, rmSync, mkdirSync, realpathSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execSync } from "node:child_process";
@@ -110,11 +110,66 @@ if (!openclawRoot) {
   }
 }
 
+// Strategy 4: pnpm global installation
+// pnpm 的全局安装路径结构与 npm 不同：
+//   pnpm root -g → /root/.local/share/pnpm/global/5/node_modules
+//   实际包在 .pnpm/<name>@<version>/node_modules/<name>/ 下
+// 另外 pnpm 的 bin 通过 symlink 指向 .pnpm 中的实际文件
+if (!openclawRoot) {
+  try {
+    const pnpmRoot = execSync("pnpm root -g", { encoding: "utf-8" }).trim();
+    if (pnpmRoot) {
+      for (const name of CLI_NAMES) {
+        // 先检查 pnpm root -g 直接返回的路径（pnpm 会创建顶层 symlink）
+        const directCandidate = join(pnpmRoot, name);
+        if (existsSync(join(directCandidate, "package.json"))) {
+          // 解析 symlink 获取真实路径
+          try {
+            const realPath = realpathSync(directCandidate);
+            if (existsSync(join(realPath, "plugin-sdk", "core.js"))) {
+              openclawRoot = realPath;
+              break;
+            }
+            // 即使没有 plugin-sdk/core.js，也可以用
+            if (existsSync(join(realPath, "package.json"))) {
+              openclawRoot = realPath;
+              break;
+            }
+          } catch {
+            // 如果 realpath 失败，直接用 symlink 路径
+            openclawRoot = directCandidate;
+            break;
+          }
+        }
+        // 扫描 .pnpm 目录查找匹配的包
+        const pnpmDir = join(pnpmRoot, ".pnpm");
+        if (existsSync(pnpmDir)) {
+          try {
+            const entries = readdirSync(pnpmDir);
+            for (const entry of entries) {
+              // pnpm 目录名格式: <name>@<version> 或 <name>@<version>_<hash>
+              if (entry.startsWith(name + "@")) {
+                const candidate = join(pnpmDir, entry, "node_modules", name);
+                if (existsSync(join(candidate, "package.json"))) {
+                  openclawRoot = candidate;
+                  break;
+                }
+              }
+            }
+          } catch {}
+        }
+        if (openclawRoot) break;
+      }
+    }
+  } catch {}
+}
+
 if (!openclawRoot) {
   // Not fatal — plugin may work if openclaw loads it with proper alias resolution
   // But log a warning so upgrade scripts can detect the failure
+  // 使用 exit(1) 以便调用方能正确检测到 symlink 未创建
   console.error("[postinstall-link-sdk] WARNING: could not find openclaw/clawdbot/moltbot global installation, symlink not created");
-  process.exit(0);
+  process.exit(1);
 }
 
 try {

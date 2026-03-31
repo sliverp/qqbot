@@ -14,6 +14,11 @@
 #   6. 环境归一化：主动修复 PATH、npm registry 等环境差异
 #   7. 超时保护：为 npm 下载/安装操作设置超时，超时后自动回滚
 #   8. 配置快照：安装前对配置文件做完整快照，任何异常都能恢复到安装前状态
+#   9. npm pack 降级：openclaw ≥ 3.22 时，原生指令失败后降级为 npm pack + 手动安装
+#  10. spec 解锁：update 前检测 plugins.installs 中的 spec 是否被 pin 到具体版本，
+#      如果是则修正为 @latest，避免 update 只能下载到当前版本导致无效操作
+#  11. 已是最新版检测：update 成功但版本未变时，先查询 npm latest 版本，
+#      如果当前版本就是 latest 则直接标记成功，避免无意义的 reinstall 重复下载
 #
 # 升级策略：
 #   1. 已安装（plugins.installs 有记录）→ openclaw plugins update
@@ -72,10 +77,239 @@ for _extra_path in /usr/local/bin /usr/local/sbin /usr/bin /usr/sbin /bin /sbin;
     esac
 done
 
-# 确保 npm registry 已配置（子进程可能没有 .npmrc）
-if ! npm config get registry &>/dev/null 2>&1; then
-    npm config set registry https://registry.npmjs.org 2>/dev/null || true
+# 确保 npm registry 可用（通过环境变量设置，不修改用户的 .npmrc）
+if [ -z "$npm_config_registry" ]; then
+    export npm_config_registry="https://registry.npmjs.org"
 fi
+
+# ============================================================================
+#  版本比较辅助函数
+# ============================================================================
+# 比较两个语义化版本号，返回 0 表示 $1 >= $2
+# 用法: version_gte "2026.3.22" "2026.3.22" → 返回 0 (true)
+version_gte() {
+    local v1="$1" v2="$2"
+    # 拆分为数组
+    local IFS='.'
+    read -ra v1_parts <<< "$v1"
+    read -ra v2_parts <<< "$v2"
+    # 逐段比较（最多比较 3 段）
+    local i
+    for i in 0 1 2; do
+        local a="${v1_parts[$i]:-0}"
+        local b="${v2_parts[$i]:-0}"
+        if [ "$a" -gt "$b" ] 2>/dev/null; then return 0; fi
+        if [ "$a" -lt "$b" ] 2>/dev/null; then return 1; fi
+    done
+    return 0  # 相等也算 >=
+}
+
+# ============================================================================
+#  [优化9] npm pack 降级安装
+# ============================================================================
+# 当 openclaw plugins install 失败且 openclaw 版本 ≥ 3.22 时，
+# 参考飞书的做法，降级为 npm pack + 手动解压 + 直接部署到 extensions 目录。
+# 这种方式绕过了 openclaw CLI 的 plugins install 逻辑，直接操作文件系统。
+#
+# 流程：
+#   1. npm pack <pkg> 下载 tgz（多 registry 兜底）
+#   2. tar xzf 解压到临时目录
+#   3. 检查 bundled dependencies，缺失则 npm install --omit=dev
+#   4. 移动到 extensions 目录
+#   5. 手动写入 plugins.installs 和 plugins.entries 配置
+#   6. 执行 postinstall-link-sdk.js 创建 SDK symlink
+#
+# 用法: npm_pack_fallback_install
+# 返回值: 0=成功, 1=失败
+npm_pack_fallback_install() {
+    echo ""
+    echo "  ============================================"
+    echo "  [降级] 尝试 npm pack + 手动安装（绕过 openclaw CLI）"
+    echo "  ============================================"
+
+    # 检查 npm 和 tar 是否可用
+    if ! command -v npm &>/dev/null; then
+        echo "  ❌ [降级] npm 命令不可用，无法执行降级安装"
+        return 1
+    fi
+    if ! command -v tar &>/dev/null; then
+        echo "  ❌ [降级] tar 命令不可用，无法解压 tgz"
+        return 1
+    fi
+
+    local pack_dir=""
+    local extract_dir=""
+    pack_dir="$(mktemp -d "${TMPDIR:-/tmp}/.qqbot-pack-XXXXXX")"
+    extract_dir="$(mktemp -d "${TMPDIR:-/tmp}/.qqbot-extract-XXXXXX")"
+
+    # 确保退出时清理临时目录
+    _cleanup_pack_dirs() {
+        [ -n "$pack_dir" ] && [ -d "$pack_dir" ] && rm -rf "$pack_dir" 2>/dev/null || true
+        [ -n "$extract_dir" ] && [ -d "$extract_dir" ] && rm -rf "$extract_dir" 2>/dev/null || true
+    }
+
+    # ── Step 1: npm pack 下载 tgz（多 registry 兜底）──
+    echo "  [降级 1/5] 下载 npm 包: $INSTALL_SRC"
+    local pack_ok=false
+    local registries=("https://registry.npmjs.org/" "https://registry.npmmirror.com/" "")
+    ensure_valid_cwd
+
+    for registry in "${registries[@]}"; do
+        local pack_args=("pack" "$INSTALL_SRC" "--pack-destination" "$pack_dir")
+        if [ -n "$registry" ]; then
+            pack_args+=("--registry" "$registry")
+            echo "    尝试 registry: $registry"
+        else
+            echo "    尝试默认 registry..."
+        fi
+
+        if run_with_timeout "$INSTALL_TIMEOUT" "npm pack $INSTALL_SRC" npm "${pack_args[@]}" 2>&1; then
+            pack_ok=true
+            break
+        fi
+    done
+
+    if [ "$pack_ok" != "true" ]; then
+        echo "  ❌ [降级] npm pack 失败（所有 registry 均不可用）"
+        _cleanup_pack_dirs
+        return 1
+    fi
+
+    # 找到下载的 tgz 文件
+    local tgz_file=""
+    tgz_file="$(find "$pack_dir" -maxdepth 1 -name '*.tgz' -type f | head -1)"
+    if [ -z "$tgz_file" ] || [ ! -f "$tgz_file" ]; then
+        echo "  ❌ [降级] 未找到下载的 tgz 文件"
+        _cleanup_pack_dirs
+        return 1
+    fi
+    echo "    已下载: $(basename "$tgz_file")"
+
+    # ── Step 2: 解压 tgz ──
+    echo "  [降级 2/5] 解压 tgz..."
+    if ! tar xzf "$tgz_file" -C "$extract_dir" 2>&1; then
+        echo "  ❌ [降级] 解压失败"
+        _cleanup_pack_dirs
+        return 1
+    fi
+
+    # npm pack 解压后的目录名为 "package"
+    local package_dir="$extract_dir/package"
+    if [ ! -d "$package_dir" ] || [ ! -f "$package_dir/package.json" ]; then
+        echo "  ❌ [降级] 解压后未找到 package 目录或 package.json"
+        _cleanup_pack_dirs
+        return 1
+    fi
+
+    # ── Step 3: 检查 bundled dependencies ──
+    echo "  [降级 3/5] 检查 bundled dependencies..."
+    local nm_dir="$package_dir/node_modules"
+    if [ -d "$nm_dir" ]; then
+        local bundled_count
+        bundled_count="$(find "$nm_dir" -maxdepth 2 -name 'package.json' -type f 2>/dev/null | wc -l | tr -d ' ')"
+        echo "    bundled dependencies 就绪（${bundled_count} 个包）"
+    else
+        echo "    ⚠️  bundled node_modules 不存在，执行 npm install..."
+        ensure_valid_cwd
+        (
+            cd "$package_dir" 2>/dev/null || true
+            npm install --omit=dev --omit=peer --ignore-scripts --quiet 2>&1 || true
+        )
+    fi
+
+    # ── Step 4: 部署到 extensions 目录 ──
+    echo "  [降级 4/5] 部署到 extensions 目录..."
+    local target_dir="$EXTENSIONS_DIR/$PLUGIN_ID"
+
+    # 确保 extensions 目录存在
+    mkdir -p "$EXTENSIONS_DIR" 2>/dev/null || true
+
+    # 如果目标目录已存在（可能是之前失败留下的不完整目录），先清理
+    if [ -d "$target_dir" ]; then
+        rm -rf "$target_dir" 2>/dev/null || true
+    fi
+
+    # 移动到目标位置
+    if ! mv "$package_dir" "$target_dir" 2>&1; then
+        echo "  ❌ [降级] 移动到 extensions 目录失败"
+        _cleanup_pack_dirs
+        return 1
+    fi
+
+    # 验证部署结果
+    if [ ! -d "$target_dir" ] || [ ! -f "$target_dir/package.json" ]; then
+        echo "  ❌ [降级] 部署后目录不完整"
+        _cleanup_pack_dirs
+        return 1
+    fi
+
+    # ── Step 5: 写入配置 + 执行 postinstall ──
+    echo "  [降级 5/5] 写入配置并创建 SDK symlink..."
+
+    # 手动写入 plugins.installs 和 plugins.entries 到配置文件
+    # （因为没有通过 openclaw plugins install，配置不会自动更新）
+    local _npm_pack_ver=""
+    _npm_pack_ver="$(node -e "
+      try {
+        const v = JSON.parse(require('fs').readFileSync('$target_dir/package.json', 'utf8')).version;
+        if (v) process.stdout.write(String(v));
+      } catch {}
+    " 2>/dev/null || true)"
+
+    # 写入配置（直接操作真实配置文件，因为此时临时配置已不再使用）
+    local _config_to_update="$CONFIG_FILE"
+    # 如果有临时配置文件且 OPENCLAW_CONFIG_PATH 已设置，先写入临时配置
+    if [ -n "$TEMP_CONFIG_FILE" ] && [ -f "$TEMP_CONFIG_FILE" ]; then
+        _config_to_update="$TEMP_CONFIG_FILE"
+    fi
+
+    if [ -f "$_config_to_update" ]; then
+        node -e "
+          try {
+            const fs = require('fs');
+            const cfg = JSON.parse(fs.readFileSync('$_config_to_update', 'utf8'));
+            if (!cfg.plugins) cfg.plugins = {};
+            // 写入 installs 记录
+            if (!cfg.plugins.installs) cfg.plugins.installs = {};
+            cfg.plugins.installs['$PLUGIN_ID'] = {
+              source: 'npm',
+              spec: '$INSTALL_SRC',
+              version: '$_npm_pack_ver'
+            };
+            // 写入 entries 记录
+            if (!cfg.plugins.entries) cfg.plugins.entries = {};
+            if (!cfg.plugins.entries['$PLUGIN_ID']) {
+              cfg.plugins.entries['$PLUGIN_ID'] = { enabled: true };
+            }
+            // 确保 allow 列表包含插件
+            if (!cfg.plugins.allow) cfg.plugins.allow = [];
+            if (!cfg.plugins.allow.includes('$PLUGIN_ID')) {
+              cfg.plugins.allow.push('$PLUGIN_ID');
+            }
+            fs.writeFileSync('$_config_to_update', JSON.stringify(cfg, null, 4) + '\n');
+          } catch(e) { console.error('  ⚠️  写入配置失败:', e.message); }
+        " 2>/dev/null || true
+        echo "    已写入 plugins.installs/entries/allow 配置"
+    fi
+
+    # 执行 postinstall-link-sdk.js 创建 openclaw SDK symlink
+    local postinstall_script="$target_dir/scripts/postinstall-link-sdk.js"
+    if [ -f "$postinstall_script" ]; then
+        echo "    执行 postinstall-link-sdk..."
+        ensure_valid_cwd
+        if node "$postinstall_script" 2>&1; then
+            echo "    ✅ plugin-sdk 链接就绪"
+        else
+            echo "    ⚠️  postinstall-link-sdk 失败（非致命）"
+        fi
+    fi
+
+    # 清理临时目录
+    _cleanup_pack_dirs
+
+    echo "  ✅ [降级] npm pack + 手动安装成功 (v${_npm_pack_ver:-unknown})"
+    return 0
+}
 
 # ============================================================================
 #  [优化7] 超时执行包装器
@@ -310,6 +544,10 @@ cleanup_on_exit() {
     find "${EXTENSIONS_DIR:-/dev/null}" -maxdepth 1 -name ".openclaw-install-stage-*" -exec rm -rf {} + 2>/dev/null || true
     find "${TMPDIR:-/tmp}" -maxdepth 1 -name ".openclaw-install-stage-*" -exec rm -rf {} + 2>/dev/null || true
 
+    # [优化9] 清理 npm pack 降级安装可能残留的临时目录
+    find "${TMPDIR:-/tmp}" -maxdepth 1 -name ".qqbot-pack-*" -exec rm -rf {} + 2>/dev/null || true
+    find "${TMPDIR:-/tmp}" -maxdepth 1 -name ".qqbot-extract-*" -exec rm -rf {} + 2>/dev/null || true
+
     # [优化8] 清理配置快照
     cleanup_config_snapshot
 
@@ -327,6 +565,8 @@ trap 'echo "  ⚠️  收到 SIGHUP 信号，正在清理..."; exit 129' HUP
 
 # 清理上次升级可能遗留的备份目录（如上次脚本被 kill 等极端情况）
 find "${TMPDIR:-/tmp}" -maxdepth 1 -name ".qqbot-upgrade-backup-*" -exec rm -rf {} + 2>/dev/null || true
+find "${TMPDIR:-/tmp}" -maxdepth 1 -name ".qqbot-pack-*" -exec rm -rf {} + 2>/dev/null || true
+find "${TMPDIR:-/tmp}" -maxdepth 1 -name ".qqbot-extract-*" -exec rm -rf {} + 2>/dev/null || true
 
 PKG_NAME="@tencent-connect/openclaw-qqbot"
 PLUGIN_ID="openclaw-qqbot"
@@ -574,6 +814,17 @@ restore_qqbot_channel() {
               real.plugins.entries = { ...(real.plugins.entries || {}), ...tmp.plugins.entries };
               changed = true;
             }
+            // 同步 plugins.allow（npm pack 降级安装时会写入 allow）
+            if (Array.isArray(tmp.plugins?.allow) && tmp.plugins.allow.length > 0) {
+              if (!real.plugins) real.plugins = {};
+              if (!Array.isArray(real.plugins.allow)) real.plugins.allow = [];
+              for (const id of tmp.plugins.allow) {
+                if (!real.plugins.allow.includes(id)) {
+                  real.plugins.allow.push(id);
+                }
+              }
+              changed = true;
+            }
             if (changed) {
               fs.writeFileSync('$CONFIG_FILE', JSON.stringify(real, null, 4) + '\n');
             }
@@ -587,16 +838,22 @@ restore_qqbot_channel() {
 
 UPGRADE_OK=false
 
-# 检测安装状态：同时检查配置记录和磁盘目录
-HAS_INSTALL_RECORD="$(node -e "
+# 检测安装状态：同时检查配置记录和磁盘目录，并读取 spec 字段
+# 输出格式: "yes|<spec>" 或 "" (无记录)
+INSTALL_RECORD_INFO="$(node -e "
   try {
     const fs = require('fs');
     const p = '$HOME/.$CMD/$CMD.json';
     const cfg = JSON.parse(fs.readFileSync(p, 'utf8'));
     const inst = cfg.plugins && cfg.plugins.installs && cfg.plugins.installs['$PLUGIN_ID'];
-    if (inst) process.stdout.write('yes');
+    if (inst) {
+      const spec = inst.spec || '';
+      process.stdout.write('yes|' + spec);
+    }
   } catch {}
 " 2>/dev/null || true)"
+HAS_INSTALL_RECORD="${INSTALL_RECORD_INFO%%|*}"
+INSTALL_SPEC="${INSTALL_RECORD_INFO#*|}"
 HAS_PLUGIN_DIR=false
 [ -d "$EXTENSIONS_DIR/$PLUGIN_ID" ] && [ -f "$EXTENSIONS_DIR/$PLUGIN_ID/package.json" ] && HAS_PLUGIN_DIR=true
 
@@ -614,7 +871,39 @@ USE_UPDATE=false
 if [ "$HAS_INSTALL_RECORD" = "yes" ] && [ "$HAS_PLUGIN_DIR" = "true" ] && [ -z "$TARGET_VERSION" ]; then
     # 配置和目录都齐全，且未指定版本 → 走 update
     USE_UPDATE=true
-    echo "  [检测] 配置记录 ✓ | 插件目录 ✓ | 未指定版本 → 使用 update"
+    # [优化10] 检测 spec 是否被 pin 到具体版本号
+    # openclaw CLI 在 install 后会将 spec 从 @latest 改写为 @具体版本号（如 @1.6.3），
+    # 导致后续 update 只能"更新"到同一版本。这里提前检测并修正。
+    SPEC_IS_PINNED=false
+    if [ -n "$INSTALL_SPEC" ]; then
+        # 判断 spec 是否包含具体版本号（如 @tencent-connect/openclaw-qqbot@1.6.3）
+        # 而非 tag（如 @latest, @next, @beta）
+        # 具体版本号的特征：@ 后面跟数字开头的语义化版本
+        SPEC_SUFFIX="${INSTALL_SPEC##*@}"
+        if echo "$SPEC_SUFFIX" | grep -qE '^[0-9]+\.[0-9]+'; then
+            SPEC_IS_PINNED=true
+        fi
+    fi
+    if [ "$SPEC_IS_PINNED" = "true" ]; then
+        echo "  [检测] 配置记录 ✓ | 插件目录 ✓ | 未指定版本 → 使用 update"
+        echo "  [优化10] spec 被 pin 为 '$INSTALL_SPEC'，update 前修正为 @latest"
+        # 将 plugins.installs 中的 spec 修正为 @latest，使 update 能拉取最新版本
+        node -e "
+          try {
+            const fs = require('fs');
+            const configPath = process.env.OPENCLAW_CONFIG_PATH || '$HOME/.$CMD/$CMD.json';
+            const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+            if (cfg.plugins && cfg.plugins.installs && cfg.plugins.installs['$PLUGIN_ID']) {
+              const oldSpec = cfg.plugins.installs['$PLUGIN_ID'].spec;
+              cfg.plugins.installs['$PLUGIN_ID'].spec = '$PKG_NAME@latest';
+              fs.writeFileSync(configPath, JSON.stringify(cfg, null, 4) + '\n');
+              process.stdout.write('ok');
+            }
+          } catch(e) { process.stderr.write(e.message); }
+        " 2>/dev/null && echo "  [优化10] ✓ spec 已修正为 '$PKG_NAME@latest'" || echo "  [优化10] ⚠️ spec 修正失败，update 可能仍使用旧版本"
+    else
+        echo "  [检测] 配置记录 ✓ | 插件目录 ✓ | 未指定版本 → 使用 update"
+    fi
 elif [ "$HAS_INSTALL_RECORD" = "yes" ] && [ "$HAS_PLUGIN_DIR" = "true" ]; then
     echo "  [检测] 配置记录 ✓ | 插件目录 ✓ | 指定版本 $TARGET_VERSION → 使用 reinstall"
 elif [ "$HAS_INSTALL_RECORD" = "yes" ]; then
@@ -649,10 +938,20 @@ if [ "$USE_UPDATE" = "true" ]; then
             UPGRADE_OK=true
             echo "  ✅ update 成功"
         else
-            echo "  ️  update 返回成功但版本未变 ($POST_UPDATE_VERSION)，回退到 reinstall..."
+            # [优化11] update 返回成功但版本未变 → 先查询 npm latest 版本，
+            # 如果当前版本就是 latest，说明已是最新，无需 reinstall
+            echo "  ℹ️  update 返回成功但版本未变 ($POST_UPDATE_VERSION)，检查是否已是最新版..."
+            NPM_LATEST_VERSION=""
+            NPM_LATEST_VERSION="$(npm view "$PKG_NAME" version 2>/dev/null || true)"
+            if [ -n "$NPM_LATEST_VERSION" ] && [ "$NPM_LATEST_VERSION" = "$POST_UPDATE_VERSION" ]; then
+                UPGRADE_OK=true
+                echo "  ✅ 当前版本 $POST_UPDATE_VERSION 已是 npm 最新版本，无需升级"
+            else
+                echo "  ️  npm latest=${NPM_LATEST_VERSION:-unknown}，当前=${POST_UPDATE_VERSION}，回退到 reinstall..."
+            fi
         fi
     else
-        local update_rc=$?
+        update_rc=$?
         if [ $update_rc -eq 124 ]; then
             echo "  ⏰ update 超时（${INSTALL_TIMEOUT}s），回退到 reinstall..."
         else
@@ -762,23 +1061,69 @@ if [ "$UPGRADE_OK" != "true" ]; then
             echo "  [清理] 删除不完整的插件目录"
             rm -rf "$EXTENSIONS_DIR/$PLUGIN_ID" 2>/dev/null || true
         fi
-        # 回滚：恢复旧目录（带验证）
-        rollback_plugin_dir "$FAIL_REASON"
-        # [优化8] 恢复配置快照（快照已包含完整的安装前配置，无需再调用 restore_qqbot_channel）
-        restore_config_snapshot
-        # 清理临时配置文件（快照已恢复，临时配置不再需要）
-        if [ -n "$TEMP_CONFIG_FILE" ] && [ -f "$TEMP_CONFIG_FILE" ]; then
-            rm -f "$TEMP_CONFIG_FILE" 2>/dev/null || true
-        fi
-        unset OPENCLAW_CONFIG_PATH 2>/dev/null || true
-        if [ $INSTALL_EXIT_CODE -eq 124 ]; then
-            echo "QQBOT_NEW_VERSION=unknown"
-            echo "QQBOT_REPORT=⏰ QQBot 安装超时（${INSTALL_TIMEOUT}s，已回滚），请检查网络或增加 --timeout 参数"
+
+        # ============================================================================
+        #  [优化9] npm pack 降级安装 — openclaw ≥ 3.22 时尝试绕过 CLI 直接安装
+        # ============================================================================
+        # 参考飞书的做法：当 openclaw plugins install 失败时，
+        # 如果 openclaw 版本 ≥ 3.22，降级为 npm pack + 手动解压 + 直接部署。
+        # 这种方式绕过了 openclaw CLI 的 plugins install 逻辑（可能有 bug 或兼容性问题），
+        # 直接通过 npm 下载包并手动部署到 extensions 目录。
+        NPM_PACK_FALLBACK_OK=false
+        if [ -n "$OPENCLAW_VERSION" ] && version_gte "$OPENCLAW_VERSION" "2026.3.22"; then
+            echo ""
+            echo "  [降级] openclaw 版本 $OPENCLAW_VERSION ≥ 3.22，尝试 npm pack 降级安装..."
+            if npm_pack_fallback_install; then
+                # 降级安装成功
+                NPM_PACK_FALLBACK_OK=true
+                UPGRADE_OK=true
+                INSTALL_COMPLETED=true
+                echo "  ✅ [降级] npm pack 安装成功"
+                # 清理备份
+                if [ -n "$BACKUP_DIR" ] && [ -d "$BACKUP_DIR" ]; then
+                    rm -rf "$BACKUP_DIR"
+                    echo "  已清理旧版备份"
+                fi
+                if [ -n "$STAGING_DIR" ] && [ -d "$STAGING_DIR" ]; then
+                    rm -rf "$STAGING_DIR"
+                    STAGING_DIR=""
+                fi
+                # 清理残留
+                find "${TMPDIR:-/tmp}" -maxdepth 1 -name ".qqbot-upgrade-backup-*" -exec rm -rf {} + 2>/dev/null || true
+                find "${TMPDIR:-/tmp}" -maxdepth 1 -name ".qqbot-staging-*" -exec rm -rf {} + 2>/dev/null || true
+                find "${TMPDIR:-/tmp}" -maxdepth 1 -name ".qqbot-pack-*" -exec rm -rf {} + 2>/dev/null || true
+                find "${TMPDIR:-/tmp}" -maxdepth 1 -name ".qqbot-extract-*" -exec rm -rf {} + 2>/dev/null || true
+            else
+                echo "  ❌ [降级] npm pack 安装也失败了"
+            fi
         else
-            echo "QQBOT_NEW_VERSION=unknown"
-            echo "QQBOT_REPORT=❌ QQBot 安装失败（已回滚到旧版本），请检查网络和 npm registry"
+            if [ -n "$OPENCLAW_VERSION" ]; then
+                echo "  [跳过降级] openclaw 版本 $OPENCLAW_VERSION < 3.22，不支持 npm pack 降级"
+            else
+                echo "  [跳过降级] 无法检测 openclaw 版本，跳过 npm pack 降级"
+            fi
         fi
-        exit 1
+
+        # 如果降级安装也失败，执行回滚
+        if [ "$NPM_PACK_FALLBACK_OK" != "true" ]; then
+            # 回滚：恢复旧目录（带验证）
+            rollback_plugin_dir "$FAIL_REASON"
+            # [优化8] 恢复配置快照（快照已包含完整的安装前配置，无需再调用 restore_qqbot_channel）
+            restore_config_snapshot
+            # 清理临时配置文件（快照已恢复，临时配置不再需要）
+            if [ -n "$TEMP_CONFIG_FILE" ] && [ -f "$TEMP_CONFIG_FILE" ]; then
+                rm -f "$TEMP_CONFIG_FILE" 2>/dev/null || true
+            fi
+            unset OPENCLAW_CONFIG_PATH 2>/dev/null || true
+            if [ $INSTALL_EXIT_CODE -eq 124 ]; then
+                echo "QQBOT_NEW_VERSION=unknown"
+                echo "QQBOT_REPORT=⏰ QQBot 安装超时（${INSTALL_TIMEOUT}s，已回滚），请检查网络或增加 --timeout 参数"
+            else
+                echo "QQBOT_NEW_VERSION=unknown"
+                echo "QQBOT_REPORT=❌ QQBot 安装失败（已回滚到旧版本），请检查网络和 npm registry"
+            fi
+            exit 1
+        fi
     fi
 fi
 
@@ -903,7 +1248,8 @@ if [ -f "$POSTINSTALL_SCRIPT" ]; then
     if node "$POSTINSTALL_SCRIPT" 2>&1; then
         echo "  ✅ plugin-sdk 链接就绪"
     else
-        echo "  ⚠️  postinstall-link-sdk 失败，插件可能无法加载"
+        echo "  ⚠️  postinstall-link-sdk 失败（symlink 未创建），插件可能无法加载"
+        echo "  提示: 如果 openclaw 是通过 pnpm 安装的，请确保 pnpm 命令可用"
     fi
 fi
 
