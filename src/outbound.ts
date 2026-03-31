@@ -17,6 +17,7 @@ import {
   sendC2CMediaMessage,
   sendGroupMediaMessage,
   MediaFileType,
+  UPLOAD_PREPARE_FALLBACK_CODE,
 } from "./api.js";
 import { isAudioFile, audioFileToSilkFile, waitForFile, shouldTranscodeVoice } from "./utils/audio-convert.js";
 import { fileExistsAsync, formatFileSize, getMaxUploadSize, getFileTypeName, getFileSizeAsync } from "./utils/file-utils.js";
@@ -166,13 +167,46 @@ export interface MediaOutboundContext extends OutboundContext {
   mimeType?: string;
 }
 
+export const OUTBOUND_ERROR_CODES = {
+  FILE_TOO_LARGE: "file_too_large",
+  UPLOAD_DAILY_LIMIT_EXCEEDED: "upload_daily_limit_exceeded",
+} as const;
+
+export const DEFAULT_MEDIA_SEND_ERROR = "发送失败，请稍后重试。";
+
+export type OutboundErrorCode = typeof OUTBOUND_ERROR_CODES[keyof typeof OUTBOUND_ERROR_CODES];
+
 export interface OutboundResult {
   channel: string;
   messageId?: string;
   timestamp?: string | number;
   error?: string;
+  /** 稳定错误码，供上层按类型处理，避免依赖 error 文案 */
+  errorCode?: OutboundErrorCode;
+  /** QQ 开放平台业务错误码（如 upload_prepare 的 40093002） */
+  qqBizCode?: number;
   /** 出站消息的引用索引（ext_info.ref_idx），供引用消息缓存使用 */
   refIdx?: string;
+}
+
+/**
+ * 将媒体发送结果映射为可展示给用户的文案。
+ * 只对明确标记为可直接展示的错误码透传原文，其余统一走通用兜底。
+ */
+export function resolveUserFacingMediaError(result: Pick<OutboundResult, "error" | "errorCode" | "qqBizCode">): string {
+  if (!result.error) return DEFAULT_MEDIA_SEND_ERROR;
+
+  if (result.qqBizCode === UPLOAD_PREPARE_FALLBACK_CODE) {
+    return result.error;
+  }
+
+  switch (result.errorCode) {
+    case OUTBOUND_ERROR_CODES.FILE_TOO_LARGE:
+    case OUTBOUND_ERROR_CODES.UPLOAD_DAILY_LIMIT_EXCEEDED:
+      return result.error;
+    default:
+      return DEFAULT_MEDIA_SEND_ERROR;
+  }
 }
 
 /**
@@ -511,7 +545,11 @@ async function chunkedUploadAndSend(
   if (fileSize > maxSize) {
     const typeName = getFileTypeName(fileType);
     const limitMB = Math.round(maxSize / (1024 * 1024));
-    return { channel: "qqbot", error: `${typeName}过大（${formatFileSize(fileSize)}），超过了${limitMB}M，暂时不能通过QQ直接发给你。` };
+    return {
+      channel: "qqbot",
+      error: `${typeName}过大（${formatFileSize(fileSize)}），超过了${limitMB}M，暂时不能通过QQ直接发给你。`,
+      errorCode: OUTBOUND_ERROR_CODES.FILE_TOO_LARGE,
+    };
   }
 
   if (ctx.targetType === "c2c") {
@@ -537,7 +575,12 @@ async function chunkedUploadAndSend(
         const dir = path.dirname(err.filePath);
         const name = path.basename(err.filePath);
         const size = formatFileSize(err.fileSize);
-        return { channel: "qqbot", error: `QQBot每天发送文件有累计2G的限制，如果着急的话，可以直接来我的主机copy下载，文件目录\`${dir}/${name}\`（${size}）` };
+        return {
+          channel: "qqbot",
+          error: `QQBot每天发送文件有累计2G的限制，如果着急的话，可以直接来我的主机copy下载，文件目录\`${dir}/${name}\`（${size}）`,
+          errorCode: OUTBOUND_ERROR_CODES.UPLOAD_DAILY_LIMIT_EXCEEDED,
+          qqBizCode: UPLOAD_PREPARE_FALLBACK_CODE,
+        };
       }
       return { channel: "qqbot", error: `文件发送失败，请稍后重试。` };
     }
@@ -566,7 +609,12 @@ async function chunkedUploadAndSend(
         const dir = path.dirname(err.filePath);
         const name = path.basename(err.filePath);
         const size = formatFileSize(err.fileSize);
-        return { channel: "qqbot", error: `QQBot每天发送文件有累计2G的限制，如果着急的话，可以直接来我的主机copy下载，文件目录\`${dir}/${name}\`（${size}）` };
+        return {
+          channel: "qqbot",
+          error: `QQBot每天发送文件有累计2G的限制，如果着急的话，可以直接来我的主机copy下载，文件目录\`${dir}/${name}\`（${size}）`,
+          errorCode: OUTBOUND_ERROR_CODES.UPLOAD_DAILY_LIMIT_EXCEEDED,
+          qqBizCode: UPLOAD_PREPARE_FALLBACK_CODE,
+        };
       }
       return { channel: "qqbot", error: `文件发送失败，请稍后重试。` };
     }

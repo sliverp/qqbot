@@ -7,8 +7,20 @@
  */
 
 import type { ResolvedQQBotAccount } from "./types.js";
-import { sendC2CMessage, sendGroupMessage, sendChannelMessage, sendC2CImageMessage, sendGroupImageMessage } from "./api.js";
-import { sendPhoto, sendMedia as sendMediaAuto, type MediaTargetContext } from "./outbound.js";
+import {
+  sendC2CMessage,
+  sendGroupMessage,
+  sendChannelMessage,
+  sendC2CImageMessage,
+  sendGroupImageMessage,
+} from "./api.js";
+import {
+  sendPhoto,
+  sendMedia as sendMediaAuto,
+  DEFAULT_MEDIA_SEND_ERROR,
+  resolveUserFacingMediaError,
+  type MediaTargetContext,
+} from "./outbound.js";
 import { chunkText, TEXT_CHUNK_LIMIT } from "./channel.js";
 import { getQQBotRuntime } from "./runtime.js";
 import { getImageSize, formatQQBotMarkdownImage, hasQQBotImageSize } from "./utils/image-size.js";
@@ -217,13 +229,13 @@ export async function sendPlainReply(
         });
         if (result.error) {
           log?.error(`${prefix} sendMedia(auto) error for ${mediaPath}: ${result.error}`);
-          await sendTextChunks("发送失败，请稍后重试。", event, actx, sendWithRetry, consumeQuoteRef);
+          await sendTextChunks(resolveUserFacingMediaError(result), event, actx, sendWithRetry, consumeQuoteRef);
         } else {
           log?.info(`${prefix} Sent local media: ${mediaPath}`);
         }
       } catch (err) {
         log?.error(`${prefix} sendMedia(auto) failed for ${mediaPath}: ${err}`);
-        await sendTextChunks("发送失败，请稍后重试。", event, actx, sendWithRetry, consumeQuoteRef);
+        await sendTextChunks(DEFAULT_MEDIA_SEND_ERROR, event, actx, sendWithRetry, consumeQuoteRef);
       }
     }
   }
@@ -245,13 +257,13 @@ export async function sendPlainReply(
           });
           if (result.error) {
             log?.error(`${prefix} Tool media forward error: ${result.error}`);
-            await sendTextChunks("发送失败，请稍后重试。", event, actx, sendWithRetry, consumeQuoteRef);
+            await sendTextChunks(resolveUserFacingMediaError(result), event, actx, sendWithRetry, consumeQuoteRef);
           } else {
             log?.info(`${prefix} Forwarded tool media: ${mediaUrl.slice(0, 80)}...`);
           }
         } catch (err) {
           log?.error(`${prefix} Tool media forward failed: ${err}`);
-          await sendTextChunks("发送失败，请稍后重试。", event, actx, sendWithRetry, consumeQuoteRef);
+          await sendTextChunks(DEFAULT_MEDIA_SEND_ERROR, event, actx, sendWithRetry, consumeQuoteRef);
         }
       }
     }
@@ -260,6 +272,7 @@ export async function sendPlainReply(
 }
 
 // ============ 内部辅助函数 ============
+
 
 /** 发送文本分块（共用逻辑） */
 async function sendTextChunks(
@@ -441,13 +454,13 @@ async function sendPlainTextReply(
         const imgResult = await sendPhoto(imgMediaTarget, imageUrl);
         if (imgResult.error) {
           log?.error(`${prefix} Failed to send image: ${imgResult.error}`);
-          await sendTextChunks(`发送图片失败：${imgResult.error}`, event, actx, sendWithRetry, consumeQuoteRef);
+          await sendTextChunks(resolveUserFacingMediaError(imgResult), event, actx, sendWithRetry, consumeQuoteRef);
         } else {
           log?.info(`${prefix} Sent image via sendPhoto: ${imageUrl.slice(0, 80)}...`);
         }
       } catch (imgErr) {
         log?.error(`${prefix} Failed to send image: ${imgErr}`);
-        await sendTextChunks(`发送图片失败：${imgErr}`, event, actx, sendWithRetry, consumeQuoteRef);
+        await sendTextChunks(DEFAULT_MEDIA_SEND_ERROR, event, actx, sendWithRetry, consumeQuoteRef);
       }
     }
 
