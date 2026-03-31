@@ -1,7 +1,7 @@
 import WebSocket from "ws";
 import path from "node:path";
 import fs from "node:fs";
-import type { ResolvedQQBotAccount, WSPayload, C2CMessageEvent, GuildMessageEvent, GroupMessageEvent, InteractionEvent } from "./types.js";
+import type { ResolvedQQBotAccount, WSPayload, C2CMessageEvent, GuildMessageEvent, GroupMessageEvent, InteractionEvent, MessageReference } from "./types.js";
 import { getAccessToken, getGatewayUrl, sendC2CMessage, sendChannelMessage, sendGroupMessage, clearTokenCache, initApiConfig, startBackgroundTokenRefresh, stopBackgroundTokenRefresh, sendC2CInputNotify, onMessageSent, PLUGIN_USER_AGENT, sendProactiveGroupMessage, acknowledgeInteraction, getApiPluginVersion } from "./api.js";
 import { loadSession, saveSession, clearSession } from "./session-store.js";
 import { recordKnownUser, flushKnownUsers } from "./known-users.js";
@@ -19,7 +19,7 @@ import {
   type HistoryEntry,
 } from "./group-history.js";
 
-import { setRefIndex, getRefIndex, formatRefEntryForAgent, flushRefIndex, type RefAttachmentSummary } from "./ref-index-store.js";
+import { setRefIndex, getRefIndex, formatRefEntryForAgent, formatMessageReferenceForAgent, flushRefIndex, type RefAttachmentSummary } from "./ref-index-store.js";
 import { matchSlashCommand, getFrameworkVersion, parseFrameworkDateVersion, type SlashCommandContext, type SlashCommandFileResult } from "./slash-commands.js";
 import { createMessageQueue, type QueuedMessage } from "./message-queue.js";
 import { triggerUpdateCheck } from "./update-checker.js";
@@ -722,6 +722,8 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         eventType?: string;
         mentions?: Array<{ scope?: "all" | "single"; id?: string; user_openid?: string; member_openid?: string; username?: string; bot?: boolean; is_you?: boolean }>;
         messageScene?: { source?: string; ext?: string[] };
+        /** QQ 推送事件中携带的被引用原始消息结构 */
+        messageReference?: MessageReference;
       }) => {
 
         log?.debug?.(`[qqbot:${account.accountId}] Received message: ${JSON.stringify(event)}`);
@@ -833,26 +835,41 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
           ? (parsedContent.trim() ? `${parsedContent}\n${voiceText}` : voiceText) + attachmentInfo
           : parsedContent + attachmentInfo;
 
+        // 统一处理 <@member_openid> → @username / 移除 @bot mention
+        if (event.type === "group" && event.mentions?.length) {
+          userContent = stripMentionText(userContent, event.mentions as any) ?? userContent;
+        } else if (event.mentions?.length) {
+          for (const m of event.mentions) {
+            if (m.member_openid && m.username) {
+              userContent = userContent.replace(new RegExp(`<@${m.member_openid}>`, "g"), `@${m.username}`);
+            }
+          }
+        }
+
         // ============ 引用消息处理 ============
         let replyToId: string | undefined;
         let replyToBody: string | undefined;
         let replyToSender: string | undefined;
         let replyToIsQuote = false;
 
-        // 1. 查找被引用消息
+        // 引用消息处理：优先使用本地 refIndex 缓存（同步、已处理），缓存未命中时降级到 messageReference
         if (event.refMsgIdx) {
           const refEntry = getRefIndex(event.refMsgIdx);
+          replyToId = event.refMsgIdx;
+          replyToIsQuote = true;
+
           if (refEntry) {
-            replyToId = event.refMsgIdx;
+            // 缓存命中：直接使用已处理好的内容（同步，无需再下载附件）
             replyToBody = formatRefEntryForAgent(refEntry);
             replyToSender = refEntry.senderName ?? refEntry.senderId;
-            replyToIsQuote = true;
-            log?.info(`[qqbot:${account.accountId}] Quote detected: refMsgIdx=${event.refMsgIdx}, sender=${replyToSender}, content="${replyToBody.slice(0, 80)}..."`);
+            log?.info(`[qqbot:${account.accountId}] Quote detected via refMsgIdx cache: refMsgIdx=${event.refMsgIdx}, sender=${replyToSender}, content="${replyToBody.slice(0, 80)}..."`);
+          } else if (event.messageReference) {
+            // 缓存未命中，降级到 messageReference：需异步下载附件、语音转录、表情解析
+            replyToBody = await formatMessageReferenceForAgent(event.messageReference, { appId: account.appId, peerId, cfg, log });
+            log?.info(`[qqbot:${account.accountId}] Quote detected via message_reference (cache miss): id=${replyToId}, content="${replyToBody.slice(0, 80)}..."`);
           } else {
-            log?.info(`[qqbot:${account.accountId}] Quote detected but refMsgIdx not in cache: ${event.refMsgIdx}`);
-            replyToId = event.refMsgIdx;
-            replyToIsQuote = true;
-            // 缓存未命中时 replyToBody 为空，AI 只能知道"用户引用了一条消息"
+            // 缓存未命中且无 messageReference：AI 只能知道"用户引用了一条消息"
+            log?.info(`[qqbot:${account.accountId}] Quote detected but no cache and no messageReference: refMsgIdx=${event.refMsgIdx}`);
           }
         }
 
@@ -1055,7 +1072,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
               limit: historyLimit,
               entry: {
                 sender: senderForHistory,
-                body: parseFaceTags(event.content),
+                body: userContent,
                 timestamp: new Date(event.timestamp).getTime(),
                 messageId: event.messageId,
                 attachments: historyAttachments,
@@ -1084,7 +1101,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
               limit: historyLimit,
               entry: {
                 sender: senderForHistory,
-                body: parseFaceTags(event.content),
+                body: userContent,
                 timestamp: new Date(event.timestamp).getTime(),
                 messageId: event.messageId,
                 attachments: historyAttachments,
@@ -1123,17 +1140,6 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         }
 
         const mergedCount = (event as QueuedMessage)._mergedCount;
-
-        // 将 <@member_openid> 替换为 @username（使用 mentions 适配器）
-        if (event.type === "group" && event.mentions?.length) {
-          userContent = stripMentionText(userContent, event.mentions as any) ?? userContent;
-        } else if (event.mentions?.length) {
-          for (const m of event.mentions) {
-            if (m.member_openid && m.username) {
-              userContent = userContent.replace(new RegExp(`<@${m.member_openid}>`, "g"), `@${m.username}`);
-            }
-          }
-        }
 
         // 群消息 user prompt 带上发送者昵称（合并消息已内嵌发送者前缀，不再重复添加）
         const isMergedMsg = mergedCount && mergedCount > 1;
@@ -1950,7 +1956,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                   accountId: account.accountId,
                 });
                 // 解析引用索引
-                const c2cRefs = parseRefIndices(event.message_scene?.ext);
+                const c2cRefs = parseRefIndices(event.message_scene?.ext, event.message_reference);
                 // 斜杠指令拦截 → 不匹配则入队
                 trySlashCommandOrEnqueue({
                   type: "c2c",
@@ -1961,6 +1967,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                   attachments: event.attachments,
                   refMsgIdx: c2cRefs.refMsgIdx,
                   msgIdx: c2cRefs.msgIdx,
+                  messageReference: event.message_reference,
                 });
               } else if (t === "AT_MESSAGE_CREATE") {
                 const event = d as GuildMessageEvent;
@@ -1971,7 +1978,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                   nickname: event.author.username,
                   accountId: account.accountId,
                 });
-                const guildRefs = parseRefIndices((event as any).message_scene?.ext);
+                const guildRefs = parseRefIndices((event as any).message_scene?.ext, (event as any).message_reference);
                 trySlashCommandOrEnqueue({
                   type: "guild",
                   senderId: event.author.id,
@@ -1994,7 +2001,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                   nickname: event.author.username,
                   accountId: account.accountId,
                 });
-                const dmRefs = parseRefIndices((event as any).message_scene?.ext);
+                const dmRefs = parseRefIndices((event as any).message_scene?.ext, (event as any).message_reference);
                 trySlashCommandOrEnqueue({
                   type: "dm",
                   senderId: event.author.id,
@@ -2017,13 +2024,13 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                   groupOpenid: event.group_openid,
                   accountId: account.accountId,
                 });
-                const groupRefs = parseRefIndices(event.message_scene?.ext);
+                const groupRefs = parseRefIndices(event.message_scene?.ext, event.message_reference);
                 trySlashCommandOrEnqueue({
                   type: "group",
                   senderId: event.author.member_openid,
                   senderName: event.author.username,
                   content: event.content,
-                  messageId: event.id,
+                  messageId: event.id, 
                   timestamp: event.timestamp,
                   groupOpenid: event.group_openid,
                   attachments: event.attachments,
@@ -2032,6 +2039,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                   eventType: "GROUP_AT_MESSAGE_CREATE",
                   mentions: event.mentions,
                   messageScene: event.message_scene,
+                  messageReference: event.message_reference,
                 });
               } else if (t === "GROUP_MESSAGE_CREATE") {
                 const event = d as GroupMessageEvent;
@@ -2042,7 +2050,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                   groupOpenid: event.group_openid,
                   accountId: account.accountId,
                 });
-                const groupRefs = parseRefIndices(event.message_scene?.ext);
+                const groupRefs = parseRefIndices(event.message_scene?.ext, event.message_reference);
                 trySlashCommandOrEnqueue({
                   type: "group",
                   senderId: event.author.member_openid,
@@ -2058,6 +2066,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                   eventType: "GROUP_MESSAGE_CREATE",
                   mentions: event.mentions,
                   messageScene: event.message_scene,
+                  messageReference: event.message_reference,
                 });
               } else if (t === "GROUP_ADD_ROBOT") {
                 const event = d as { timestamp: string; group_openid: string; op_member_openid: string };

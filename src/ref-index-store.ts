@@ -17,6 +17,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { getQQBotDataDir } from "./utils/platform.js";
 import { formatAttachmentTags } from "./group-history.js";
+import { parseFaceTags, buildAttachmentSummaries } from "./utils/text-parsing.js";
+import { processAttachments, formatVoiceText } from "./inbound-attachments.js";
 
 // ============ 存储的消息摘要 ============
 
@@ -304,7 +306,82 @@ export function formatRefEntryForAgent(entry: RefIndexEntry): string {
     parts.push(attachmentDesc);
   }
 
-  return parts.join(" ") || "[空消息]";
+  return parts.join("\n");
+}
+
+/**
+ * 将 QQ 推送事件中的 message_reference 结构格式化为人类可读的描述（供 AI 上下文注入）
+ *
+ * 完整参考 gateway 中对当前消息的处理流程：
+ * 1. 调用 processAttachments 下载附件到本地、语音转录
+ * 2. 调用 formatVoiceText 格式化语音转录文本
+ * 3. 调用 parseFaceTags 解析 QQ 表情标签
+ * 4. 按 gateway 中 userContent 的拼接逻辑组合最终文本
+ */
+export async function formatMessageReferenceForAgent(
+  ref: {
+    content: string;
+    attachments?: Array<{
+      content_type: string;
+      url: string;
+      filename?: string;
+      height?: number;
+      width?: number;
+      size?: number;
+      voice_wav_url?: string;
+      asr_refer_text?: string;
+    }>;
+  } | undefined,
+  ctx: {
+    appId: string;
+    peerId?: string;
+    cfg: unknown;
+    log?: {
+      info: (msg: string) => void;
+      error: (msg: string) => void;
+      debug?: (msg: string) => void;
+    };
+  },
+): Promise<string> {
+  if (!ref) return "";
+
+  // 处理附件（图片等）- 下载到本地供 openclaw 访问（参考 gateway 中 processAttachments 调用）
+  const processed = await processAttachments(ref.attachments, ctx);
+  const { attachmentInfo, voiceTranscripts, voiceTranscriptSources, attachmentLocalPaths } = processed;
+
+  // 语音转录文本注入（参考 gateway 中 formatVoiceText 调用）
+  const voiceText = formatVoiceText(voiceTranscripts);
+
+  // 解析 QQ 表情标签，将 <faceType=...,ext="base64"> 替换为 【表情: 中文名】
+  const parsedContent = parseFaceTags(ref.content ?? "");
+
+  // 最终组合（参考 gateway 中 userContent 的拼接逻辑）
+  const userContent = voiceText
+    ? (parsedContent.trim() ? `${parsedContent}\n${voiceText}` : voiceText) + attachmentInfo
+    : parsedContent + attachmentInfo;
+
+  // 构建附件摘要并通过 formatAttachmentTags 统一生成标签
+  // 与缓存命中路径 (formatRefEntryForAgent → formatAttachmentTags) 格式完全一致
+  const attSummaries = buildAttachmentSummaries(ref.attachments, attachmentLocalPaths);
+  if (attSummaries && voiceTranscripts.length > 0) {
+    let voiceIdx = 0;
+    for (const att of attSummaries) {
+      if (att.type === "voice" && voiceIdx < voiceTranscripts.length) {
+        att.transcript = voiceTranscripts[voiceIdx];
+        if (voiceIdx < voiceTranscriptSources.length) {
+          att.transcriptSource = voiceTranscriptSources[voiceIdx];
+        }
+        voiceIdx++;
+      }
+    }
+  }
+  const attachmentDesc = formatAttachmentTags(attSummaries);
+
+  const parts: string[] = [];
+  if (userContent.trim()) parts.push(userContent.trim());
+  if (attachmentDesc) parts.push(attachmentDesc);
+
+  return parts.join(" ");
 }
 
 /**
