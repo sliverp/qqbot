@@ -12,6 +12,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **Upgrade scripts & `/bot-upgrade` improvements**: Fixed `--version` argument parsing logic, improved version check flow; upgrade scripts (npm/source) enhanced for better compatibility.
 - **`postinstall-link-sdk` script optimization**: Improved robustness of the post-install SDK linking script.
 
+### Upgrade
+
+Run the following command to upgrade to the latest version:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tencent-connect/openclaw-qqbot/main/scripts/upgrade-via-npm.sh | bash
+```
+
+> ⚠️ v1.6.6 and below do not support hot upgrade via `/bot-upgrade`. Please use the command above to upgrade.
+
+
 ## [1.6.6] - 2026-03-26
 
 ### Added

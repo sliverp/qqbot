@@ -633,6 +633,30 @@ else
         " "$SAVED_QQBOT_CHANNEL_JSON" 2>&1 || true
     fi
 
+    # 恢复 channels.qqbot 完整配置（防止 plugins install 意外覆盖）
+    # 策略：直接用备份完整覆盖回去，确保 groups / env / prompts / allowFrom 等所有用户配置不丢失。
+    if [ -n "$SAVED_QQBOT_CHANNEL_JSON" ]; then
+        node -e "
+          const fs = require('fs');
+          const path = require('path');
+          const saved = JSON.parse(process.argv[1]);
+          for (const app of ['openclaw', 'clawdbot', 'moltbot']) {
+            const f = path.join(process.env.HOME, '.' + app, app + '.json');
+            if (!fs.existsSync(f)) continue;
+            const cfg = JSON.parse(fs.readFileSync(f, 'utf8'));
+            if (!cfg.channels) { cfg.channels = {}; }
+            if (JSON.stringify(cfg.channels.qqbot) === JSON.stringify(saved)) {
+              process.stderr.write('  channels.qqbot 配置无变化，无需恢复\\n');
+            } else {
+              cfg.channels.qqbot = saved;
+              fs.writeFileSync(f, JSON.stringify(cfg, null, 4) + '\\n');
+              process.stderr.write('  已完整恢复 channels.qqbot 配置（' + Object.keys(saved).join(', ') + '）\\n');
+            }
+            break;
+          }
+        " "$SAVED_QQBOT_CHANNEL_JSON" 2>&1 || true
+    fi
+
     # 记录更新后的 qqbot 插件版本
     NEW_QQBOT_VERSION=$(node -e '
         try {

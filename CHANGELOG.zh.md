@@ -12,6 +12,16 @@
 - **升级脚本与 `/bot-upgrade` 改进**：完善 `--version` 参数解析逻辑，优化版本检查流程；升级脚本（npm/source）增强兼容性。
 - **`postinstall-link-sdk` 脚本优化**：改进安装后 SDK 链接脚本的健壮性。
 
+### 升级方式
+
+执行此指令可以升级为最新版：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tencent-connect/openclaw-qqbot/main/scripts/upgrade-via-npm.sh | bash
+```
+
+> ⚠️ v1.6.6 及以下版本暂不支持通过 `/bot-upgrade` 执行热更新，请使用上述命令进行升级。
+
 ## [1.6.6] - 2026-03-26
 
 ### 新增

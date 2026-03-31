@@ -192,6 +192,11 @@ Credentials are automatically backed up before upgrade. Version existence is ver
 
 > ⚠️ Hot upgrade is currently not supported on Windows. Sending `/bot-upgrade` on Windows will return a manual upgrade guide instead.
 
+> ⚠️ v1.6.6 and below do not support hot upgrade via `/bot-upgrade`. Please upgrade using the following command:
+> ```bash
+> curl -fsSL https://raw.githubusercontent.com/tencent-connect/openclaw-qqbot/main/scripts/upgrade-via-npm.sh | bash
+> ```
+
 <img width="360" src="docs/images/hot-update.jpg" alt="Hot Upgrade Demo" />
 
 #### `/bot-logs` — Log Export
@@ -252,7 +257,7 @@ curl -fsSL https://raw.githubusercontent.com/tencent-connect/openclaw-qqbot/main
 
 One command does it all: download script → cleanup old plugins → install → configure channel → restart service. Once done, open QQ and start chatting!
 
-> `--appid` and `--secret` are **required for first-time install**. For subsequent upgrades:
+> `--appid` and `--secret` are **required for first-time install**. For subsequent upgrades, run the following command to upgrade to the latest version:
 > ```bash
 > curl -fsSL https://raw.githubusercontent.com/tencent-connect/openclaw-qqbot/main/scripts/upgrade-via-npm.sh | bash
 > ```
