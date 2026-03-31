@@ -2,7 +2,7 @@ import WebSocket from "ws";
 import path from "node:path";
 import fs from "node:fs";
 import type { ResolvedQQBotAccount, WSPayload, C2CMessageEvent, GuildMessageEvent, GroupMessageEvent, InteractionEvent, MessageReference } from "./types.js";
-import { getAccessToken, getGatewayUrl, sendC2CMessage, sendChannelMessage, sendGroupMessage, clearTokenCache, initApiConfig, startBackgroundTokenRefresh, stopBackgroundTokenRefresh, sendC2CInputNotify, onMessageSent, PLUGIN_USER_AGENT, sendProactiveGroupMessage, acknowledgeInteraction, getApiPluginVersion } from "./api.js";
+import { getAccessToken, getGatewayUrl, sendC2CMessage, sendChannelMessage, sendGroupMessage, clearTokenCache, initApiConfig, startBackgroundTokenRefresh, stopBackgroundTokenRefresh, sendC2CInputNotify, onMessageSent, PLUGIN_USER_AGENT, sendProactiveGroupMessage, acknowledgeInteraction, getApiPluginVersion, setApiLogger } from "./api.js";
 import { loadSession, saveSession, clearSession } from "./session-store.js";
 import { recordKnownUser, flushKnownUsers } from "./known-users.js";
 import { getQQBotRuntime } from "./runtime.js";
@@ -425,6 +425,10 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
   triggerUpdateCheck(log);
 
   // 初始化 API 配置（markdown 支持）
+  // 将框架 log 注入 api 模块，统一日志输出
+  if (log) {
+    setApiLogger(log);
+  }
   initApiConfig({
     markdownSupport: account.markdownSupport,
   });
@@ -1420,9 +1424,9 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
           log?.info(`[qqbot:${account.accountId}] Streaming ${useStreaming ? "enabled" : "disabled"} for ${targetType} message from ${event.senderId}`);
           let streamingController: StreamingController | null = null;
 
-          /** 创建一个新的 StreamingController 实例（用于初始创建和回复边界时重建） */
-          const createStreamingController = (): StreamingController => {
-            const ctrl = new StreamingController({
+          if (useStreaming) {
+            log?.info(`[qqbot:${account.accountId}] Streaming mode enabled for ${targetType} target`);
+            streamingController = new StreamingController({
               account,
               userId: event.senderId,
               replyToMsgId: event.messageId,
@@ -1440,21 +1444,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                 },
                 log,
               },
-              // 回复边界回调：终结旧 controller 后创建新的，用新回复文本继续流式
-              onReplyBoundary: async (newReplyText: string) => {
-                log?.info(`[qqbot:${account.accountId}] Reply boundary: creating new StreamingController for new reply`);
-                const newCtrl = createStreamingController();
-                streamingController = newCtrl;
-                // 将新回复的初始文本交给新 controller 处理
-                await newCtrl.onPartialReply({ text: newReplyText });
-              },
             });
-            return ctrl;
-          };
-
-          if (useStreaming) {
-            log?.info(`[qqbot:${account.accountId}] Streaming mode enabled for ${targetType} target`);
-            streamingController = createStreamingController();
           }
 
 
@@ -1756,9 +1746,8 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
             if (timeoutId) {
               clearTimeout(timeoutId);
             }
-            if (!hasResponse) {
-              log?.error(`[qqbot:${account.accountId}] No response within timeout`);
-            }
+            log?.error(`[qqbot:${account.accountId}] Dispatch failed: ${err}${!hasResponse ? " (no response received)" : ""}`);
+
           } finally {
             // 清理 tool-only 兜底定时器
             if (toolOnlyTimeoutId) {

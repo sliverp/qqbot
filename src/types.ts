@@ -388,22 +388,4 @@ export interface StreamMessageRequest {
   index: number;
 }
 
-/**
- * 流式消息响应体
- * 对应 StreamRsp proto
- * 
- * 成功时返回：{ id, timestamp, extInfo }（无 code/message）
- * 失败时返回：{ code, message }（code > 0）
- */
-export interface StreamMessageResponse {
-  /** 错误码，仅失败时存在（> 0 表示失败）；成功时不存在 */
-  code?: number;
-  /** 错误信息，仅失败时存在 */
-  message?: string;
-  /** 流式消息 ID */
-  id?: string;
-  /** 时间戳 */
-  timestamp?: string;
-  /** 扩展信息 */
-  extInfo?: Record<string, unknown>;
-}
+
