@@ -1,3 +1,9 @@
+// ── QQ 消息类型常量（message_type 枚举值） ──
+/** 普通文本消息 */
+export const MSG_TYPE_TEXT = 0;
+/** 引用（回复）消息 */
+export const MSG_TYPE_QUOTE = 103;
+
 /**
  * QQ Bot 配置类型
  */
@@ -207,8 +213,10 @@ export interface C2CMessageEvent {
     ext?: string[];
   };
   attachments?: MessageAttachment[];
-  /** 消息引用，当用户引用某条消息时存在 */
-  message_reference?: MessageReference;
+  /** 消息类型，参见 MSG_TYPE_* */
+  message_type?: number;
+  /** 消息元素列表，引用消息时 [0] 为被引用的原始消息 */
+  msg_elements?: MsgElement[];
 }
 
 /**
@@ -232,16 +240,18 @@ export interface GuildMessageEvent {
   attachments?: MessageAttachment[];
 }
 
-/**
- * 消息引用（被回复的原始消息）
- */
-export interface MessageReference {
-  /** 被引用消息的文本内容 */
-  content: string;
-  /** 被引用消息的附件列表 */
-  attachments?: MessageAttachment[];
-  /** 被引用消息的索引标识 */
+/** 消息元素结点，引用消息时 msg_elements[0] 为被引用的原始消息 */
+export interface MsgElement {
+  /** 消息索引标识 */
   msg_idx?: string;
+  /** 消息类型，参见 MSG_TYPE_* 常量 */
+  message_type?: number;
+  /** 文本内容 */
+  content?: string;
+  /** 附件列表 */
+  attachments?: MessageAttachment[];
+  /** 嵌套消息元素（引用消息场景下可能存在） */
+  msg_elements?: MsgElement[];
 }
 
 /**
@@ -275,8 +285,10 @@ export interface GroupMessageEvent {
     /** 是否 @机器人自身 */
     is_you?: boolean;
   }>;
-  /** 消息引用，当用户引用某条消息时存在 */
-  message_reference?: MessageReference;
+  /** 消息类型，参见 MSG_TYPE_* */
+  message_type?: number;
+  /** 消息元素列表，引用消息时 [0] 为被引用的原始消息 */
+  msg_elements?: MsgElement[];
 }
 
 /**
