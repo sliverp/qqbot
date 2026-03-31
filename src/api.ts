@@ -1276,9 +1276,5 @@ export async function sendC2CStreamMessage(
   if (req.stream_msg_id) {
     body.stream_msg_id = req.stream_msg_id;
   }
-  // 仅终结分片触发引用回调，中间分片跳过
-  if (req.input_state === StreamInputState.DONE) {
-    return sendAndNotify(accessToken, "POST", path, body, { text: req.content_raw });
-  }
   return apiRequest<MessageResponse>(accessToken, "POST", path, body);
 }
