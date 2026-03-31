@@ -21,6 +21,7 @@ import { getHomeDir, getQQBotDataDir, isWindows } from "./utils/platform.js";
 import { saveCredentialBackup } from "./credential-backup.js";
 import { fileURLToPath } from "node:url";
 import { getPackageVersion } from "./utils/pkg-version.js";
+import { getQQBotRuntime } from "./runtime.js";
 const require = createRequire(import.meta.url);
 
 let PLUGIN_VERSION = getPackageVersion(import.meta.url);
@@ -1894,6 +1895,102 @@ function removeEmptyDirs(dirPath: string): void {
     // 目录可能正在被使用，跳过
   }
 }
+
+// ============ /bot-streaming ============
+
+/**
+ * /bot-streaming on|off — 一键开关流式消息
+ *
+ * 直接修改当前账户的 streaming 配置项并持久化到 openclaw.json。
+ * 修改后即时生效（下一条消息起按新配置处理）。
+ */
+registerCommand({
+  name: "bot-streaming",
+  description: "一键开关流式消息",
+  usage: [
+    `/bot-streaming on     开启流式消息`,
+    `/bot-streaming off    关闭流式消息`,
+    `/bot-streaming        查看当前流式消息状态`,
+    ``,
+    `开启后，AI 的回复会以流式形式逐步显示（打字机效果）。`,
+    `注意：仅 C2C（私聊）支持流式消息。`,
+  ].join("\n"),
+  handler: async (ctx) => {
+    // 流式消息仅支持 C2C（私聊），群/频道场景直接提示
+    if (ctx.type !== "c2c") {
+      return `❌ 流式消息仅支持私聊场景，请在私聊中使用 /bot-streaming 指令`;
+    }
+
+    const arg = ctx.args.trim().toLowerCase();
+
+    // 读取当前 streaming 状态
+    const currentStreaming = ctx.accountConfig?.streaming === true;
+
+    // 无参数：查看当前状态
+    if (!arg) {
+      return [
+        `📡 流式消息状态：${currentStreaming ? "✅ 已开启" : "❌ 已关闭"}`,
+        ``,
+        `使用 <qqbot-cmd-input text="/bot-streaming on" show="/bot-streaming on"/> 开启`,
+        `使用 <qqbot-cmd-input text="/bot-streaming off" show="/bot-streaming off"/> 关闭`,
+      ].join("\n");
+    }
+
+    if (arg !== "on" && arg !== "off") {
+      return `❌ 参数错误，请使用 on 或 off\n\n示例：/bot-streaming on`;
+    }
+
+    const newStreaming = arg === "on";
+
+    // 如果状态没变，直接返回
+    if (newStreaming === currentStreaming) {
+      return `📡 流式消息已经是${newStreaming ? "开启" : "关闭"}状态，无需操作`;
+    }
+
+    // 更新配置（参考 handleInteractionCreate 中的配置更新逻辑）
+    try {
+      const runtime = getQQBotRuntime();
+      const configApi = runtime.config as {
+        loadConfig: () => Record<string, unknown>;
+        writeConfigFile: (cfg: unknown) => Promise<void>;
+      };
+
+      const currentCfg = structuredClone(configApi.loadConfig()) as Record<string, unknown>;
+      const qqbot = ((currentCfg.channels ?? {}) as Record<string, unknown>).qqbot as Record<string, unknown> | undefined;
+
+      if (!qqbot) {
+        return `❌ 配置文件中未找到 qqbot 通道配置`;
+      }
+
+      const accountId = ctx.accountId;
+      const isNamedAccount = accountId !== "default" && (qqbot.accounts as Record<string, Record<string, unknown>> | undefined)?.[accountId];
+
+      if (isNamedAccount) {
+        // 命名账户：更新 accounts.{accountId}.streaming
+        const accounts = qqbot.accounts as Record<string, Record<string, unknown>>;
+        const acct = accounts[accountId] ?? {};
+        acct.streaming = newStreaming;
+        accounts[accountId] = acct;
+        qqbot.accounts = accounts;
+      } else {
+        // 默认账户：更新 qqbot.streaming
+        qqbot.streaming = newStreaming;
+      }
+
+      await configApi.writeConfigFile(currentCfg);
+
+      return [
+        `✅ 流式消息已${newStreaming ? "开启" : "关闭"}`,
+        ``,
+        newStreaming
+          ? `AI 的回复将以流式形式逐步显示（仅私聊生效）。`
+          : `AI 的回复将恢复为完整发送。`,
+      ].join("\n");
+    } catch (err) {
+      return `❌ 更新配置失败：${err}`;
+    }
+  },
+});
 
 // ============ 匹配入口 ============
 
