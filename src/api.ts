@@ -7,6 +7,31 @@ import os from "node:os";
 import { computeFileHash, getCachedFileInfo, setCachedFileInfo } from "./utils/upload-cache.js";
 import { sanitizeFileName } from "./utils/platform.js";
 
+// ============ 模块级 Logger ============
+
+/** API 模块的日志接口，与 GatewayContext.log 对齐 */
+export interface ApiLogger {
+  info: (msg: string) => void;
+  error: (msg: string) => void;
+  warn?: (msg: string) => void;
+  debug?: (msg: string) => void;
+}
+
+/** 默认使用 console，外部可通过 setApiLogger 注入框架 log */
+let log: ApiLogger = {
+  info: (msg: string) => console.log(msg),
+  error: (msg: string) => console.error(msg),
+  warn: (msg: string) => console.warn(msg),
+  debug: (msg: string) => console.debug(msg),
+};
+
+/**
+ * 注入自定义 logger（在 gateway 启动时调用，将 api 模块的日志统一接入框架日志系统）
+ */
+export function setApiLogger(logger: ApiLogger): void {
+  log = logger;
+}
+
 // ============ 自定义错误 ============
 
 /** API 请求错误，携带 HTTP status code 和业务错误码 */
@@ -111,7 +136,7 @@ export async function getAccessToken(appId: string, clientSecret: string): Promi
   // Singleflight: 如果当前 appId 已有进行中的 Token 获取请求，复用它
   let fetchPromise = tokenFetchPromises.get(normalizedAppId);
   if (fetchPromise) {
-    console.log(`[qqbot-api:${normalizedAppId}] Token fetch in progress, waiting for existing request...`);
+    log.info(`[qqbot-api:${normalizedAppId}] Token fetch in progress, waiting for existing request...`);
     return fetchPromise;
   }
 
@@ -137,7 +162,7 @@ async function doFetchToken(appId: string, clientSecret: string): Promise<string
   const requestHeaders = { "Content-Type": "application/json", "User-Agent": PLUGIN_USER_AGENT };
   
   // 打印请求信息（隐藏敏感信息）
-  console.log(`[qqbot-api:${appId}] >>> POST ${TOKEN_URL} [secret: ${clientSecret.slice(0, 6)}...len=${clientSecret.length}]`);
+  log.info(`[qqbot-api:${appId}] >>> POST ${TOKEN_URL} [secret: ${clientSecret.slice(0, 6)}...len=${clientSecret.length}]`);
 
   let response: Response;
   try {
@@ -147,7 +172,7 @@ async function doFetchToken(appId: string, clientSecret: string): Promise<string
       body: JSON.stringify(requestBody),
     });
   } catch (err) {
-    console.error(`[qqbot-api:${appId}] <<< Network error:`, err);
+    log.error(`[qqbot-api:${appId}] <<< Network error: ${err}`);
     throw new Error(`Network error getting access_token: ${err instanceof Error ? err.message : String(err)}`);
   }
 
@@ -157,7 +182,7 @@ async function doFetchToken(appId: string, clientSecret: string): Promise<string
     responseHeaders[key] = value;
   });
   const tokenTraceId = response.headers.get("x-tps-trace-id") ?? "";
-  console.log(`[qqbot-api:${appId}] <<< Status: ${response.status} ${response.statusText}${tokenTraceId ? ` | TraceId: ${tokenTraceId}` : ""}`);
+  log.info(`[qqbot-api:${appId}] <<< Status: ${response.status} ${response.statusText}${tokenTraceId ? ` | TraceId: ${tokenTraceId}` : ""}`);
 
   let data: { access_token?: string; expires_in?: number };
   let rawBody: string;
@@ -165,10 +190,10 @@ async function doFetchToken(appId: string, clientSecret: string): Promise<string
     rawBody = await response.text();
     // 隐藏 token 值
     const logBody = rawBody.replace(/"access_token"\s*:\s*"[^"]+"/g, '"access_token": "***"');
-    console.log(`[qqbot-api:${appId}] <<< Body:`, logBody);
+    log.info(`[qqbot-api:${appId}] <<< Body: ${logBody}`);
     data = JSON.parse(rawBody) as { access_token?: string; expires_in?: number };
   } catch (err) {
-    console.error(`[qqbot-api:${appId}] <<< Parse error:`, err);
+    log.error(`[qqbot-api:${appId}] <<< Parse error: ${err}`);
     throw new Error(`Failed to parse access_token response: ${err instanceof Error ? err.message : String(err)}`);
   }
 
@@ -184,7 +209,7 @@ async function doFetchToken(appId: string, clientSecret: string): Promise<string
     appId,
   });
 
-  console.log(`[qqbot-api:${appId}] Token cached, expires at: ${new Date(expiresAt).toISOString()}`);
+  log.info(`[qqbot-api:${appId}] Token cached, expires at: ${new Date(expiresAt).toISOString()}`);
   return data.access_token;
 }
 
@@ -196,10 +221,10 @@ export function clearTokenCache(appId?: string): void {
   if (appId) {
     const normalizedAppId = String(appId).trim();
     tokenCacheMap.delete(normalizedAppId);
-    console.log(`[qqbot-api:${normalizedAppId}] Token cache cleared manually.`);
+    log.info(`[qqbot-api:${normalizedAppId}] Token cache cleared manually.`);
   } else {
     tokenCacheMap.clear();
-    console.log(`[qqbot-api] All token caches cleared.`);
+    log.info(`[qqbot-api] All token caches cleared.`);
   }
 }
 
@@ -244,6 +269,7 @@ export async function apiRequest<T = unknown>(
   timeoutMs?: number
 ): Promise<T> {
   const url = `${API_BASE}${path}`;
+  const reqTs = Date.now(); // 毫秒时间戳，用于关联同一次请求的所有日志
   const headers: Record<string, string> = {
     Authorization: `QQBot ${accessToken}`,
     "Content-Type": "application/json",
@@ -269,13 +295,13 @@ export async function apiRequest<T = unknown>(
   }
 
   // 打印请求信息
-  console.log(`[qqbot-api] >>> ${method} ${url} (timeout: ${timeout}ms)`);
+  log.info(`[qqbot-api][${reqTs}] >>> ${method} ${url} (timeout: ${timeout}ms)`);
   if (body) {
     const logBody = { ...body } as Record<string, unknown>;
     if (typeof logBody.file_data === "string") {
       logBody.file_data = `<base64 ${(logBody.file_data as string).length} chars>`;
     }
-    console.log(`[qqbot-api] >>> Body:`, JSON.stringify(logBody));
+    log.info(`[qqbot-api][${reqTs}] >>> Body: ${JSON.stringify(logBody)}`);
   }
 
   let res: Response;
@@ -284,10 +310,10 @@ export async function apiRequest<T = unknown>(
   } catch (err) {
     clearTimeout(timeoutId);
     if (err instanceof Error && err.name === "AbortError") {
-      console.error(`[qqbot-api] <<< Request timeout after ${timeout}ms`);
+      log.error(`[qqbot-api][${reqTs}] <<< Request timeout after ${timeout}ms`);
       throw new Error(`Request timeout[${path}]: exceeded ${timeout}ms`);
     }
-    console.error(`[qqbot-api] <<< Network error:`, err);
+    log.error(`[qqbot-api][${reqTs}] <<< Network error: ${err}`);
     throw new Error(`Network error [${path}]: ${err instanceof Error ? err.message : String(err)}`);
   } finally {
     clearTimeout(timeoutId);
@@ -298,7 +324,7 @@ export async function apiRequest<T = unknown>(
     responseHeaders[key] = value;
   });
   const traceId = res.headers.get("x-tps-trace-id") ?? "";
-  console.log(`[qqbot-api] <<< Status: ${res.status} ${res.statusText}${traceId ? ` | TraceId: ${traceId}` : ""}`);
+  log.info(`[qqbot-api][${reqTs}] <<< Status: ${res.status} ${res.statusText}${traceId ? ` | TraceId: ${traceId}` : ""}`);
 
   let rawBody: string;
   try {
@@ -306,7 +332,7 @@ export async function apiRequest<T = unknown>(
   } catch (err) {
     throw new Error(`读取响应失败[${path}]: ${err instanceof Error ? err.message : String(err)}`);
   }
-  console.log(`[qqbot-api] <<< Body:`, rawBody);
+  log.info(`[qqbot-api][${reqTs}] <<< Body: ${rawBody}`);
 
   // 检测非 JSON 响应（HTML 网关错误页 / CDN 限流页等）
   const contentType = res.headers.get("content-type") ?? "";
@@ -335,13 +361,13 @@ export async function apiRequest<T = unknown>(
 
   // 成功响应但不是 JSON（极端异常情况）
   if (isHtmlResponse) {
-    throw new Error(`QQ 服务端返回了非 JSON 响应（${path}），可能是临时故障，请稍后重试`);
+    throw new ApiError(`QQ 服务端返回了非 JSON 响应（${path}），可能是临时故障，请稍后重试`, res.status, path);
   }
 
   try {
     return JSON.parse(rawBody) as T;
   } catch {
-    throw new Error(`开放平台响应格式异常（${path}），请稍后重试`);
+    throw new ApiError(`开放平台响应格式异常（${path}），请稍后重试`, res.status, path);
   }
 }
 
@@ -375,7 +401,7 @@ async function apiRequestWithRetry<T = unknown>(
 
       if (attempt < maxRetries) {
         const delay = UPLOAD_BASE_DELAY_MS * Math.pow(2, attempt);
-        console.log(`[qqbot-api] Upload attempt ${attempt + 1} failed, retrying in ${delay}ms: ${errMsg.slice(0, 100)}`);
+        log.info(`[qqbot-api] Upload attempt ${attempt + 1} failed, retrying in ${delay}ms: ${errMsg.slice(0, 100)}`);
         await new Promise(resolve => setTimeout(resolve, delay));
       }
     }
@@ -409,7 +435,7 @@ async function completeUploadWithRetry(
 
       if (attempt < COMPLETE_UPLOAD_MAX_RETRIES) {
         const delay = COMPLETE_UPLOAD_BASE_DELAY_MS * Math.pow(2, attempt);
-        console.warn(`[qqbot-api] CompleteUpload attempt ${attempt + 1} failed, retrying in ${delay}ms: ${lastError.message.slice(0, 200)}`);
+        (log.warn ?? log.error)(`[qqbot-api] CompleteUpload attempt ${attempt + 1} failed, retrying in ${delay}ms: ${lastError.message.slice(0, 200)}`);
         await new Promise(resolve => setTimeout(resolve, delay));
       }
     }
@@ -487,14 +513,14 @@ async function partFinishWithRetry(
       // 命中特定错误码 → 进入持续重试模式
       if (isRetryableBizCode(err)) {
         const timeoutMs = retryTimeoutMs ?? PART_FINISH_RETRYABLE_DEFAULT_TIMEOUT_MS;
-        console.warn(`[qqbot-api] PartFinish hit retryable bizCode=${(err as ApiError).bizCode}, entering persistent retry (timeout=${timeoutMs / 1000}s, interval=1s)...`);
+        (log.warn ?? log.error)(`[qqbot-api] PartFinish hit retryable bizCode=${(err as ApiError).bizCode}, entering persistent retry (timeout=${timeoutMs / 1000}s, interval=1s)...`);
         await partFinishPersistentRetry(accessToken, method, path, body, timeoutMs);
         return;
       }
 
       if (attempt < PART_FINISH_MAX_RETRIES) {
         const delay = PART_FINISH_BASE_DELAY_MS * Math.pow(2, attempt);
-        console.warn(`[qqbot-api] PartFinish attempt ${attempt + 1} failed, retrying in ${delay}ms: ${lastError.message.slice(0, 200)}`);
+        (log.warn ?? log.error)(`[qqbot-api] PartFinish attempt ${attempt + 1} failed, retrying in ${delay}ms: ${lastError.message.slice(0, 200)}`);
         await new Promise(resolve => setTimeout(resolve, delay));
       }
     }
@@ -521,14 +547,14 @@ async function partFinishPersistentRetry(
   while (Date.now() < deadline) {
     try {
       await apiRequest<Record<string, unknown>>(accessToken, method, path, body);
-      console.log(`[qqbot-api] PartFinish persistent retry succeeded after ${attempt} retries`);
+      log.info(`[qqbot-api] PartFinish persistent retry succeeded after ${attempt} retries`);
       return;
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
 
       // 如果不再是可重试的错误码，直接抛出（可能是其他类型的错误）
       if (!isRetryableBizCode(err)) {
-        console.error(`[qqbot-api] PartFinish persistent retry: error is no longer retryable (bizCode=${(err as ApiError).bizCode ?? "N/A"}), aborting`);
+        log.error(`[qqbot-api] PartFinish persistent retry: error is no longer retryable (bizCode=${(err as ApiError).bizCode ?? "N/A"}), aborting`);
         throw lastError;
       }
 
@@ -538,13 +564,13 @@ async function partFinishPersistentRetry(
       if (remaining <= 0) break;
 
       const actualDelay = Math.min(PART_FINISH_RETRYABLE_INTERVAL_MS, remaining);
-      console.warn(`[qqbot-api] PartFinish persistent retry #${attempt}: bizCode=${(err as ApiError).bizCode}, retrying in ${actualDelay}ms (remaining=${Math.round(remaining / 1000)}s)`);
+      (log.warn ?? log.error)(`[qqbot-api] PartFinish persistent retry #${attempt}: bizCode=${(err as ApiError).bizCode}, retrying in ${actualDelay}ms (remaining=${Math.round(remaining / 1000)}s)`);
       await new Promise(resolve => setTimeout(resolve, actualDelay));
     }
   }
 
   // 超时
-  console.error(`[qqbot-api] PartFinish persistent retry timed out after ${timeoutMs / 1000}s (${attempt} attempts)`);
+  log.error(`[qqbot-api] PartFinish persistent retry timed out after ${timeoutMs / 1000}s (${attempt} attempts)`);
   throw new Error(`upload_part_finish 持续重试超时（${timeoutMs / 1000}s, ${attempt} 次重试），中止上传`);
 }
 
@@ -595,7 +621,7 @@ async function sendAndNotify(
     try {
       onMessageSentHook(result.ext_info.ref_idx, meta);
     } catch (err) {
-      console.error(`[qqbot-api] onMessageSent hook error: ${err}`);
+      log.error(`[qqbot-api] onMessageSent hook error: ${err}`);
     }
   }
   return result;
@@ -1113,7 +1139,7 @@ export function startBackgroundTokenRefresh(
   options?: BackgroundTokenRefreshOptions
 ): void {
   if (backgroundRefreshControllers.has(appId)) {
-    console.log(`[qqbot-api:${appId}] Background token refresh already running`);
+    log.info(`[qqbot-api:${appId}] Background token refresh already running`);
     return;
   }
 
@@ -1122,7 +1148,7 @@ export function startBackgroundTokenRefresh(
     randomOffsetMs = 30 * 1000, 
     minRefreshIntervalMs = 60 * 1000, 
     retryDelayMs = 5 * 1000, 
-    log,
+    log: refreshLog,
   } = options ?? {};
 
   const controller = new AbortController();
@@ -1130,7 +1156,7 @@ export function startBackgroundTokenRefresh(
   const signal = controller.signal;
 
   const refreshLoop = async () => {
-    log?.info?.(`[qqbot-api:${appId}] Background token refresh started`);
+    refreshLog?.info?.(`[qqbot-api:${appId}] Background token refresh started`);
 
     while (!signal.aborted) {
       try {
@@ -1145,26 +1171,26 @@ export function startBackgroundTokenRefresh(
             minRefreshIntervalMs
           );
 
-          log?.debug?.(`[qqbot-api:${appId}] Token valid, next refresh in ${Math.round(refreshIn / 1000)}s`);
+          refreshLog?.debug?.(`[qqbot-api:${appId}] Token valid, next refresh in ${Math.round(refreshIn / 1000)}s`);
           await sleep(refreshIn, signal);
         } else {
-          log?.debug?.(`[qqbot-api:${appId}] No cached token, retrying soon`);
+          refreshLog?.debug?.(`[qqbot-api:${appId}] No cached token, retrying soon`);
           await sleep(minRefreshIntervalMs, signal);
         }
       } catch (err) {
         if (signal.aborted) break;
-        log?.error?.(`[qqbot-api:${appId}] Background token refresh failed: ${err}`);
+        refreshLog?.error?.(`[qqbot-api:${appId}] Background token refresh failed: ${err}`);
         await sleep(retryDelayMs, signal);
       }
     }
 
     backgroundRefreshControllers.delete(appId);
-    log?.info?.(`[qqbot-api:${appId}] Background token refresh stopped`);
+    refreshLog?.info?.(`[qqbot-api:${appId}] Background token refresh stopped`);
   };
 
   refreshLoop().catch((err) => {
     backgroundRefreshControllers.delete(appId);
-    log?.error?.(`[qqbot-api:${appId}] Background token refresh crashed: ${err}`);
+    refreshLog?.error?.(`[qqbot-api:${appId}] Background token refresh crashed: ${err}`);
   });
 }
 
@@ -1212,7 +1238,8 @@ async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 // ============ 流式消息 API ============
 
-import type { StreamMessageRequest, StreamMessageResponse } from "./types.js";
+import type { StreamMessageRequest } from "./types.js";
+import { StreamInputState } from "./types.js";
 
 /**
  * 发送流式消息（C2C 私聊）
@@ -1222,16 +1249,19 @@ import type { StreamMessageRequest, StreamMessageResponse } from "./types.js";
  * - 后续分片携带 stream_msg_id 和递增 msg_seq
  * - input_state="1" 表示生成中，"10" 表示生成结束（终结状态）
  * 
+ * 仅在终结分片（input_state=DONE）时触发 refIdx 回调，
+ * 中间分片直接调用 apiRequest，避免存入过多无效的中间态数据。
+ * 
  * @param accessToken - access_token
  * @param openid - 用户 openid
  * @param req - 流式消息请求体
- * @returns 流式消息响应
+ * @returns 消息响应（复用 MessageResponse，错误会直接抛出异常）
  */
 export async function sendC2CStreamMessage(
   accessToken: string,
   openid: string,
   req: StreamMessageRequest,
-): Promise<StreamMessageResponse> {
+): Promise<MessageResponse> {
   const path = `/v2/users/${openid}/stream_messages`;
   const body: Record<string, unknown> = {
     input_mode: req.input_mode,
@@ -1246,5 +1276,9 @@ export async function sendC2CStreamMessage(
   if (req.stream_msg_id) {
     body.stream_msg_id = req.stream_msg_id;
   }
-  return apiRequest<StreamMessageResponse>(accessToken, "POST", path, body);
+  // 仅终结分片触发引用回调，中间分片跳过
+  if (req.input_state === StreamInputState.DONE) {
+    return sendAndNotify(accessToken, "POST", path, body, { text: req.content_raw });
+  }
+  return apiRequest<MessageResponse>(accessToken, "POST", path, body);
 }

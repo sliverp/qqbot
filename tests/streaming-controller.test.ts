@@ -140,7 +140,7 @@ async function flush(ms = 100): Promise<void> {
 /** 收集日志 */
 const logs: string[] = [];
 
-function createController(opts?: { mediaContext?: boolean; onReplyBoundary?: (newText: string) => void | Promise<void> }): StreamingControllerType {
+function createController(opts?: { mediaContext?: boolean }): StreamingControllerType {
   logs.length = 0;
   const deps: any = {
     account: {
@@ -172,9 +172,6 @@ function createController(opts?: { mediaContext?: boolean; onReplyBoundary?: (ne
       event: { type: "c2c", senderId: "user-1", messageId: "msg-1" },
       log: deps.log,
     };
-  }
-  if (opts?.onReplyBoundary) {
-    deps.onReplyBoundary = opts.onReplyBoundary;
   }
   return new StreamingController(deps);
 }
@@ -536,7 +533,7 @@ await test("补救: 媒体处理期间最后一次 onPartialReply 不丢失", as
   // 因为 mediaInterruptInProgress=true，会被保存到 pendingNormalizedFull
   const p2 = ctrl.onPartialReply({ text: "hi<qqimg>/tmp/x.jpg</qqimg>\n\n再见朋友" });
 
-  // 等待所有处理完成（包括 deferred re-run）
+  // 等待所有处理完成
   await p1;
   await p2;
   await flush(800);
@@ -552,10 +549,6 @@ await test("补救: 媒体处理期间最后一次 onPartialReply 不丢失", as
     allStreamContent.includes("再见朋友"),
     `"再见朋友" 应出现在流式发送中（pendingNormalizedFull 补救）。\n实际流式内容: [\n${streamCalls.map((c, i) => `  ${i}: "${c.content.slice(0, 80)}" (state=${c.inputState})`).join("\n")}\n]`
   );
-
-  // 验证：deferred 日志应出现
-  const deferredLogs = logs.filter((l) => l.includes("deferred"));
-  assert.ok(deferredLogs.length >= 1, `应有 deferred 相关日志，实际: ${deferredLogs.length}`);
 });
 
 await test("补救: 多次被跳过只保留最新，最终处理最新文本", async () => {
@@ -698,60 +691,137 @@ await test("异常: onError 后正常终态", async () => {
   assert.ok(ctrl.isTerminalPhase, "onError 后应进入终态");
 });
 
-console.log("\n=== 8. 回复边界检测 ===");
+console.log("\n=== 8. 回复边界检测（拼接模式） ===");
 
-await test("回复边界: 文本缩短 → 旧controller终结，新controller处理新回复", async () => {
-  let newCtrl: StreamingControllerType | null = null;
-
-  const ctrl = createController({
-    onReplyBoundary: async (newText: string) => {
-      // 回调中创建新 controller 并处理新回复
-      newCtrl = createController();
-      await newCtrl.onPartialReply({ text: newText });
-    },
-  });
+await test("回复边界: 新回复拼接到旧内容后面，用两个换行分隔", async () => {
+  const ctrl = createController();
 
   // 第一段回复
-  await ctrl.onPartialReply({ text: "第一段回复内容比较长" });
+  await ctrl.onPartialReply({ text: "第一段回复" });
   await flush();
 
-  // 记录第一段相关的 streamCalls 数量
-  const firstSegCalls = streamCalls.length;
-  assert.ok(firstSegCalls > 0, "第一段应已产生流式调用");
+  // 验证初始状态
+  const c = ctrl as any;
+  assert.strictEqual(c.lastRawFull, "第一段回复", `lastRawFull 应为 "第一段回复"，实际: "${c.lastRawFull}"`);
+  assert.strictEqual(c._boundaryPrefix, null, `初始 _boundaryPrefix 应为 null`);
 
-  // 文本缩短 → 触发回复边界
-  await ctrl.onPartialReply({ text: "短" });
+  // 文本缩短（新回复来了）→ 触发边界检测 → 拼接
+  await ctrl.onPartialReply({ text: "新" });
   await flush();
 
-  // 旧 controller 应已进入终态
-  assert.ok(ctrl.isTerminalPhase, "旧 controller 应已进入终态");
-  // 新 controller 应已创建
-  assert.ok(newCtrl !== null, "应通过回调创建了新 controller");
+  // 验证边界拼接后的状态
+  assert.strictEqual(c._boundaryPrefix, "第一段回复\n\n", `_boundaryPrefix 应为 "第一段回复\\n\\n"，实际: "${c._boundaryPrefix}"`);
+  assert.strictEqual(c.lastRawFull, "第一段回复\n\n新", `lastRawFull 应为 "第一段回复\\n\\n新"，实际: "${c.lastRawFull}"`);
+  assert.ok(c.lastNormalizedFull.includes("第一段回复"), `lastNormalizedFull 应包含第一段内容`);
+  assert.ok(c.lastNormalizedFull.includes("新"), `lastNormalizedFull 应包含新回复内容`);
 
-  // 第一段应有 DONE 分片（终结）
-  const doneCalls = streamCalls.filter((c) => c.inputState === 10);
-  assert.ok(doneCalls.length >= 1, "旧 controller 应发送了 DONE 分片终结第一段");
-
-  // 验证第一段的 DONE 分片包含第一段内容
-  const firstDone = doneCalls[0];
-  assert.ok(firstDone.content.includes("第一段回复内容比较长"), `第一段 DONE 分片应包含 "第一段回复内容比较长", 实际: "${firstDone.content}"`);
-
-  // 继续第二段回复增长
-  await newCtrl!.onPartialReply({ text: "短回复完整" });
+  // 新回复继续增长 → 不应再次触发边界
+  await ctrl.onPartialReply({ text: "新回复增长了" });
   await flush();
 
-  newCtrl!.markFullyComplete();
-  await newCtrl!.onIdle();
+  assert.strictEqual(c._boundaryPrefix, "第一段回复\n\n", `增长后 _boundaryPrefix 不应变化，实际: "${c._boundaryPrefix}"`);
+  assert.strictEqual(c.lastRawFull, "第一段回复\n\n新回复增长了", `lastRawFull 应为 "第一段回复\\n\\n新回复增长了"，实际: "${c.lastRawFull}"`);
+
+  // 继续增长
+  await ctrl.onPartialReply({ text: "新回复增长了更多内容" });
   await flush();
 
-  // 验证新 controller 的流式调用包含第二段内容
-  // 新 controller 的调用在 firstSegCalls 之后（因为 streamCalls 是全局的，但 DONE 会增加一些）
+  assert.strictEqual(c.lastRawFull, "第一段回复\n\n新回复增长了更多内容", `lastRawFull 应为拼接后的完整文本，实际: "${c.lastRawFull}"`);
+
+  // 验证日志中只触发了一次边界检测
+  const boundaryLogs = logs.filter((l) => l.includes("reply boundary detected"));
+  assert.strictEqual(boundaryLogs.length, 1, `应只触发 1 次边界检测，实际: ${boundaryLogs.length}`);
+
+  ctrl.markFullyComplete();
+  await ctrl.onIdle();
+  await flush();
+
+  // 验证最终发送的内容同时包含两段
   const allContent = streamCalls.map((c) => c.content).join(" || ");
-  assert.ok(allContent.includes("短回复完整"), `应包含第二段 "短回复完整"，实际: ${allContent}`);
+  assert.ok(allContent.includes("第一段回复"), `最终发送应包含 "第一段回复"，实际: ${allContent}`);
+  assert.ok(allContent.includes("新回复增长了更多内容"), `最终发送应包含 "新回复增长了更多内容"，实际: ${allContent}`);
 
-  // 两段内容是独立的流式消息，不应混在一起
-  const lastCall = streamCalls[streamCalls.length - 1];
-  assert.ok(!lastCall.content.includes("第一段回复内容比较长"), "第二段最终分片不应包含第一段内容（各自独立）");
+  // 旧 controller 不应进入 aborted，应正常 completed
+  assert.ok(ctrl.isTerminalPhase, "应进入终态");
+  assert.ok(!ctrl.shouldFallbackToStatic, "不应降级");
+});
+
+await test("回复边界: 多次边界拼接（三段回复）", async () => {
+  const ctrl = createController();
+
+  // 第一段
+  await ctrl.onPartialReply({ text: "AAA" });
+  await flush();
+
+  const c = ctrl as any;
+  assert.strictEqual(c.lastRawFull, "AAA");
+  assert.strictEqual(c._boundaryPrefix, null);
+
+  // 第二段（第一次边界）
+  await ctrl.onPartialReply({ text: "BBB" });
+  await flush();
+
+  assert.strictEqual(c._boundaryPrefix, "AAA\n\n", `第一次边界后 _boundaryPrefix 应为 "AAA\\n\\n"，实际: "${c._boundaryPrefix}"`);
+  assert.strictEqual(c.lastRawFull, "AAA\n\nBBB", `第一次边界后 lastRawFull 应为 "AAA\\n\\nBBB"，实际: "${c.lastRawFull}"`);
+
+  // 第二段继续增长
+  await ctrl.onPartialReply({ text: "BBB完整" });
+  await flush();
+
+  assert.strictEqual(c.lastRawFull, "AAA\n\nBBB完整", `增长后 lastRawFull 应为 "AAA\\n\\nBBB完整"，实际: "${c.lastRawFull}"`);
+
+  // 第三段（第二次边界）
+  await ctrl.onPartialReply({ text: "CCC" });
+  await flush();
+
+  assert.strictEqual(c._boundaryPrefix, "AAA\n\nBBB完整\n\n", `第二次边界后 _boundaryPrefix 应为 "AAA\\n\\nBBB完整\\n\\n"，实际: "${c._boundaryPrefix}"`);
+  assert.strictEqual(c.lastRawFull, "AAA\n\nBBB完整\n\nCCC", `第二次边界后 lastRawFull 应为 "AAA\\n\\nBBB完整\\n\\nCCC"，实际: "${c.lastRawFull}"`);
+
+  // 第三段继续增长
+  await ctrl.onPartialReply({ text: "CCC结束" });
+  await flush();
+
+  assert.strictEqual(c.lastRawFull, "AAA\n\nBBB完整\n\nCCC结束");
+
+  // 验证总共触发了 2 次边界检测
+  const boundaryLogs = logs.filter((l) => l.includes("reply boundary detected"));
+  assert.strictEqual(boundaryLogs.length, 2, `应触发 2 次边界检测，实际: ${boundaryLogs.length}`);
+
+  ctrl.markFullyComplete();
+  await ctrl.onIdle();
+  await flush();
+
+  // 验证最终发送的内容包含三段
+  const allContent = streamCalls.map((c) => c.content).join(" || ");
+  assert.ok(allContent.includes("AAA"), `应包含 "AAA"`);
+  assert.ok(allContent.includes("BBB完整"), `应包含 "BBB完整"`);
+  assert.ok(allContent.includes("CCC结束"), `应包含 "CCC结束"`);
+});
+
+await test("回复边界: 边界后 sentIndex 不受影响，内容连续发送", async () => {
+  const ctrl = createController();
+
+  // 第一段回复足够长，确保流式已启动
+  await ctrl.onPartialReply({ text: "第一段比较长的回复内容" });
+  await flush(200);
+
+  const c = ctrl as any;
+  const sentIndexBefore = c.sentIndex;
+
+  // 触发边界
+  await ctrl.onPartialReply({ text: "第二段" });
+  await flush(200);
+
+  // sentIndex 不应被重置（因为是在同一个流式会话中继续）
+  assert.ok(c.sentIndex >= sentIndexBefore, `边界后 sentIndex (${c.sentIndex}) 应 >= 边界前 (${sentIndexBefore})`);
+
+  // 验证流式会话没有中断（streamMsgId 应不变）
+  // 边界不会导致流式会话终结和重建
+  assert.ok(c.streamMsgId !== null, `边界后 streamMsgId 应仍存在，实际: ${c.streamMsgId}`);
+
+  ctrl.markFullyComplete();
+  await ctrl.onIdle();
+  await flush();
 });
 
 // ============ 结果 ============

@@ -13,9 +13,9 @@
  *    如果新文本不是上次处理文本的前缀延续，视为新消息
  */
 
-import type { ResolvedQQBotAccount, StreamMessageResponse } from "./types.js";
+import type { ResolvedQQBotAccount } from "./types.js";
 import { StreamInputMode, StreamInputState, StreamContentType } from "./types.js";
-import { getAccessToken, sendC2CStreamMessage, getNextMsgSeq } from "./api.js";
+import { getAccessToken, sendC2CStreamMessage, getNextMsgSeq, type MessageResponse } from "./api.js";
 import { normalizeMediaTags } from "./utils/media-tags.js";
 import {
   stripIncompleteMediaTag,
@@ -49,7 +49,7 @@ const TERMINAL_PHASES = new Set<StreamingPhase>(["completed", "aborted"]);
 /** 允许的状态转换 */
 const PHASE_TRANSITIONS: Record<StreamingPhase, Set<StreamingPhase>> = {
   idle: new Set(["streaming", "aborted"]),
-  streaming: new Set(["completed", "aborted"]),
+  streaming: new Set(["idle", "completed", "aborted"]),  // idle: 首分片发送失败时可回退
   completed: new Set(),
   aborted: new Set(),
 };
@@ -215,15 +215,6 @@ export interface StreamingControllerDeps {
    * 如果不提供，遇到媒体标签时会抛出错误导致 fallback
    */
   mediaContext?: StreamingMediaContext;
-  /**
-   * 回复边界回调：检测到 text 长度缩短（新回复开始）时触发。
-   *
-   * 触发时当前 controller 已经 finalize（终结当前流式会话，处理完之前的内容），
-   * 调用方应创建新的 StreamingController 并用 newReplyText 调其 onPartialReply。
-   *
-   * @param newReplyText 新回复的初始文本（已 strip reasoning tags）
-   */
-  onReplyBoundary?: (newReplyText: string) => void | Promise<void>;
 }
 
 /**
@@ -259,6 +250,12 @@ export class StreamingController {
    * 不会因为 normalizeMediaTags 对未闭合标签的处理差异导致前缀不匹配。
    */
   private lastRawFull = "";
+  /**
+   * 边界拼接前缀：检测到新回复时，将之前的全部内容 + "\n\n" 存为前缀。
+   * 后续回调传入的 text 都会自动加上此前缀来还原完整文本。
+   * 为 null 表示当前没有发生过边界拼接。
+   */
+  private _boundaryPrefix: string | null = null;
   /**
    * 在 lastNormalizedFull 中已经"消费"到的位置。
    * "消费"包括：已通过流式发送并终结的文本段、已处理的媒体标签。
@@ -450,29 +447,29 @@ export class StreamingController {
       return;
     }
 
+    // ★ 如果之前已发生过边界拼接，将前缀加上还原完整文本
+    const fullText = this._boundaryPrefix !== null ? this._boundaryPrefix + text : text;
+
     // ★ 回复边界检测：用原始文本做前缀比较，避免 normalizeMediaTags 对未闭合标签
     //   的不稳定处理导致误判（normalize 后的文本在 partial reply 的不同阶段可能产生
     //   完全不同的结果，从而使 startsWith 始终失败，导致 boundary 被反复触发）
-    if (this.lastRawFull && text.length > 0 && !text.startsWith(this.lastRawFull)) {
-      this.logInfo(`onPartialReply: reply boundary detected — raw prefix mismatch (new len=${text.length}, prev len=${this.lastRawFull.length}), finalizing current controller`);
+    //   检测到新回复时，直接在之前内容后追加两个换行再拼接新内容，继续在同一流式会话中发送
+    if (this.lastRawFull && fullText.length > 0 && !fullText.startsWith(this.lastRawFull)) {
+      this.logInfo(`onPartialReply: reply boundary detected — raw prefix mismatch (new len=${fullText.length}, prev len=${this.lastRawFull.length}), appending with separator`);
 
-      // 终结当前流式会话，处理完当前内容（包括可能的未闭合媒体标签）
-      this.dispatchFullyComplete = true;
-      await this.finalizeOnIdle();
+      // 记住拼接前缀：之前的全部内容 + "\n\n"，后续回调的 text 都会自动加上此前缀
+      this._boundaryPrefix = this.lastRawFull + "\n\n";
+      const merged = this._boundaryPrefix + text;
+      this.lastRawFull = merged;
+      this.lastNormalizedFull = normalizeMediaTags(merged);
 
-      // 通知调用方：新回复开始，请创建新 controller
-      if (this.deps.onReplyBoundary) {
-        this.logInfo(`onPartialReply: invoking onReplyBoundary callback with newText len=${text.length}`);
-        await this.deps.onReplyBoundary(text);
-      } else {
-        this.logWarn(`onPartialReply: reply boundary detected but no onReplyBoundary callback registered, new reply text will be lost`);
-      }
+      await this.processMediaTags(this.lastNormalizedFull);
       return;
     }
 
     // 正常增长：更新原始文本和 normalize 后的文本
-    this.lastRawFull = text;
-    this.lastNormalizedFull = normalizeMediaTags(text);;
+    this.lastRawFull = fullText;
+    this.lastNormalizedFull = normalizeMediaTags(fullText);
 
     // ★ 核心：从 sentIndex 开始，处理增量文本（串行队列保证不会并发进入）
     await this.processMediaTags(this.lastNormalizedFull);
@@ -750,27 +747,14 @@ export class StreamingController {
 
       if (hasIncomplete) {
         this.logDebug(`processMediaTags: incomplete tag detected, safe text len=${safeText.length}, remaining len=${remaining.length}`);
-
-        // 先终结当前流式会话（把标签前的安全文本发完 DONE），
-        // 避免流式会话在等待标签闭合期间一直卡在 GENERATING 状态
-        const safeEndInFull = this.sentIndex + (safeText?.length ?? 0);
-        await this.endCurrentStreamIfNeeded("processMediaTags:incompleteTag", safeEndInFull);
-        if (this.isTerminalPhase) return;
-
-        // 推进 sentIndex 到安全文本结束位置，重置流式会话状态
-        if (safeText) {
-          this.sentIndex = safeEndInFull;
-          this.logDebug(`processMediaTags: sentIndex advanced to ${this.sentIndex} after ending stream for incomplete tag`);
-          this.resetStreamSession();
-        }
-
-        // 未闭合标签部分留待下次 onPartialReply 带来更多文本后再处理
-        return;
+        // 不终结流式会话！继续正常流式发送安全文本部分（performFlush 中也有
+        // stripIncompleteMediaTag 保护，会自动只发送安全部分）。
+        // 等下次 onPartialReply 带来更多文本后，标签会闭合或被识别为非媒体标签。
       }
 
-      // ---- 3. 纯文本 → 触发流式发送 ----
+      // ---- 3. 文本 → 触发流式发送 ----
       // performFlush 会动态计算 lastNormalizedFull.slice(sentIndex) 的安全部分来发送
-      this.logDebug(`processMediaTags: pure text, remaining len=${remaining.length}`);
+      this.logDebug(`processMediaTags: ${hasIncomplete ? "incomplete tag, sending safe text" : "pure text"}, remaining len=${remaining.length}`);
 
       if (!remaining.trim()) {
         // 纯空白文本 → 不启动流式
@@ -905,10 +889,6 @@ export class StreamingController {
       const firstText = safeText;
       const resp = await this.sendStreamChunk(firstText, StreamInputState.GENERATING, "doStartStreaming");
 
-      if (resp.code && resp.code > 0) {
-        throw new Error(`Stream API error: code=${resp.code}, message=${resp.message}`);
-      }
-
       if (!resp.id) {
         throw new Error(`Stream API returned no id: ${JSON.stringify(resp)}`);
       }
@@ -927,7 +907,7 @@ export class StreamingController {
     content: string,
     inputState: StreamInputState,
     caller: string,
-  ): Promise<StreamMessageResponse> {
+  ): Promise<MessageResponse> {
     this.logDebug(`sendStreamChunk: caller=${caller}, inputState=${inputState}, contentLen=${content.length}, streamMsgId=${this.streamMsgId}, index=${this.streamIndex}`);
 
     // 同一流式会话内所有 chunk 共享同一个 msgSeq；新会话首次发送时生成
@@ -952,11 +932,6 @@ export class StreamingController {
       msg_seq: this.msgSeq,
       index: currentIndex,
     });
-
-    // 只有 code 存在且 > 0 才是失败
-    if (resp.code && resp.code > 0) {
-      throw new Error(`Stream API error: code=${resp.code}, message=${resp.message}`);
-    }
 
     // 分片发送成功
     this.sentStreamChunkCount++;
