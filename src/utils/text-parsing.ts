@@ -4,6 +4,7 @@
 
 import type { RefAttachmentSummary } from "../ref-index-store.js";
 import { inferAttachmentType } from "../group-history.js";
+import { MSG_TYPE_QUOTE } from "../types.js";
 
 /**
  * 解析 QQ 表情标签，将 <faceType=1,faceId="13",ext="base64..."> 格式
@@ -40,15 +41,11 @@ export function filterInternalMarkers(text: string): string {
   return result;
 }
 
-/**
- * 从 message_scene.ext 和 message_reference 中解析引用索引。
- *
- * @param ext     message_scene.ext 数组，格式示例: ["", "ref_msg_idx=REFIDX_xxx", "msg_idx=REFIDX_yyy"]
- * @param msgRef  message_reference 对象，其 msg_idx 比 ext 中解析的更权威，有值时优先使用
- */
+/** 从 ext 和 msg_elements 中解析引用索引，仅 MSG_TYPE_QUOTE 时取 msg_elements */
 export function parseRefIndices(
   ext?: string[],
-  msgRef?: { msg_idx?: string },
+  messageType?: number,
+  msgElements?: Array<{ msg_idx?: string }>,
 ): { refMsgIdx?: string; msgIdx?: string } {
   let refMsgIdx: string | undefined;
   let msgIdx: string | undefined;
@@ -61,9 +58,12 @@ export function parseRefIndices(
       }
     }
   }
-  // messageReference.msg_idx 更权威，有值时覆盖 ext 解析结果
-  if (msgRef?.msg_idx) {
-    refMsgIdx = msgRef.msg_idx;
+  // 仅当 message_type=MSG_TYPE_QUOTE（引用消息）时，msg_elements[0].msg_idx 更权威，有值时覆盖 ext 解析结果
+  if (messageType === MSG_TYPE_QUOTE) {
+    const refElement = msgElements?.[0];
+    if (refElement?.msg_idx) {
+      refMsgIdx = refElement.msg_idx;
+    }
   }
   return { refMsgIdx, msgIdx };
 }
