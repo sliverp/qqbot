@@ -335,7 +335,7 @@ TARGET_VERSION=""
 APPID=""
 SECRET=""
 NO_RESTART=false
-INSTALL_TIMEOUT=300  # [优化7] 安装超时时间（秒），默认 5 分钟
+INSTALL_TIMEOUT=1000  # [优化7] 安装超时时间（秒），默认 1000s
 STAGING_DIR=""  # [优化3] 原子化操作的暂存目录
 CONFIG_SNAPSHOT_FILE=""  # [优化8] 配置文件快照路径
 
@@ -649,14 +649,14 @@ if [ "$USE_UPDATE" = "true" ]; then
             UPGRADE_OK=true
             echo "  ✅ update 成功"
         else
-            echo "  ⚠️  update 返回成功但版本未变 ($POST_UPDATE_VERSION)，回退到 reinstall..."
+            echo "  ️  update 返回成功但版本未变 ($POST_UPDATE_VERSION)，回退到 reinstall..."
         fi
     else
         local update_rc=$?
         if [ $update_rc -eq 124 ]; then
             echo "  ⏰ update 超时（${INSTALL_TIMEOUT}s），回退到 reinstall..."
         else
-            echo "  ⚠️  update 失败 (exit=$update_rc)，回退到 reinstall..."
+            echo "  ️  update 失败 (exit=$update_rc)，回退到 reinstall..."
         fi
     fi
 fi
@@ -734,9 +734,13 @@ if [ "$UPGRADE_OK" != "true" ]; then
             find "${TMPDIR:-/tmp}" -maxdepth 1 -name ".openclaw-install-stage-*" -exec rm -rf {} + 2>/dev/null || true
             # 回滚（带验证）
             rollback_plugin_dir "安装后目录不完整"
-            # [优化8] 恢复配置快照
+            # [优化8] 恢复配置快照（快照已包含完整的安装前配置，无需再调用 restore_qqbot_channel）
             restore_config_snapshot
-            restore_qqbot_channel
+            # 清理临时配置文件（快照已恢复，临时配置不再需要）
+            if [ -n "$TEMP_CONFIG_FILE" ] && [ -f "$TEMP_CONFIG_FILE" ]; then
+                rm -f "$TEMP_CONFIG_FILE" 2>/dev/null || true
+            fi
+            unset OPENCLAW_CONFIG_PATH 2>/dev/null || true
             echo "QQBOT_NEW_VERSION=unknown"
             echo "QQBOT_REPORT=❌ QQBot 安装异常（目录不完整，已回滚），请重试或手动安装"
             exit 1
@@ -760,9 +764,13 @@ if [ "$UPGRADE_OK" != "true" ]; then
         fi
         # 回滚：恢复旧目录（带验证）
         rollback_plugin_dir "$FAIL_REASON"
-        # [优化8] 恢复配置快照
+        # [优化8] 恢复配置快照（快照已包含完整的安装前配置，无需再调用 restore_qqbot_channel）
         restore_config_snapshot
-        restore_qqbot_channel
+        # 清理临时配置文件（快照已恢复，临时配置不再需要）
+        if [ -n "$TEMP_CONFIG_FILE" ] && [ -f "$TEMP_CONFIG_FILE" ]; then
+            rm -f "$TEMP_CONFIG_FILE" 2>/dev/null || true
+        fi
+        unset OPENCLAW_CONFIG_PATH 2>/dev/null || true
         if [ $INSTALL_EXIT_CODE -eq 124 ]; then
             echo "QQBOT_NEW_VERSION=unknown"
             echo "QQBOT_REPORT=⏰ QQBot 安装超时（${INSTALL_TIMEOUT}s，已回滚），请检查网络或增加 --timeout 参数"
@@ -865,6 +873,24 @@ if [ "$PREFLIGHT_OK" != "true" ]; then
     exit 1
 fi
 echo "  ✅ 验证全部通过"
+
+# ── 安装后健康检查：openclaw doctor ──
+# 在 preflight 通过后，调用 openclaw doctor 从框架层面验证插件是否能被正确加载
+# （配置完整性、依赖关系、SDK 链接等），比脚本自身的 preflight 检查更全面。
+echo ""
+echo "  [健康检查] 执行 openclaw doctor..."
+ensure_valid_cwd
+DOCTOR_OUTPUT=""
+DOCTOR_RC=0
+DOCTOR_OUTPUT=$(run_with_timeout 60 "doctor 健康检查" $CMD doctor 2>&1) || DOCTOR_RC=$?
+if [ $DOCTOR_RC -eq 0 ]; then
+    echo "  ✅ doctor 健康检查通过"
+else
+    # doctor 检查不通过不阻塞升级流程，仅输出警告
+    echo "  ⚠️  doctor 健康检查发现问题 (exit=$DOCTOR_RC):"
+    echo "$DOCTOR_OUTPUT" | head -20 | sed 's/^/    /'
+    echo "  提示: 可稍后手动执行 '$CMD doctor --fix' 尝试自动修复"
+fi
 
 # 确保 openclaw/plugin-sdk 可解析：
 # openclaw plugins install 不会执行 npm lifecycle scripts，
@@ -972,12 +998,79 @@ fi
 echo "[重启] 重启 gateway 使新版本生效..."
 # [优化4] 确保 CWD 有效
 ensure_valid_cwd
-if $CMD gateway restart 2>&1; then
+GATEWAY_RESTART_RC=0
+run_with_timeout 90 "gateway restart" $CMD gateway restart 2>&1 || GATEWAY_RESTART_RC=$?
+if [ $GATEWAY_RESTART_RC -eq 0 ]; then
     echo "  ✅ gateway 已重启"
     echo ""
     if [ -n "$NEW_VERSION" ] && [ "$NEW_VERSION" != "unknown" ]; then
         echo "🎉 QQBot 插件已更新至 v${NEW_VERSION}，在线等候你的吩咐。"
     fi
 else
-    echo "  ⚠️  gateway 重启失败，请手动执行: $CMD gateway restart"
+    if [ $GATEWAY_RESTART_RC -eq 124 ]; then
+        echo "  ⏰ gateway restart 超时（90s）"
+    fi
+    echo "  ⚠️  gateway 重启失败，尝试 openclaw doctor --fix 自动修复..."
+    ensure_valid_cwd
+
+    # [风险5修复] doctor --fix 前保存配置快照，防止 doctor 意外删除/修改关键配置
+    _pre_doctor_config=""
+    if [ -f "$CONFIG_FILE" ]; then
+        _pre_doctor_config="$(mktemp "${TMPDIR:-/tmp}/.qqbot-pre-doctor-XXXXXX")"
+        cp -a "$CONFIG_FILE" "$_pre_doctor_config"
+    fi
+
+    _doctor_fix_output=$(run_with_timeout 120 "doctor --fix 自动修复" $CMD doctor --fix 2>&1) || true
+    echo "$_doctor_fix_output" | head -30 | sed 's/^/    /'
+
+    # [风险5修复] doctor --fix 后验证关键配置项是否被意外删除
+    if [ -n "$_pre_doctor_config" ] && [ -f "$_pre_doctor_config" ] && [ -f "$CONFIG_FILE" ]; then
+        _config_damaged=false
+        _config_damaged=$(node -e "
+          try {
+            const fs = require('fs');
+            const before = JSON.parse(fs.readFileSync('$_pre_doctor_config', 'utf8'));
+            const after = JSON.parse(fs.readFileSync('$CONFIG_FILE', 'utf8'));
+            // 检查 channels.qqbot 是否被删除
+            if (before.channels?.qqbot && !after.channels?.qqbot) {
+              process.stdout.write('channels.qqbot');
+            }
+            // 检查 plugins.installs 中的 qqbot 记录是否被删除
+            else if (before.plugins?.installs?.['$PLUGIN_ID'] && !after.plugins?.installs?.['$PLUGIN_ID']) {
+              process.stdout.write('plugins.installs');
+            }
+            // 检查 plugins.entries 中的 qqbot 记录是否被删除
+            else if (before.plugins?.entries?.['$PLUGIN_ID'] && !after.plugins?.entries?.['$PLUGIN_ID']) {
+              process.stdout.write('plugins.entries');
+            }
+          } catch {}
+        " 2>/dev/null || true)
+        if [ -n "$_config_damaged" ]; then
+            echo "  ⚠️  [配置保护] doctor --fix 删除了关键配置项: $_config_damaged，正在恢复..."
+            cp -a "$_pre_doctor_config" "$CONFIG_FILE"
+            echo "  ✅ [配置保护] 已恢复 doctor --fix 前的配置"
+        fi
+        rm -f "$_pre_doctor_config" 2>/dev/null || true
+    fi
+
+    echo ""
+    echo "  [修复后重试] 重新执行 gateway restart..."
+    ensure_valid_cwd
+    RETRY_RESTART_RC=0
+    run_with_timeout 90 "gateway restart (重试)" $CMD gateway restart 2>&1 || RETRY_RESTART_RC=$?
+    if [ $RETRY_RESTART_RC -eq 0 ]; then
+        echo "  ✅ doctor --fix 后 gateway 重启成功"
+        echo ""
+        if [ -n "$NEW_VERSION" ] && [ "$NEW_VERSION" != "unknown" ]; then
+            echo "🎉 QQBot 插件已更新至 v${NEW_VERSION}，在线等候你的吩咐。"
+        fi
+    else
+        if [ $RETRY_RESTART_RC -eq 124 ]; then
+            echo "  ⏰ 重试 gateway restart 超时（90s）"
+        fi
+        echo "  ❌ 仍然无法重启，请手动排查:"
+        echo "    $CMD doctor"
+        echo "    $CMD gateway restart"
+        echo "    tail -f /tmp/openclaw/openclaw-$(date +%Y-%m-%d).log"
+    fi
 fi
