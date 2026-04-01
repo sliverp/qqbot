@@ -103,6 +103,18 @@ cleanup_config_snapshot() {
     [ -n "$CONFIG_SNAPSHOT_FILE" ] && rm -f "$CONFIG_SNAPSHOT_FILE" 2>/dev/null || true
 }
 
+# _PREV_RELOAD_MODE: 安装前读取的原始值
+#   非空 → config set 恢复；空（配置中本无此项）→ config unset 删除我们写入的值
+_PREV_RELOAD_MODE=""
+restore_reload_mode() {
+    if [ -n "$_PREV_RELOAD_MODE" ]; then
+        openclaw config set gateway.reload.mode "$_PREV_RELOAD_MODE" 2>/dev/null || true
+    else
+        openclaw config unset gateway.reload.mode 2>/dev/null || true
+    fi
+    _PREV_RELOAD_MODE=""   # 防止重复执行
+}
+
 rollback_plugin_dir() {
     local reason="${1:-未知原因}"
     if [ -n "$BACKUP_DIR" ] && [ -d "$BACKUP_DIR/$PLUGIN_ID" ]; then
@@ -317,6 +329,7 @@ cleanup_on_exit() {
 
     [ -n "$TEMP_CONFIG_FILE" ] && rm -f "$TEMP_CONFIG_FILE" 2>/dev/null || true
     [ -n "$BACKUP_DIR" ] && rm -rf "$BACKUP_DIR" 2>/dev/null || true
+    restore_reload_mode
     cleanup_config_snapshot
     cleanup_pack
     find "${EXTENSIONS_DIR:-/dev/null}" -maxdepth 1 -name ".openclaw-install-stage-*" -exec rm -rf {} + 2>/dev/null || true
@@ -470,13 +483,21 @@ verify_builtin_disabled() {
 # ============================================================================
 echo ""
 
+# 快照提前到所有写操作前（包括 [前置] 的 disable_builtin_plugins）
+snapshot_config
+
+# hybrid 模式下写 openclaw.json 会触发 gateway restart，导致脚本被 cgroup kill
+# 在整个安装窗口内切换为 hot（只热更新，不重启），退出前从变量恢复原值
+# 原值为空说明用户从未手动设置过，退出时 unset 删掉我们写入的值
+_PREV_RELOAD_MODE="$(node -e "try{const c=JSON.parse(require('fs').readFileSync('$CONFIG_FILE','utf8'));process.stdout.write(c?.gateway?.reload?.mode||'')}catch{}" 2>/dev/null || true)"
+openclaw config set gateway.reload.mode hot 2>/dev/null || true
+
 # 默认禁用内置冲突插件（openclaw ≥2026.3.31 内置了 qqbot 插件，与我们的 openclaw-qqbot 冲突）
 echo "[前置] 检查并禁用内置冲突插件..."
 disable_builtin_plugins
 echo ""
 
 echo "[1/4] 安装/升级插件..."
-snapshot_config
 setup_temp_config
 
 # 清理历史遗留 ID 的配置记录（qqbot/openclaw-qq 是旧版本使用的 ID，
@@ -772,6 +793,8 @@ fi
 #  [4/4] 重启 gateway
 # ============================================================================
 echo ""
+
+restore_reload_mode
 
 # startup-marker 防重复通知
 if [ -n "$NEW_VERSION" ] && [ "$NEW_VERSION" != "unknown" ]; then
