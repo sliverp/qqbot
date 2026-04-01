@@ -876,7 +876,6 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
             if (refElement) {
               const refData = { content: refElement.content ?? "", attachments: refElement.attachments };
               replyToBody = await formatMessageReferenceForAgent(refData, { appId: account.appId, peerId, cfg, log });
-              replyToSender = refElement.author?.username ?? refElement.author?.member_openid;
               log?.info(`[qqbot:${account.accountId}] Quote detected via msg_elements[0] (cache miss): id=${replyToId}, sender=${replyToSender ?? "unknown"}, content="${(replyToBody ?? "").slice(0, 80)}..."`);
             } else {
               // 引用消息但 msg_elements 为空：AI 只能知道"用户引用了一条消息"
