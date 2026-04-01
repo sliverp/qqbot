@@ -58,8 +58,8 @@ const TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken";
 // 示例: QQBotPlugin/1.6.0 (Node/22.14.0; darwin; OpenClaw/2026.3.31)
 import { getPackageVersion } from "./utils/pkg-version.js";
 const _pluginVersion = getPackageVersion(import.meta.url);
-// 初始值：env 变量兜底（runtime 注入前的请求场景）
-let _openclawVersion = process.env.OPENCLAW_VERSION || "unknown";
+// 初始值为 "unknown"，由 setQQBotRuntime 注入后更新为真实版本
+let _openclawVersion = "unknown";
 /** 由 setQQBotRuntime 调用，将 api.runtime.version 注入到 User-Agent */
 export function setOpenClawVersion(version: string) {
   if (version) _openclawVersion = version;
