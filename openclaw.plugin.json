@@ -13,5 +13,10 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {}
+  },
+  "channelConfigs": {
+    "qqbot": {
+      "preferOver": ["qqbot"]
+    }
   }
 }
