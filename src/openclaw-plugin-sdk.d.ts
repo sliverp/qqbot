@@ -76,6 +76,8 @@ declare module "openclaw/plugin-sdk" {
    * 且会随 SDK 版本变化。实际使用时 SDK 会提供正确的运行时类型。
    */
   export interface PluginRuntime {
+    /** OpenClaw 框架版本号，如 "2026.3.31" */
+    version: string;
     /** 获取当前配置 */
     getConfig(): OpenClawConfig;
     /** 更新配置 */

@@ -54,11 +54,19 @@ const API_BASE = "https://api.sgroup.qq.com";
 const TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken";
 
 // ============ Plugin User-Agent ============
-// 格式: QQBotPlugin/{version} (Node/{nodeVersion}; {os})
-// 示例: QQBotPlugin/1.6.0 (Node/22.14.0; darwin)
+// 格式: QQBotPlugin/{version} (Node/{nodeVersion}; {os}; OpenClaw/{openclawVersion})
+// 示例: QQBotPlugin/1.6.0 (Node/22.14.0; darwin; OpenClaw/2026.3.31)
 import { getPackageVersion } from "./utils/pkg-version.js";
 const _pluginVersion = getPackageVersion(import.meta.url);
-export const PLUGIN_USER_AGENT = `QQBotPlugin/${_pluginVersion} (Node/${process.versions.node}; ${os.platform()})`;
+// 初始值为 "unknown"，由 setQQBotRuntime 注入后更新为真实版本
+let _openclawVersion = "unknown";
+/** 由 setQQBotRuntime 调用，将 api.runtime.version 注入到 User-Agent */
+export function setOpenClawVersion(version: string) {
+  if (version) _openclawVersion = version;
+}
+export function getPluginUserAgent() {
+  return `QQBotPlugin/${_pluginVersion} (Node/${process.versions.node}; ${os.platform()}; OpenClaw/${_openclawVersion})`;
+}
 
 // 运行时配置
 let currentMarkdownSupport = false;
@@ -159,7 +167,7 @@ export async function getAccessToken(appId: string, clientSecret: string): Promi
  */
 async function doFetchToken(appId: string, clientSecret: string): Promise<string> {
   const requestBody = { appId, clientSecret };
-  const requestHeaders = { "Content-Type": "application/json", "User-Agent": PLUGIN_USER_AGENT };
+  const requestHeaders = { "Content-Type": "application/json", "User-Agent": getPluginUserAgent() };
   
   // 打印请求信息（隐藏敏感信息）
   log.info(`[qqbot-api:${appId}] >>> POST ${TOKEN_URL} [secret: ${clientSecret.slice(0, 6)}...len=${clientSecret.length}]`);
@@ -273,7 +281,7 @@ export async function apiRequest<T = unknown>(
   const headers: Record<string, string> = {
     Authorization: `QQBot ${accessToken}`,
     "Content-Type": "application/json",
-    "User-Agent": PLUGIN_USER_AGENT,
+    "User-Agent": getPluginUserAgent(),
   };
   
   const isFileUpload = path.includes("/files");
@@ -589,7 +597,7 @@ export async function acknowledgeInteraction(
   await apiRequest(accessToken, "PUT", `/interactions/${interactionId}`, { code, ...(data ? { data } : {}) });
 }
 
-/** 获取插件版本号（从 package.json 读取，和 PLUGIN_USER_AGENT 同源） */
+/** 获取插件版本号（从 package.json 读取，和 getPluginUserAgent() 同源） */
 export function getApiPluginVersion(): string {
   return _pluginVersion;
 }
