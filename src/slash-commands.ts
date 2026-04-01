@@ -1987,7 +1987,23 @@ registerCommand({
           : `AI 的回复将恢复为完整发送。`,
       ].join("\n");
     } catch (err) {
-      return `❌ 更新配置失败：${err}`;
+      const fwVer = getFrameworkVersion();
+      return [
+        `❌ 当前版本不支持该指令`,
+        ``,
+        `🦞框架版本：${fwVer}`,
+        `🤖QQBot 插件版本：v${PLUGIN_VERSION}`,
+        ``,
+        `可通过以下命令手动开启流式消息：`,
+        ``,
+        `\`\`\`shell`,
+        `# 1. 开启流式消息`,
+        `openclaw config set channels.qqbot.streaming true`,
+        ``,
+        `# 2. 重启网关使配置生效`,
+        `openclaw gateway restart`,
+        `\`\`\``,
+      ].join("\n");
     }
   },
 });
