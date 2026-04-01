@@ -72,12 +72,16 @@ export function fixPathEncoding(mediaPath: string, log?: { debug?: (msg: string)
   // 1. 双反斜杠 -> 单反斜杠（Markdown 转义）
   let result = mediaPath.replace(/\\\\/g, "\\");
 
+  // Skip octal escape decoding for Windows local paths (e.g. C:\Users\1\file.txt)
+  // where backslash-digit sequences like \1, \2 ... \7 are directory separators,
+  // not octal escape sequences.
+  const isWinLocal = /^[a-zA-Z]:[\\/]/.test(mediaPath) || mediaPath.startsWith("\\\\");
   // 2. 八进制转义序列 + UTF-8 双重编码修复
   try {
     const hasOctal = /\\[0-7]{1,3}/.test(result);
     const hasNonASCII = /[\u0080-\u00FF]/.test(result);
 
-    if (hasOctal || hasNonASCII) {
+    if (!isWinLocal && (hasOctal || hasNonASCII)) {
       log?.debug?.(`Decoding path with mixed encoding: ${result}`);
 
       // Step 1: 将八进制转义转换为字节
