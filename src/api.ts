@@ -639,7 +639,8 @@ function buildMessageBody(
   content: string,
   msgId: string | undefined,
   msgSeq: number,
-  messageReference?: string
+  messageReference?: string,
+  inlineKeyboard?: import("./types.js").InlineKeyboard
 ): Record<string, unknown> {
   const body: Record<string, unknown> = currentMarkdownSupport
     ? {
@@ -658,6 +659,10 @@ function buildMessageBody(
   }
   if (messageReference && !currentMarkdownSupport) {
     body.message_reference = { message_id: messageReference };
+  }
+  // Inline Keyboard（内嵌按钮，需审核）：字段名 keyboard，结构 { content: { rows } }
+  if (inlineKeyboard) {
+    body.keyboard = inlineKeyboard;
   }
   return body;
 }
@@ -732,6 +737,32 @@ export async function sendGroupMessage(
 ): Promise<MessageResponse> {
   const msgSeq = msgId ? getNextMsgSeq(msgId) : 1;
   const body = buildMessageBody(content, msgId, msgSeq, messageReference);
+  return sendAndNotify(accessToken, "POST", `/v2/groups/${groupOpenid}/messages`, body, { text: content });
+}
+
+/** 发送带 Inline Keyboard 的 C2C 消息（回调型按钮，触发 INTERACTION_CREATE） */
+export async function sendC2CMessageWithInlineKeyboard(
+  accessToken: string,
+  openid: string,
+  content: string,
+  inlineKeyboard: import("./types.js").InlineKeyboard,
+  msgId?: string,
+): Promise<MessageResponse> {
+  const msgSeq = msgId ? getNextMsgSeq(msgId) : 1;
+  const body = buildMessageBody(content, msgId, msgSeq, undefined, inlineKeyboard);
+  return sendAndNotify(accessToken, "POST", `/v2/users/${openid}/messages`, body, { text: content });
+}
+
+/** 发送带 Inline Keyboard 的 Group 消息（回调型按钮，触发 INTERACTION_CREATE） */
+export async function sendGroupMessageWithInlineKeyboard(
+  accessToken: string,
+  groupOpenid: string,
+  content: string,
+  inlineKeyboard: import("./types.js").InlineKeyboard,
+  msgId?: string,
+): Promise<MessageResponse> {
+  const msgSeq = msgId ? getNextMsgSeq(msgId) : 1;
+  const body = buildMessageBody(content, msgId, msgSeq, undefined, inlineKeyboard);
   return sendAndNotify(accessToken, "POST", `/v2/groups/${groupOpenid}/messages`, body, { text: content });
 }
 

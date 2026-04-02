@@ -14,6 +14,24 @@ import { qqbotOnboardingAdapter } from "./onboarding.js";
 import { getQQBotRuntime } from "./runtime.js";
 import { saveCredentialBackup, loadCredentialBackup } from "./credential-backup.js";
 import { initApiConfig } from "./api.js";
+import { getApprovalHandler } from "./approval-handler.js";
+
+/** 检查 payload 是否为审批消息（与 getExecApprovalReplyMetadata 等效，内联避免版本兼容问题） */
+function isApprovalPayload(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  const p = payload as Record<string, unknown>;
+  // channelData.execApproval 存在 → exec/plugin approval pending/resolved
+  const cd = p.channelData;
+  if (cd && typeof cd === "object" && !Array.isArray(cd)) {
+    const execApproval = (cd as Record<string, unknown>).execApproval;
+    if (execApproval && typeof execApproval === "object" && !Array.isArray(execApproval)) {
+      return true;
+    }
+  }
+  // text 匹配兜底：框架渲染的审批纯文本通知
+  const text = typeof p.text === "string" ? p.text : "";
+  return /(?:Plugin|Exec) approval (?:required|allowed|denied|expired)/i.test(text);
+}
 
 /** QQ Bot 单条消息文本长度上限 */
 export const TEXT_CHUNK_LIMIT = 5000;
@@ -272,6 +290,10 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
     chunker: (text, limit) => getQQBotRuntime().channel.text.chunkMarkdownText(text, limit),
     chunkerMode: "markdown",
     textChunkLimit: 5000,
+    // 3.31+ outbound 路径：dispatch-from-config → shouldSuppressLocalExecApprovalPrompt → outbound.shouldSuppressLocalPayloadPrompt
+    shouldSuppressLocalPayloadPrompt: ({ accountId, payload }: any) =>
+      getApprovalHandler(accountId ?? "") != null &&
+      isApprovalPayload(payload),
     sendText: async ({ to, text, accountId, replyToId, cfg }) => {
       console.log(`[qqbot:channel] sendText called — accountId=${accountId}, to=${to}, replyToId=${replyToId}, text.length=${text?.length ?? 0}`);
       console.log(`[qqbot:channel] sendText text preview: ${text?.slice(0, 100)}${(text?.length ?? 0) > 100 ? "..." : ""}`);
@@ -437,6 +459,60 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
       lastInboundAt: runtime?.lastInboundAt ?? null,
       lastOutboundAt: runtime?.lastOutboundAt ?? null,
     }),
+  },
+  // QQBot approval-handler 通过独立 WS 连接自行处理 exec + plugin 审批消息投递（带 Inline Keyboard），
+  // 完全屏蔽框架 Forwarder 的纯文本通知。
+  //
+  // ── 3.28 扁平结构 ──
+  execApprovals: {
+    // 3.28 框架通过此方法判断 channel 是否支持审批
+    getInitiatingSurfaceState: ({ accountId }: { cfg: any; accountId?: string | null }) => {
+      return getApprovalHandler(accountId ?? "") != null
+        ? { kind: "enabled" as const }
+        : { kind: "disabled" as const };
+    },
+    shouldSuppressForwardingFallback: (...args: any[]) => {
+      console.log("[QQBot] shouldSuppressForwardingFallback called", JSON.stringify(args?.[0]?.target ?? null));
+      return true;
+    },
+    shouldSuppressLocalPrompt: ({ accountId, payload }: any) =>
+      getApprovalHandler(accountId ?? "") != null &&
+      isApprovalPayload(payload),
+    buildPendingPayload: () => null,
+    buildResolvedPayload: () => null,
+  },
+  // ── 3.31+ 嵌套结构 ──
+  // auth 和 approvals 是 ChannelPlugin 顶层平级字段
+  //
+  // QQBot 审批模型：
+  //   - QQBotApprovalHandler 通过独立 WS 自行投递带 Inline Keyboard 的审批消息
+  //   - 用户点击按钮 → INTERACTION_CREATE → resolveApproval → gateway RPC
+  //   - /approve 文本命令作为 URGENT_COMMAND 直接入队交给框架处理
+  auth: {
+    authorizeActorAction: () => ({ authorized: true }),
+    getActionAvailabilityState: ({ accountId }: {
+      cfg: any; accountId?: string | null; action: "approve";
+    }) => {
+      return getApprovalHandler(accountId ?? "") != null
+        ? { kind: "enabled" as const }
+        : { kind: "disabled" as const };
+    },
+  },
+  approvals: {
+    delivery: {
+      hasConfiguredDmRoute: () => true,
+      shouldSuppressForwardingFallback: () => true,
+    },
+    render: {
+      exec: {
+        buildPendingPayload: () => null,
+        buildResolvedPayload: () => null,
+      },
+      plugin: {
+        buildPendingPayload: () => null,
+        buildResolvedPayload: () => null,
+      },
+    },
   },
 };
 
