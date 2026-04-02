@@ -339,6 +339,84 @@ export interface InteractionEvent {
   };
 }
 
+// ---- Keyboard 类型 ----
+
+/**
+ * 按钮 Action 类型
+ * 0=跳转链接  1=回调型(INTERACTION_CREATE)  2=指令型(直接发文本)  3=mqqapi
+ */
+export type KeyboardActionType = 0 | 1 | 2 | 3;
+
+/** 按钮权限 */
+export interface KeyboardPermission {
+  /** 0=全体  1=管理员  2=按钮指定  3=身份组 */
+  type: 0 | 1 | 2 | 3;
+  specify_role_ids?: string[];
+  specify_user_ids?: string[];
+}
+
+/** 二次确认弹窗 */
+export interface KeyboardModal {
+  content: string;
+  confirm_text?: string;
+  cancel_text?: string;
+}
+
+/** 按钮 Action */
+export interface KeyboardAction {
+  type: KeyboardActionType;
+  data?: string;
+  /** true = 点击后直接发出（Enter）*/
+  enter?: boolean;
+  /** 仅指令型（type=2）：是否把指令发到输入框（reply=true）还是静默发出 */
+  reply?: boolean;
+  permission?: KeyboardPermission;
+  click_limit?: number;
+  unsupport_tips?: string;
+  modal?: KeyboardModal;
+}
+
+/** 按钮渲染数据 */
+export interface KeyboardRenderData {
+  label: string;
+  visited_label?: string;
+  /** 0=灰色线框  1=蓝色线框  2=推荐回复专用  3=红色字体  4=蓝色背景 */
+  style?: 0 | 1 | 2 | 3 | 4;
+}
+
+/** 单个按钮 */
+export interface KeyboardButton {
+  id: string;
+  render_data?: KeyboardRenderData;
+  action?: KeyboardAction;
+  group_id?: string;
+}
+
+/** 一行按钮 */
+export interface KeyboardRow {
+  buttons: KeyboardButton[];
+}
+
+/** CustomKeyboard（自定义按钮内容） */
+export interface CustomKeyboard {
+  rows: KeyboardRow[];
+}
+
+/** MessageKeyboard（keyboard / prompt_keyboard.keyboard 共用） */
+export interface MessageKeyboard {
+  /** 模板 ID（与 content 二选一） */
+  id?: string;
+  /** 自定义内容 */
+  content?: CustomKeyboard;
+}
+
+/**
+ * Inline Keyboard（消息内嵌按钮，需平台审核）
+ * 发送字段：keyboard
+ * JSON: { "keyboard": { "id": "...", "content": { "rows": [...] } } }
+ */
+export type InlineKeyboard = MessageKeyboard;
+
 /**
  * WebSocket 事件负载
  */

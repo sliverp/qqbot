@@ -587,3 +587,16 @@ declare module "openclaw/plugin-sdk" {
   /** 规范化账户 ID */
   export function normalizeAccountId(accountId: string | undefined | null): string;
 }
+
+declare module "openclaw/plugin-sdk/approval-runtime" {
+  export interface ExecApprovalReplyMetadata {
+    approvalId: string;
+    approvalSlug: string;
+    allowedDecisions?: string[];
+  }
+  export type ExecApprovalRequest = import("openclaw/plugin-sdk").ExecApprovalRequest;
+  export type ExecApprovalResolved = import("openclaw/plugin-sdk").ExecApprovalResolved;
+  export type PluginApprovalRequest = import("openclaw/plugin-sdk").PluginApprovalRequest;
+  export type PluginApprovalResolved = import("openclaw/plugin-sdk").PluginApprovalResolved;
+  export function getExecApprovalReplyMetadata(payload: { channelData?: unknown }): ExecApprovalReplyMetadata | null;
+}
