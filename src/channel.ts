@@ -477,6 +477,15 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
   },
   // ── 3.31+ 嵌套结构 ──
   approvals: {
+    // 告诉框架 gateway 核心：qqbot channel 能处理审批投递
+    // 框架通过 auth.getActionAvailabilityState() 判断是否有合法审批路由，
+    // 返回 "enabled" 表示该 channel 可以投递审批消息，避免 fast-fail → no-approval-route
+    auth: {
+      getActionAvailabilityState: ({ accountId }: { accountId?: string }) => {
+        // 只要该账户有活跃的 ApprovalHandler（即 gateway 已启动），就返回 enabled
+        return getApprovalHandler(accountId ?? "") != null ? "enabled" : "disabled";
+      },
+    },
     delivery: {
       shouldSuppressForwardingFallback: () => true,
     },
