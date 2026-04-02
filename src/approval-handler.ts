@@ -4,16 +4,11 @@
  * 监听 Gateway 的 exec/plugin approval 事件，
  * 直接调用 QQ API 发送带 Inline Keyboard 的审批消息。
  * 参考 DiscordExecApprovalHandler 的实现模式。
+ *
+ * 兼容性：gateway-runtime / approval-runtime 模块在 openclaw < 3.22 上不存在，
+ * 使用动态 import 避免插件整体加载失败，旧版框架上审批功能自动降级（不可用）。
  */
 
-import * as gatewayRuntime from "openclaw/plugin-sdk/gateway-runtime";
-import type { EventFrame } from "openclaw/plugin-sdk/gateway-runtime";
-import type {
-  ExecApprovalRequest,
-  ExecApprovalResolved,
-  PluginApprovalRequest,
-  PluginApprovalResolved,
-} from "openclaw/plugin-sdk/approval-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk";
 import {
   getAccessToken,
@@ -21,6 +16,67 @@ import {
   sendGroupMessageWithInlineKeyboard,
 } from "./api.js";
 import type { InlineKeyboard, KeyboardButton } from "./types.js";
+
+// ─── 动态加载的模块类型（兼容旧版框架） ───────────────────────
+
+/** gateway-runtime 模块的接口（动态 import） */
+type GatewayClient = {
+  start: () => void | Promise<void>;
+  stop: () => void | Promise<void>;
+  request: (method: string, params: unknown) => Promise<unknown>;
+};
+
+type EventFrame = {
+  event: string;
+  payload: unknown;
+};
+
+/** approval-runtime 中的审批请求/结果类型（内联定义，避免顶层 import） */
+interface ExecApprovalRequest {
+  id: string;
+  expiresAtMs: number;
+  request: {
+    commandPreview?: string;
+    command?: string;
+    cwd?: string;
+    agentId?: string;
+    turnSourceAccountId?: string;
+    sessionKey?: string;
+    turnSourceTo?: string;
+    [key: string]: unknown;
+  };
+}
+
+interface ExecApprovalResolved {
+  id: string;
+  decision: string;
+  resolvedBy?: string;
+  [key: string]: unknown;
+}
+
+interface PluginApprovalRequest {
+  id: string;
+  request: {
+    timeoutMs?: number;
+    severity?: "critical" | "info" | string;
+    title: string;
+    description?: string;
+    toolName?: string;
+    pluginId?: string;
+    agentId?: string;
+    turnSourceAccountId?: string;
+    sessionKey?: string;
+    turnSourceTo?: string;
+    [key: string]: unknown;
+  };
+}
+
+interface PluginApprovalResolved {
+  id: string;
+  decision: string;
+  resolvedBy?: string;
+  [key: string]: unknown;
+}
 
 // ─── 类型 ───────────────────────────────────────────────────
 
@@ -146,7 +202,7 @@ function resolveTarget(
 // ─── Handler 类 ──────────────────────────────────────────────
 
 export class QQBotApprovalHandler {
-  private gatewayClient: gatewayRuntime.GatewayClient | null = null;
+  private gatewayClient: GatewayClient | null = null;
   private pending = new Map<string, PendingEntry>();
   private requestCache = new Map<string, CachedApprovalRequest>();
   private opts: QQBotApprovalHandlerOpts;
@@ -162,16 +218,32 @@ export class QQBotApprovalHandler {
     const { log } = this.opts;
     log?.info(`[qqbot:${this.opts.accountId}] approval-handler: starting`);
 
-    this.gatewayClient = await gatewayRuntime.createOperatorApprovalsGatewayClient({
-      config: this.opts.cfg,
-      gatewayUrl: this.opts.gatewayUrl,
-      clientDisplayName: "QQBot Approval Handler",
-      onEvent: (evt) => this.handleGatewayEvent(evt),
-      onHelloOk: () => log?.info(`[qqbot:${this.opts.accountId}] approval-handler: connected to gateway`),
-      onConnectError: (err) => log?.error(`[qqbot:${this.opts.accountId}] approval-handler: connect error: ${err.message}`),
-      onClose: (code, reason) => log?.debug?.(`[qqbot:${this.opts.accountId}] approval-handler: gateway closed: ${code} ${reason}`),
-    });
-    this.gatewayClient.start();
+    // 动态 import gateway-runtime（兼容 openclaw < 3.22 不存在该模块）
+    let gatewayRuntime: { createOperatorApprovalsGatewayClient: (...args: any[]) => Promise<GatewayClient> };
+    try {
+      gatewayRuntime = await import("openclaw/plugin-sdk/gateway-runtime");
+    } catch (err) {
+      log?.error(`[qqbot:${this.opts.accountId}] approval-handler: gateway-runtime module not available (openclaw version too old?), approval feature disabled. Error: ${err}`);
+      this.started = false;
+      return;
+    }
+
+    try {
+      this.gatewayClient = await gatewayRuntime.createOperatorApprovalsGatewayClient({
+        config: this.opts.cfg,
+        gatewayUrl: this.opts.gatewayUrl,
+        clientDisplayName: "QQBot Approval Handler",
+        onEvent: (evt: EventFrame) => this.handleGatewayEvent(evt),
+        onHelloOk: () => log?.info(`[qqbot:${this.opts.accountId}] approval-handler: connected to gateway`),
+        onConnectError: (err: { message: string }) => log?.error(`[qqbot:${this.opts.accountId}] approval-handler: connect error: ${err.message}`),
+        onClose: (code: number, reason: string) => log?.debug?.(`[qqbot:${this.opts.accountId}] approval-handler: gateway closed: ${code} ${reason}`),
+      });
+      this.gatewayClient.start();
+      setApprovalFeatureAvailable(true);
+    } catch (err) {
+      log?.error(`[qqbot:${this.opts.accountId}] approval-handler: failed to create gateway client: ${err}`);
+      this.started = false;
+    }
   }
 
   async stop(): Promise<void> {
@@ -223,12 +295,14 @@ export class QQBotApprovalHandler {
 
     const kind = resolveApprovalKind(fullId);
     const method = kind === "plugin" ? "plugin.approval.resolve" : "exec.approval.resolve";
+    const isPending = this.pending.has(fullId);
+    const isCached = this.requestCache.has(fullId);
 
-    this.opts.log?.info(`[qqbot:${this.opts.accountId}] approval-handler: resolving ${fullId} (input=${approvalId}) kind=${kind} → ${decision}`);
+    this.opts.log?.info(`[qqbot:${this.opts.accountId}] approval-handler: resolving ${fullId} (input=${approvalId}) kind=${kind} → ${decision}, pending=${isPending}, cached=${isCached}`);
 
     try {
       await this.gatewayClient.request(method, { id: fullId, decision });
-      this.opts.log?.info(`[qqbot:${this.opts.accountId}] approval-handler: resolved ${toShortId(fullId)} → ${decision}`);
+      this.opts.log?.info(`[qqbot:${this.opts.accountId}] approval-handler: RPC success ${toShortId(fullId)} → ${decision} (method=${method})`);
       return true;
     } catch (err) {
       this.opts.log?.error(`[qqbot:${this.opts.accountId}] approval-handler: resolve failed: ${err}`);
@@ -315,15 +389,18 @@ export class QQBotApprovalHandler {
     resolved: ExecApprovalResolved | PluginApprovalResolved
   ): Promise<void> {
     const entry = this.pending.get(resolved.id);
+    const resolvedBy = (resolved as any).resolvedBy ?? "unknown";
+    const kind = resolveApprovalKind(resolved.id);
+
+    this.opts.log?.info(
+      `[qqbot:${this.opts.accountId}] approval-handler: gateway confirmed ${toShortId(resolved.id)} → ${resolved.decision} (kind=${kind}, resolvedBy=${resolvedBy}, wasPending=${!!entry})`
+    );
+
     if (!entry) return;
 
     clearTimeout(entry.timeoutId);
     this.pending.delete(resolved.id);
     this.requestCache.delete(resolved.id);
-
-    this.opts.log?.info(
-      `[qqbot:${this.opts.accountId}] approval-handler: resolved ${toShortId(resolved.id)} → ${resolved.decision}`
-    );
     // 框架 Forwarder 负责发送 resolved 通知（已通过 buildResolvedPayload=null 抑制），此处不重复发送
   }
 
@@ -343,6 +420,17 @@ export class QQBotApprovalHandler {
 // ─── 模块级 handler 注册 ────────────────────────────────────
 
 const _handlers = new Map<string, QQBotApprovalHandler>();
+
+/** 审批功能是否可用（gateway-runtime 模块加载成功则为 true） */
+let _approvalFeatureAvailable = false;
+
+export function isApprovalFeatureAvailable(): boolean {
+  return _approvalFeatureAvailable;
+}
+
+export function setApprovalFeatureAvailable(available: boolean): void {
+  _approvalFeatureAvailable = available;
+}
 
 export function registerApprovalHandler(accountId: string, handler: QQBotApprovalHandler): void {
   _handlers.set(accountId, handler);

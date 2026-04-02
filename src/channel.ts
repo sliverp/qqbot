@@ -465,6 +465,12 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
   //
   // ── 3.28 扁平结构 ──
   execApprovals: {
+    // 3.28 框架通过此方法判断 channel 是否支持审批
+    getInitiatingSurfaceState: ({ accountId }: { cfg: any; accountId?: string | null }) => {
+      return getApprovalHandler(accountId ?? "") != null
+        ? { kind: "enabled" as const }
+        : { kind: "disabled" as const };
+    },
     shouldSuppressForwardingFallback: (...args: any[]) => {
       console.log("[QQBot] shouldSuppressForwardingFallback called", JSON.stringify(args?.[0]?.target ?? null));
       return true;

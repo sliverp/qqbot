@@ -187,12 +187,13 @@ async function handleInteractionCreate(params: {
     if (m) {
       const approvalId = m[1]!;
       const decision = m[2] as "allow-once" | "allow-always" | "deny";
+      const userId = event.group_member_openid || event.user_openid || event.data?.resolved?.user_id || "unknown";
+      log?.info(`[qqbot:${account.accountId}] Approval button clicked: approvalId=${approvalId}, decision=${decision}, user=${userId}, buttonData=${buttonData}`);
       const handler = getApprovalHandler(account.accountId);
       if (handler) {
-        log?.info(`[qqbot:${account.accountId}] Inline keyboard approval: ${approvalId} → ${decision}`);
         void handler.resolveApproval(approvalId, decision);
       } else {
-        log?.error(`[qqbot:${account.accountId}] Inline keyboard approval: no handler found for accountId=${account.accountId}`);
+        log?.error(`[qqbot:${account.accountId}] Approval button: no handler found for accountId=${account.accountId}`);
       }
     }
   }

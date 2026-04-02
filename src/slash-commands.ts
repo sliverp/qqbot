@@ -22,6 +22,7 @@ import { saveCredentialBackup } from "./credential-backup.js";
 import { fileURLToPath } from "node:url";
 import { getPackageVersion } from "./utils/pkg-version.js";
 import { getQQBotRuntime } from "./runtime.js";
+import { isApprovalFeatureAvailable } from "./approval-handler.js";
 const require = createRequire(import.meta.url);
 
 let PLUGIN_VERSION = getPackageVersion(import.meta.url);
@@ -2038,6 +2039,11 @@ registerCommand({
   handler: async (ctx) => {
     const arg = ctx.args.trim().toLowerCase();
 
+    // 审批功能需要 openclaw >= 3.22（gateway-runtime 模块）
+    if (!isApprovalFeatureAvailable()) {
+      return `❌ 当前 OpenClaw 版本不支持审批功能，请升级至最新版本后重试。`;
+    }
+
     let runtime;
     try {
       runtime = getQQBotRuntime();
@@ -2063,7 +2069,7 @@ registerCommand({
         return {
           delegatePrompt: [
             `请帮我重置审批配置。执行以下单条命令（不要拆开）：`,
-            `openclaw config delete tools.exec.security && openclaw config delete tools.exec.ask`,
+            `openclaw config unset tools.exec.security && openclaw config unset tools.exec.ask`,
             `执行完成后告诉用户审批配置已重置为框架默认值。`,
           ].join("\n"),
         };
