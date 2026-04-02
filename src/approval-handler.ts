@@ -10,12 +10,65 @@
  */
 
 import type { OpenClawConfig } from "openclaw/plugin-sdk";
+import { createRequire } from "node:module";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   getAccessToken,
   sendC2CMessageWithInlineKeyboard,
   sendGroupMessageWithInlineKeyboard,
 } from "./api.js";
 import type { InlineKeyboard, KeyboardButton } from "./types.js";
+
+// ─── 动态加载 gateway-runtime（兼容不同安装环境） ────────
+
+function loadGatewayRuntime(): { createOperatorApprovalsGatewayClient: (...args: any[]) => Promise<GatewayClient> } {
+  const req = createRequire(import.meta.url);
+  const currentFile = fileURLToPath(import.meta.url);
+  const pluginRoot = path.resolve(path.dirname(currentFile), "..", "..");
+  const fs = req("node:fs") as typeof import("node:fs");
+
+  // 尝试从找到的 openclaw 根目录加载 gateway-runtime.js
+  const tryLoadFromRoot = (root: string) => {
+    for (const rel of ["dist/plugin-sdk/gateway-runtime.js", "plugin-sdk/gateway-runtime.js"]) {
+      const p = path.join(root, rel);
+      try {
+        if (fs.existsSync(p)) return req(p);
+      } catch { /* try next */ }
+    }
+    return null;
+  };
+
+  // 策略 1: link-sdk-core.cjs findOpenclawRoot
+  try {
+    const { findOpenclawRoot } = req(path.join(pluginRoot, "scripts", "link-sdk-core.cjs")) as {
+      findOpenclawRoot: (root: string) => string | null;
+    };
+    const root = findOpenclawRoot(pluginRoot);
+    if (root) {
+      const mod = tryLoadFromRoot(root);
+      if (mod) return mod;
+    }
+  } catch { /* fallback */ }
+
+  // 策略 2: process.argv[1] 反推（当前进程就是 openclaw）
+  try {
+    const entry = process.argv[1];
+    if (entry) {
+      const realEntry = fs.realpathSync(entry);
+      let dir = path.dirname(realEntry);
+      for (let i = 0; i < 6; i++) {
+        const mod = tryLoadFromRoot(dir);
+        if (mod) return mod;
+        const parent = path.dirname(dir);
+        if (parent === dir) break;
+        dir = parent;
+      }
+    }
+  } catch { /* fallback */ }
+
+  throw new Error("Cannot find openclaw/plugin-sdk/gateway-runtime (all strategies failed)");
+}
 
 // ─── 动态加载的模块类型（兼容旧版框架） ───────────────────────
 
@@ -218,12 +271,12 @@ export class QQBotApprovalHandler {
     const { log } = this.opts;
     log?.info(`[qqbot:${this.opts.accountId}] approval-handler: starting`);
 
-    // 动态 import gateway-runtime（兼容 openclaw < 3.22 不存在该模块）
+    // 动态加载 gateway-runtime（兼容旧版框架 / pnpm 环境）
     let gatewayRuntime: { createOperatorApprovalsGatewayClient: (...args: any[]) => Promise<GatewayClient> };
     try {
-      gatewayRuntime = await import("openclaw/plugin-sdk/gateway-runtime");
+      gatewayRuntime = loadGatewayRuntime();
     } catch (err) {
-      log?.error(`[qqbot:${this.opts.accountId}] approval-handler: gateway-runtime module not available (openclaw version too old?), approval feature disabled. Error: ${err}`);
+      log?.error(`[qqbot:${this.opts.accountId}] approval-handler: gateway-runtime module not available, approval feature disabled. Error: ${err}`);
       this.started = false;
       return;
     }
