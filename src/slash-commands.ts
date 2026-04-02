@@ -22,6 +22,7 @@ import { saveCredentialBackup } from "./credential-backup.js";
 import { fileURLToPath } from "node:url";
 import { getPackageVersion } from "./utils/pkg-version.js";
 import { getQQBotRuntime } from "./runtime.js";
+import { isApprovalFeatureAvailable } from "./approval-handler.js";
 const require = createRequire(import.meta.url);
 
 let PLUGIN_VERSION = getPackageVersion(import.meta.url);
@@ -216,14 +217,20 @@ export interface QueueSnapshot {
   senderPending: number;
 }
 
-/** 斜杠指令返回值：文本、带文件的结果、或 null（不处理） */
-export type SlashCommandResult = string | SlashCommandFileResult | null;
+/** 斜杠指令返回值：文本、带文件的结果、委托给模型、或 null（不处理） */
+export type SlashCommandResult = string | SlashCommandFileResult | SlashCommandDelegateResult | null;
 
 /** 带文件的指令结果（先回复文本，再发送文件） */
 export interface SlashCommandFileResult {
   text: string;
   /** 要发送的本地文件路径 */
   filePath: string;
+}
+
+/** 委托给 AI 模型处理：用加工后的 prompt 替换原始消息入队 */
+export interface SlashCommandDelegateResult {
+  /** 替换原始消息内容的 prompt，交给 AI 模型执行 */
+  delegatePrompt: string;
 }
 
 /** 斜杠指令定义 */
@@ -2005,6 +2012,250 @@ registerCommand({
         `\`\`\``,
       ].join("\n");
     }
+  },
+});
+
+// ============ /bot-approve 审批配置管理 ============
+
+/**
+ * /bot-approve — 管理命令执行审批配置
+ *
+ * 修改 openclaw.json 中 tools.exec.security / tools.exec.ask 字段。
+ *
+ * security: deny | allowlist | full
+ * ask: off | on-miss | always
+ */
+registerCommand({
+  name: "bot-approve",
+  description: "管理命令执行审批配置",
+  usage: [
+    `/bot-approve            查看操作指引`,
+    `/bot-approve on         开启审批（白名单模式，推荐）`,
+    `/bot-approve off        关闭审批，命令直接执行`,
+    `/bot-approve always     始终审批，每次执行都需审批`,
+    `/bot-approve reset      恢复框架默认值`,
+    `/bot-approve status     查看当前审批配置`,
+  ].join("\n"),
+  handler: async (ctx) => {
+    const arg = ctx.args.trim().toLowerCase();
+
+    // 审批功能需要 openclaw >= 3.22（gateway-runtime 模块）
+    if (!isApprovalFeatureAvailable()) {
+      return `❌ 当前 OpenClaw 版本不支持审批功能，请升级至最新版本后重试。`;
+    }
+
+    let runtime;
+    try {
+      runtime = getQQBotRuntime();
+    } catch {
+      // runtime 不可用，构造 prompt 委托给 AI 模型通过 CLI 完成
+      const presetMap: Record<string, { security: string; ask: string; desc: string }> = {
+        on: { security: "allowlist", ask: "on-miss", desc: "开启审批（白名单模式）" },
+        off: { security: "full", ask: "off", desc: "关闭审批" },
+        always: { security: "allowlist", ask: "always", desc: "严格模式（每次都审批）" },
+        strict: { security: "allowlist", ask: "always", desc: "严格模式（每次都审批）" },
+      };
+      const preset = presetMap[arg];
+      if (preset) {
+        return {
+          delegatePrompt: [
+            `请帮我${preset.desc}。执行以下单条命令（不要拆开）：`,
+            `openclaw config set tools.exec.security ${preset.security} && openclaw config set tools.exec.ask ${preset.ask}`,
+            `执行完成后告诉用户审批配置已更新为 security=${preset.security}, ask=${preset.ask}。`,
+          ].join("\n"),
+        };
+      }
+      if (arg === "reset") {
+        return {
+          delegatePrompt: [
+            `请帮我重置审批配置。执行以下单条命令（不要拆开）：`,
+            `openclaw config unset tools.exec.security && openclaw config unset tools.exec.ask`,
+            `执行完成后告诉用户审批配置已重置为框架默认值。`,
+          ].join("\n"),
+        };
+      }
+      if (arg === "status") {
+        return {
+          delegatePrompt: [
+            `请帮我查看当前命令执行审批配置。执行以下单条命令（不要拆开）：`,
+            `echo "security=$(openclaw config get tools.exec.security)" && echo "ask=$(openclaw config get tools.exec.ask)"`,
+            `然后告诉用户当前 security 和 ask 的值，以及可用的操作选项：`,
+            `- /bot-approve on    开启审批（白名单模式）`,
+            `- /bot-approve off   关闭审批`,
+            `- /bot-approve always 严格模式`,
+            `- /bot-approve reset 恢复默认`,
+          ].join("\n"),
+        };
+      }
+      // 无参数或未知参数：直接返回操作指引
+      return [
+        `🔐 命令执行审批配置`,
+        ``,
+        `<qqbot-cmd-input text="/bot-approve on" show="/bot-approve on"/> 开启审批（白名单模式）`,
+        `<qqbot-cmd-input text="/bot-approve off" show="/bot-approve off"/> 关闭审批`,
+        `<qqbot-cmd-input text="/bot-approve always" show="/bot-approve always"/> 严格模式`,
+        `<qqbot-cmd-input text="/bot-approve reset" show="/bot-approve reset"/> 恢复默认`,
+        `<qqbot-cmd-input text="/bot-approve status" show="/bot-approve status"/> 查看当前配置`,
+      ].join("\n");
+    }
+    const configApi = runtime.config as {
+      loadConfig: () => Record<string, unknown>;
+      writeConfigFile: (cfg: unknown) => Promise<void>;
+    };
+
+    const loadExecConfig = () => {
+      const cfg = configApi.loadConfig() as Record<string, unknown>;
+      const tools = (cfg.tools ?? {}) as Record<string, unknown>;
+      const exec = (tools.exec ?? {}) as Record<string, unknown>;
+      return {
+        security: String(exec.security ?? "deny"),
+        ask: String(exec.ask ?? "on-miss"),
+      };
+    };
+
+    const writeExecConfig = async (security: string, ask: string) => {
+      const cfg = structuredClone(configApi.loadConfig()) as Record<string, unknown>;
+      const tools = ((cfg.tools ?? {}) as Record<string, unknown>);
+      const exec = ((tools.exec ?? {}) as Record<string, unknown>);
+      exec.security = security;
+      exec.ask = ask;
+      tools.exec = exec;
+      cfg.tools = tools;
+      await configApi.writeConfigFile(cfg);
+    };
+
+    const formatStatus = (security: string, ask: string) => {
+      const secIcon = security === "full" ? "🟢" : security === "allowlist" ? "🟡" : "🔴";
+      const askIcon = ask === "off" ? "🟢" : ask === "always" ? "🔴" : "🟡";
+      return [
+        `🔐 当前审批配置`,
+        ``,
+        `${secIcon} 安全模式 (security): **${security}**`,
+        `${askIcon} 审批模式 (ask): **${ask}**`,
+        ``,
+        security === "deny" ? `⚠️ 当前为 deny 模式，所有命令执行被拒绝` :
+        security === "full" && ask === "off" ? `✅ 所有命令无需审批直接执行` :
+        security === "allowlist" && ask === "on-miss" ? `🛡️ 白名单命令直接执行，其余需审批` :
+        ask === "always" ? `🔒 每次命令执行都需要人工审批` :
+        `ℹ️ security=${security}, ask=${ask}`,
+      ].join("\n");
+    };
+
+    // 无参数：操作指引
+    if (!arg) {
+      return [
+        `🔐 命令执行审批配置`,
+        ``,
+        `<qqbot-cmd-input text="/bot-approve on" show="/bot-approve on"/> 开启审批（白名单模式）`,
+        `<qqbot-cmd-input text="/bot-approve off" show="/bot-approve off"/> 关闭审批`,
+        `<qqbot-cmd-input text="/bot-approve always" show="/bot-approve always"/> 严格模式`,
+        `<qqbot-cmd-input text="/bot-approve reset" show="/bot-approve reset"/> 恢复默认`,
+        `<qqbot-cmd-input text="/bot-approve status" show="/bot-approve status"/> 查看当前配置`,
+      ].join("\n");
+    }
+
+    // status: 查看当前配置
+    if (arg === "status") {
+      const { security, ask } = loadExecConfig();
+      return [
+        formatStatus(security, ask),
+        ``,
+        `<qqbot-cmd-input text="/bot-approve on" show="/bot-approve on"/> 开启审批`,
+        `<qqbot-cmd-input text="/bot-approve off" show="/bot-approve off"/> 关闭审批`,
+        `<qqbot-cmd-input text="/bot-approve always" show="/bot-approve always"/> 严格模式`,
+        `<qqbot-cmd-input text="/bot-approve reset" show="/bot-approve reset"/> 恢复默认`,
+      ].join("\n");
+    }
+
+    // on: 开启审批（白名单 + 未命中审批）
+    if (arg === "on") {
+      try {
+        await writeExecConfig("allowlist", "on-miss");
+        return [
+          `✅ 审批已开启`,
+          ``,
+          `• security = allowlist（白名单模式）`,
+          `• ask = on-miss（未命中白名单时需审批）`,
+          ``,
+          `已批准的命令自动加入白名单，下次直接执行。`,
+        ].join("\n");
+      } catch (err) {
+        return `❌ 配置更新失败: ${err}`;
+      }
+    }
+
+    // off: 关闭审批
+    if (arg === "off") {
+      try {
+        await writeExecConfig("full", "off");
+        return [
+          `✅ 审批已关闭`,
+          ``,
+          `• security = full（允许所有命令）`,
+          `• ask = off（不需要审批）`,
+          ``,
+          `⚠️ 所有命令将直接执行，不会弹出审批确认。`,
+        ].join("\n");
+      } catch (err) {
+        return `❌ 配置更新失败: ${err}`;
+      }
+    }
+
+    // always: 始终审批（每次都审批）
+    if (arg === "always") {
+      try {
+        await writeExecConfig("allowlist", "always");
+        return [
+          `✅ 已切换为严格审批模式`,
+          ``,
+          `• security = allowlist`,
+          `• ask = always（每次执行都需审批）`,
+          ``,
+          `每个命令都会弹出审批按钮，需手动确认。`,
+        ].join("\n");
+      } catch (err) {
+        return `❌ 配置更新失败: ${err}`;
+      }
+    }
+
+    // reset: 删除配置，恢复框架默认值
+    if (arg === "reset") {
+      try {
+        const cfg = structuredClone(configApi.loadConfig()) as Record<string, unknown>;
+        const tools = (cfg.tools ?? {}) as Record<string, unknown>;
+        const exec = (tools.exec ?? {}) as Record<string, unknown>;
+        delete exec.security;
+        delete exec.ask;
+        if (Object.keys(exec).length === 0) {
+          delete tools.exec;
+        } else {
+          tools.exec = exec;
+        }
+        if (Object.keys(tools).length === 0) {
+          delete cfg.tools;
+        } else {
+          cfg.tools = tools;
+        }
+        await configApi.writeConfigFile(cfg);
+        return [
+          `✅ 审批配置已重置`,
+          ``,
+          `已移除 tools.exec.security 和 tools.exec.ask`,
+          `框架将使用默认值（security=deny, ask=on-miss）`,
+          ``,
+          `如需开启命令执行，请使用 /bot-approve on`,
+        ].join("\n");
+      } catch (err) {
+        return `❌ 配置更新失败: ${err}`;
+      }
+    }
+
+    return [
+      `❌ 未知参数: ${arg}`,
+      ``,
+      `可用选项: on | off | always | reset`,
+      `输入 /bot-approve ? 查看详细用法`,
+    ].join("\n");
   },
 });
 

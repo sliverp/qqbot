@@ -9,7 +9,7 @@
 
 **让你的 AI 助手接入 QQ — 私聊、群聊、富媒体，一个插件全搞定。**
 
-### 🚀 当前版本： `v1.7.0`
+### 🚀 当前版本： `v1.7.1`
 
 [![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![QQ Bot](https://img.shields.io/badge/QQ_Bot-API_v2-red)](https://bot.q.qq.com/wiki/)
@@ -42,6 +42,7 @@
 | 🛠️ **原生命令** | 支持 OpenClaw 原生命令 |
 | 💬 **引用上下文** | 解析用户回复的原始消息内容，注入 AI 上下文，让模型准确理解"在回复哪条消息" |
 | 📦 **大文件支持** | 大文件自动分片并行上传，最大支持 100 MB |
+| 🔐 **命令执行审批** | AI 执行命令前通过按钮消息请求审批，点击即可允许或拒绝 |
 
 ---
 
@@ -129,6 +130,14 @@ v1.6.6 起支持大文件传输：图片最大 20MB，视频最大 30MB，附件
 
 <img width="360" src="docs/images/large-file-transfer.jpg" alt="大文件传输演示" />
 
+### 🔐 命令执行审批
+
+当 AI 需要执行命令时，插件会通过 QQ 消息发送带按钮的审批请求，你可以点击 **✅ 允许一次**、**⭐ 始终允许** 或 **❌ 拒绝** 来控制命令是否执行。
+
+通过 `/bot-approve` 指令可以管理审批模式（白名单 / 关闭 / 严格模式）。
+
+<img width="360" src="docs/images/approve.png" alt="命令执行审批演示" />
+
 ### 🎬 视频发送
 
 > **你**：发一个演示视频给我
@@ -207,6 +216,22 @@ AI 可直接发送视频，支持本地文件和公网 URL。
 > **你**：`/bot-upgrade ?`
 >
 > **QQBot**：📖 /bot-upgrade 用法：…
+
+#### `/bot-approve` — 审批配置管理
+
+> **你**：`/bot-approve`
+>
+> **QQBot**：🔐 命令执行审批配置 — 开启审批 / 关闭审批 / 严格模式 / 恢复默认 / 查看当前配置
+
+管理 AI 命令执行审批策略，支持以下子命令：
+
+| 子命令 | 说明 |
+|--------|------|
+| `/bot-approve on` | 开启审批（白名单模式，推荐） |
+| `/bot-approve off` | 关闭审批，命令直接执行 |
+| `/bot-approve always` | 严格模式，每次执行都需审批 |
+| `/bot-approve reset` | 恢复框架默认值 |
+| `/bot-approve status` | 查看当前审批配置 |
 
 #### `/bot-clear-storage` — 清理通过 QQBot 对话产生的文件以及下载的资源（保存在 OpenClaw 运行环境的主机上）
 

@@ -9,6 +9,7 @@ import { recordKnownUser, flushKnownUsers } from "./known-users.js";
 import { getQQBotRuntime } from "./runtime.js";
 import { isGroupAllowed, resolveGroupName, resolveGroupPrompt, resolveHistoryLimit, resolveGroupPolicy, resolveGroupConfig, resolveIgnoreOtherMentions, resolveMentionPatterns } from "./config.js";
 import { qqbotPlugin, stripMentionText, detectWasMentioned } from "./channel.js";
+import { QQBotApprovalHandler, registerApprovalHandler, unregisterApprovalHandler, getApprovalHandler } from "./approval-handler.js";
 import {
   recordPendingHistoryEntry,
   buildPendingHistoryContext,
@@ -21,7 +22,7 @@ import {
 } from "./group-history.js";
 
 import { setRefIndex, getRefIndex, formatRefEntryForAgent, formatMessageReferenceForAgent, flushRefIndex, type RefAttachmentSummary } from "./ref-index-store.js";
-import { matchSlashCommand, getFrameworkVersion, parseFrameworkDateVersion, type SlashCommandContext, type SlashCommandFileResult } from "./slash-commands.js";
+import { matchSlashCommand, getFrameworkVersion, parseFrameworkDateVersion, type SlashCommandContext, type SlashCommandFileResult, type SlashCommandDelegateResult } from "./slash-commands.js";
 import { createMessageQueue, type QueuedMessage } from "./message-queue.js";
 import { triggerUpdateCheck } from "./update-checker.js";
 import { startImageServer, isImageServerRunning, type ImageServerConfig } from "./image-server.js";
@@ -174,9 +175,27 @@ async function handleInteractionCreate(params: {
     await acknowledgeInteraction(token, event.id, 0, { claw_cfg: ackClawCfg });
     log?.info(`[qqbot:${account.accountId}] Interaction ACK (type=${INTERACTION_TYPE_CONFIG_UPDATE}) sent: ${event.id}, claw_cfg=${JSON.stringify(ackClawCfg)}`);
   } else {
-    // 其他类型：普通 ACK
+    // 普通按钮交互：先 ACK
     await acknowledgeInteraction(token, event.id);
     log?.debug?.(`[qqbot:${account.accountId}] Interaction ACK sent: ${event.id}`);
+
+    // Inline Keyboard 审批按钮（type=1 Callback）
+    // button_data 格式：approve:<approvalId>:<decision>
+    // approvalId 可能是 "exec:uuid" / "plugin:uuid"（带前缀）或纯 "uuid"（无前缀）
+    const buttonData = event.data?.resolved?.button_data ?? "";
+    const m = buttonData.match(/^approve:((?:(?:exec|plugin):)?[0-9a-f-]+):(allow-once|allow-always|deny)$/i);
+    if (m) {
+      const approvalId = m[1]!;
+      const decision = m[2] as "allow-once" | "allow-always" | "deny";
+      const userId = event.group_member_openid || event.user_openid || event.data?.resolved?.user_id || "unknown";
+      log?.info(`[qqbot:${account.accountId}] Approval button clicked: approvalId=${approvalId}, decision=${decision}, user=${userId}, buttonData=${buttonData}`);
+      const handler = getApprovalHandler(account.accountId);
+      if (handler) {
+        void handler.resolveApproval(approvalId, decision);
+      } else {
+        log?.error(`[qqbot:${account.accountId}] Approval button: no handler found for accountId=${account.accountId}`);
+      }
+    }
   }
 }
 
@@ -517,6 +536,17 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
     log?.info(`[qqbot:${account.accountId}] Restored session from storage: sessionId=${sessionId}, lastSeq=${lastSeq}`);
   }
 
+  // ============ 审批 Handler ============
+  const approvalHandler = new QQBotApprovalHandler({
+    accountId: account.accountId,
+    appId: account.appId,
+    clientSecret: account.clientSecret,
+    cfg: cfg as any,
+    log,
+  });
+  registerApprovalHandler(account.accountId, approvalHandler);
+  void approvalHandler.start();
+
   // ============ 消息队列（复用 createMessageQueue，内置群消息合并/淘汰策略） ============
   const msgQueue = createMessageQueue({
     accountId: account.accountId,
@@ -526,7 +556,9 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 
   // 斜杠指令拦截：在入队前匹配插件级指令，命中则直接回复，不入队
   // 紧急命令列表：这些命令会立即执行，不进入斜杠匹配流程
-  const URGENT_COMMANDS = ["/stop"];
+  // /stop   — 停止当前 agent run，清空队列
+  // /approve — 审批决策，必须在 agent 等待审批时立即执行，否则死锁
+  const URGENT_COMMANDS = ["/stop", "/approve"];
 
   const trySlashCommandOrEnqueue = async (msg: QueuedMessage): Promise<void> => {
     const content = (msg.content ?? "").trim();
@@ -573,6 +605,16 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
       const reply = await matchSlashCommand(cmdCtx);
       if (reply === null) {
         // 不是插件级指令，正常入队交给框架
+        msgQueue.enqueue(msg);
+        return;
+      }
+
+      // 委托给 AI 模型：用加工后的 prompt 替换原始消息入队
+      const isDelegateResult = typeof reply === "object" && reply !== null && "delegatePrompt" in reply;
+      if (isDelegateResult) {
+        const delegatePrompt = (reply as SlashCommandDelegateResult).delegatePrompt;
+        log?.info(`[qqbot:${account.accountId}] Slash command delegated to AI: ${content.slice(0, 40)}`);
+        msg.content = delegatePrompt;
         msgQueue.enqueue(msg);
         return;
       }
@@ -635,6 +677,9 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
     flushKnownUsers();
     // P1-4: 保存引用索引数据
     flushRefIndex();
+    // 停止审批 handler
+    void approvalHandler.stop();
+    unregisterApprovalHandler(account.accountId);
   });
 
   const cleanup = () => {
@@ -1456,7 +1501,6 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
               },
             });
           }
-
 
           const dispatchPromise = pluginRuntime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
             ctx: ctxPayload,

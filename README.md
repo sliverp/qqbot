@@ -10,7 +10,7 @@
 
 **Connect your AI assistant to QQ — private chat, group chat, and rich media, all in one plugin.**
 
-### 🚀 Current Version: `v1.7.0`
+### 🚀 Current Version: `v1.7.1`
 
 [![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![QQ Bot](https://img.shields.io/badge/QQ_Bot-API_v2-red)](https://bot.q.qq.com/wiki/)
@@ -47,45 +47,7 @@ Scan to join the QQ group chat
 | 🛠️ **Commands** | Native OpenClaw command integration |
 | 💬 **Quoted Context** | Parses the original message a user is replying to and injects it into AI context, so the model always knows exactly which message is being referenced |
 | 📦 **Large File Support** | Auto chunked upload for large files (parallel upload with retry), up to 100 MB |
-
----
-
-## 🆚 Standalone Plugin vs OpenClaw Built-in: Which to Choose?
-
-Starting from **OpenClaw 2026.3.31**, a QQBot plugin is bundled with OpenClaw. The two plugins **cannot run at the same time** — choose one based on your needs.
-
-| Feature | This Plugin (Standalone) | OpenClaw Built-in |
-|---------|:------------------------:|:-----------------:|
-| 🔒 Multi-scene (C2C / Group) | ✅ | ✅ |
-| 🖼️ Rich media (image / voice / video / file) | ✅ | ✅ |
-| 🎙️ Voice STT / TTS | ✅ | ✅ |
-| 🔥 One-click hot upgrade (`/bot-upgrade`) | ✅ | ❌ |
-| ⏰ Scheduled push (proactive messages) | ✅ | ✅ |
-| 🔗 URL support | ✅ | ✅ |
-| ⌨️ Typing indicator | ✅ | ✅ |
-| 📝 Markdown | ✅ | ✅ |
-| 🛠️ Slash commands / native commands | ✅ | ✅ |
-| 💬 Quoted context (injected into AI) | ✅ | ✅ |
-| 📦 Large file support (up to 100MB) | ✅ | ❌ |
-| Installation | Requires separate install | Bundled, zero setup |
-| Update cadence | Independent releases, faster iteration | Ships with OpenClaw |
-
-### Which should I pick?
-
-**Choose the OpenClaw built-in plugin if you:**
-
-- Want zero-setup out of the box
-- Are just getting started and want to try QQ Bot quickly
-
-**Choose this plugin (standalone) if you:**
-
-- Want faster feature iteration and more capabilities
-
-> ⚠️ Both plugins cannot run simultaneously. If you've upgraded to OpenClaw 2026.3.31+, run the following command to install this plugin — the built-in version will be disabled automatically:
-> ```bash
-> curl -fsSL https://raw.githubusercontent.com/tencent-connect/openclaw-qqbot/main/scripts/upgrade-via-npm.sh | bash
-> ```
-> After upgrading, you'll unlock large file transfers, message reference context, and all other advanced features.
+| 🔐 **Command Execution Approval** | AI requests approval via Inline Keyboard buttons before executing commands — tap to allow or deny |
 
 ---
 
@@ -93,13 +55,9 @@ Starting from **OpenClaw 2026.3.31**, a QQBot plugin is bundled with OpenClaw. T
 
 > **Note:** This plugin serves as a **message channel** only — it relays messages between QQ and OpenClaw. Capabilities like image understanding, voice transcription, drawing, etc. depend on the **AI model** you configure and the **skills** installed in OpenClaw, not on this plugin itself.
 
-### 💬 Quoted Message Context (REFIDX)
+### 💬 Quoted Message Context
 
-QQ quote events carry index keys (e.g. `REFIDX_xxx`) instead of full original message body. The plugin now resolves these indices from a local persistent store and injects quote context into AI input, so replies better understand “which message is being quoted”.
-
-- Inbound and outbound messages with `ref_idx` are automatically indexed.
-- Store path: `~/.openclaw/qqbot/data/ref-index.jsonl` (survives gateway restart).
-- Quote body may include text + media summary (image/voice/video/file).
+When a user quotes a message in QQ, the plugin automatically parses the quoted message content and injects it into the AI context, so the model clearly knows "which message the user is replying to" and gives more accurate responses. Supports text and media messages (image/voice/video/file), and works across devices.
 
 <img width="360" src="docs/images/ref-msg.png" alt="Quoted Message Context Demo" />
 
@@ -176,6 +134,14 @@ AI can send files directly, in any format.
 Since v1.6.6, large file transfer is supported: images up to 20MB, videos up to 30MB, attachments up to 100MB, with a daily transfer limit of 2GB.
 
 <img width="360" src="docs/images/large-file-transfer.jpg" alt="Large File Transfer Demo" />
+
+### 🔐 Command Execution Approval
+
+When the AI needs to execute a command, the plugin sends an approval request via QQ message with interactive buttons — tap **✅ Allow Once**, **⭐ Always Allow**, or **❌ Deny** to control whether the command runs. 
+
+Use the `/bot-approve` command to manage the approval mode (allowlist / off / strict).
+
+<img width="360" src="docs/images/approve.png" alt="Command Execution Approval Demo" />
 
 ### 🎬 Video Sending
 
@@ -255,6 +221,22 @@ All commands support a `?` suffix to show usage:
 > **You**: `/bot-upgrade ?`
 >
 > **QQBot**: 📖 /bot-upgrade usage: …
+
+#### `/bot-approve` — Approval Configuration
+
+> **You**: `/bot-approve`
+>
+> **QQBot**: 🔐 Command Execution Approval — Enable / Disable / Strict mode / Reset / View current config
+
+Manage the AI command execution approval policy. Supported subcommands:
+
+| Subcommand | Description |
+|------------|-------------|
+| `/bot-approve on` | Enable approval (allowlist mode, recommended) |
+| `/bot-approve off` | Disable approval — commands execute directly |
+| `/bot-approve always` | Strict mode — every execution requires approval |
+| `/bot-approve reset` | Restore framework defaults |
+| `/bot-approve status` | View current approval config |
 
 #### `/bot-clear-storage` — Clear files generated through QQBot conversations and downloaded resources (stored on the host running OpenClaw)
 
