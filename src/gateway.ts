@@ -22,7 +22,7 @@ import {
 } from "./group-history.js";
 
 import { setRefIndex, getRefIndex, formatRefEntryForAgent, formatMessageReferenceForAgent, flushRefIndex, type RefAttachmentSummary } from "./ref-index-store.js";
-import { matchSlashCommand, getFrameworkVersion, parseFrameworkDateVersion, type SlashCommandContext, type SlashCommandFileResult } from "./slash-commands.js";
+import { matchSlashCommand, getFrameworkVersion, parseFrameworkDateVersion, type SlashCommandContext, type SlashCommandFileResult, type SlashCommandDelegateResult } from "./slash-commands.js";
 import { createMessageQueue, type QueuedMessage } from "./message-queue.js";
 import { triggerUpdateCheck } from "./update-checker.js";
 import { startImageServer, isImageServerRunning, type ImageServerConfig } from "./image-server.js";
@@ -604,6 +604,16 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
       const reply = await matchSlashCommand(cmdCtx);
       if (reply === null) {
         // 不是插件级指令，正常入队交给框架
+        msgQueue.enqueue(msg);
+        return;
+      }
+
+      // 委托给 AI 模型：用加工后的 prompt 替换原始消息入队
+      const isDelegateResult = typeof reply === "object" && reply !== null && "delegatePrompt" in reply;
+      if (isDelegateResult) {
+        const delegatePrompt = (reply as SlashCommandDelegateResult).delegatePrompt;
+        log?.info(`[qqbot:${account.accountId}] Slash command delegated to AI: ${content.slice(0, 40)}`);
+        msg.content = delegatePrompt;
         msgQueue.enqueue(msg);
         return;
       }
