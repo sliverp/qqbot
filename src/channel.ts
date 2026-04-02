@@ -290,6 +290,10 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
     chunker: (text, limit) => getQQBotRuntime().channel.text.chunkMarkdownText(text, limit),
     chunkerMode: "markdown",
     textChunkLimit: 5000,
+    // 3.31+ outbound 路径：dispatch-from-config → shouldSuppressLocalExecApprovalPrompt → outbound.shouldSuppressLocalPayloadPrompt
+    shouldSuppressLocalPayloadPrompt: ({ accountId, payload }: any) =>
+      getApprovalHandler(accountId ?? "") != null &&
+      isApprovalPayload(payload),
     sendText: async ({ to, text, accountId, replyToId, cfg }) => {
       console.log(`[qqbot:channel] sendText called — accountId=${accountId}, to=${to}, replyToId=${replyToId}, text.length=${text?.length ?? 0}`);
       console.log(`[qqbot:channel] sendText text preview: ${text?.slice(0, 100)}${(text?.length ?? 0) > 100 ? "..." : ""}`);
