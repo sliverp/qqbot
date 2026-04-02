@@ -476,17 +476,25 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
     buildResolvedPayload: () => null,
   },
   // ── 3.31+ 嵌套结构 ──
-  approvals: {
-    // 告诉框架 gateway 核心：qqbot channel 能处理审批投递
-    // 框架通过 auth.getActionAvailabilityState() 判断是否有合法审批路由，
-    // 返回 "enabled" 表示该 channel 可以投递审批消息，避免 fast-fail → no-approval-route
-    auth: {
-      getActionAvailabilityState: ({ accountId }: { accountId?: string }) => {
-        // 只要该账户有活跃的 ApprovalHandler（即 gateway 已启动），就返回 enabled
-        return getApprovalHandler(accountId ?? "") != null ? "enabled" : "disabled";
-      },
+  // auth 和 approvals 是 ChannelPlugin 顶层平级字段
+  //
+  // QQBot 审批模型：
+  //   - QQBotApprovalHandler 通过独立 WS 自行投递带 Inline Keyboard 的审批消息
+  //   - 用户点击按钮 → INTERACTION_CREATE → resolveApproval → gateway RPC
+  //   - /approve 文本命令作为 URGENT_COMMAND 直接入队交给框架处理
+  auth: {
+    authorizeActorAction: () => ({ authorized: true }),
+    getActionAvailabilityState: ({ accountId }: {
+      cfg: any; accountId?: string | null; action: "approve";
+    }) => {
+      return getApprovalHandler(accountId ?? "") != null
+        ? { kind: "enabled" as const }
+        : { kind: "disabled" as const };
     },
+  },
+  approvals: {
     delivery: {
+      hasConfiguredDmRoute: () => true,
       shouldSuppressForwardingFallback: () => true,
     },
     render: {
