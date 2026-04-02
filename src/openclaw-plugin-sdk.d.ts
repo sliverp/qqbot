@@ -369,19 +369,34 @@ declare module "openclaw/plugin-sdk" {
   /** 群消息策略适配器（resolveRequireMention / resolveToolPolicy / resolveGroupIntroHint） */
   export interface ChannelGroupAdapter {
     /** 是否需要 @机器人才响应 */
-    resolveRequireMention?: (ctx: { cfg: OpenClawConfig; accountId?: string; groupId: string }) => boolean;
+    resolveRequireMention?: (ctx: { cfg: OpenClawConfig; accountId?: string; groupId: string }) => boolean | undefined;
     /** 群聊 AI 工具使用范围 */
-    resolveToolPolicy?: (ctx: { cfg: OpenClawConfig; accountId?: string; groupId: string; senderId?: string }) => "full" | "restricted" | "none";
+    resolveToolPolicy?: (
+      ctx: { cfg: OpenClawConfig; accountId?: string; groupId: string; senderId?: string }
+    ) =>
+      | "full"
+      | "restricted"
+      | "none"
+      | GroupToolPolicyConfig
+      | undefined;
     /** 平台特有的群聊行为提示 */
     resolveGroupIntroHint?: (ctx: { cfg: OpenClawConfig; accountId?: string; groupId: string }) => string | undefined;
     /** 其他适配器方法 */
     [key: string]: unknown;
   }
 
+  /** 工具策略配置（用于把 none/restricted/full 映射为 allow/deny） */
+  export type GroupToolPolicyConfig = {
+    allow: string[];
+    deny?: string[];
+  };
+
   /** @mention 检测与清理适配器（stripMentionText / detectWasMentioned） */
   export interface ChannelMentionAdapter {
     /** 清理 @mention 文本：平台格式→可读格式，去除 @机器人自身 */
     stripMentionText?: (text: string, mentions?: Array<{ member_openid?: string; nickname?: string; is_you?: boolean }>) => string;
+    /** stripMentions：框架回调型（一次性拿到 text + ctx） */
+    stripMentions?: (params: { text: string; ctx: unknown }) => string;
     /** 检测当前消息是否 @了机器人 */
     detectWasMentioned?: (ctx: {
       eventType?: string;
@@ -390,6 +405,14 @@ declare module "openclaw/plugin-sdk" {
       mentionPatterns?: string[];
     }) => boolean;
     /** 其他适配器方法 */
+    [key: string]: unknown;
+  }
+
+  /** 状态摘要构建（仅覆盖当前项目用到的字段） */
+  export interface ChannelPluginStatus {
+    defaultRuntime: Record<string, unknown>;
+    buildChannelSummary?: (ctx: { snapshot: any }) => Record<string, unknown>;
+    buildAccountSnapshot?: (ctx: { account: any; runtime: any }) => Record<string, unknown>;
     [key: string]: unknown;
   }
 
@@ -423,6 +446,8 @@ declare module "openclaw/plugin-sdk" {
     groups?: ChannelGroupAdapter;
     /** @mention 检测与清理适配器 */
     mentions?: ChannelMentionAdapter;
+    /** 状态摘要构建（可选） */
+    status?: ChannelPluginStatus;
     /** 启动函数 */
     start?: (runtime: PluginRuntime) => void | Promise<void>;
     /** 停止函数 */
@@ -579,6 +604,54 @@ declare module "openclaw/plugin-sdk" {
     hasMatchInput?: boolean;
   }): MatchedGroupAccessDecision;
 
+  // ============ 审批运行时类型（minimal） ============
+  // 这些类型只覆盖本项目真实使用到的字段，
+  // 用来消除 strict/noImplicitAny 下的连锁报错。
+
+  export interface ExecApprovalRequest {
+    id: string;
+    expiresAtMs: number;
+    request: {
+      commandPreview?: string;
+      command?: string;
+      cwd?: string;
+      agentId?: string;
+      turnSourceAccountId?: string;
+      sessionKey?: string;
+      turnSourceTo?: string;
+      [key: string]: unknown;
+    };
+  }
+
+  export interface ExecApprovalResolved {
+    id: string;
+    decision: string;
+    [key: string]: unknown;
+  }
+
+  export interface PluginApprovalRequest {
+    id: string;
+    request: {
+      timeoutMs?: number;
+      severity?: "critical" | "info" | string;
+      title: string;
+      description?: string;
+      toolName?: string;
+      pluginId?: string;
+      agentId?: string;
+      turnSourceAccountId?: string;
+      sessionKey?: string;
+      turnSourceTo?: string;
+      [key: string]: unknown;
+    };
+  }
+
+  export interface PluginApprovalResolved {
+    id: string;
+    decision: string;
+    [key: string]: unknown;
+  }
+
   // ============ 其他导出 ============
 
   /** 默认账户 ID 常量 */
@@ -586,4 +659,56 @@ declare module "openclaw/plugin-sdk" {
 
   /** 规范化账户 ID */
   export function normalizeAccountId(accountId: string | undefined | null): string;
+}
+
+declare module "openclaw/plugin-sdk/approval-runtime" {
+  export interface ExecApprovalReplyMetadata {
+    approvalId: string;
+    approvalSlug: string;
+    allowedDecisions?: string[];
+  }
+  export type ExecApprovalRequest = import("openclaw/plugin-sdk").ExecApprovalRequest;
+  export type ExecApprovalResolved = import("openclaw/plugin-sdk").ExecApprovalResolved;
+  export type PluginApprovalRequest = import("openclaw/plugin-sdk").PluginApprovalRequest;
+  export type PluginApprovalResolved = import("openclaw/plugin-sdk").PluginApprovalResolved;
+  export function getExecApprovalReplyMetadata(payload: { channelData?: unknown }): ExecApprovalReplyMetadata | null;
+}
+
+declare module "openclaw/plugin-sdk/core" {
+  export type OpenClawConfig = import("openclaw/plugin-sdk").OpenClawConfig;
+  export type ChannelPlugin<TAccount = unknown> =
+    import("openclaw/plugin-sdk").ChannelPlugin<TAccount>;
+
+  export const applyAccountNameToChannelSection: typeof import("openclaw/plugin-sdk")
+    .applyAccountNameToChannelSection;
+  export const deleteAccountFromConfigSection: typeof import("openclaw/plugin-sdk")
+    .deleteAccountFromConfigSection;
+  export const setAccountEnabledInConfigSection: typeof import("openclaw/plugin-sdk")
+    .setAccountEnabledInConfigSection;
+
+  // 允许其它 core 导出被逐步补齐（避免引入大量严格类型时频繁改代码）
+  export * from "openclaw/plugin-sdk";
+}
+
+declare module "openclaw/plugin-sdk/gateway-runtime" {
+  export interface EventFrame {
+    event: string;
+    payload: unknown;
+  }
+
+  export interface GatewayClient {
+    start: () => void | Promise<void>;
+    stop: () => void | Promise<void>;
+    request: (method: string, params: unknown) => Promise<unknown>;
+  }
+
+  export function createOperatorApprovalsGatewayClient(options: {
+    config: import("openclaw/plugin-sdk").OpenClawConfig;
+    gatewayUrl?: string;
+    clientDisplayName?: string;
+    onEvent: (evt: EventFrame) => void;
+    onHelloOk?: () => void;
+    onConnectError?: (err: { message: string }) => void;
+    onClose?: (code: number, reason: string) => void;
+  }): Promise<GatewayClient>;
 }
