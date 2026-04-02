@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.7.1] - 2026-04-03
+
+### Added
+
+- **Command Execution Approval**: Before the AI executes a command, an approval request with Inline Keyboard buttons (✅ Allow Once / ⭐ Always Allow / ❌ Deny) is sent via QQ message. Users can approve or deny by tapping a button. Supports both C2C and group chat scenarios.
+- **`/bot-approve` Command**: New slash command for managing approval configuration — supports `on` (allowlist mode), `off` (disable approval), `always` (strict mode), `reset` (restore defaults), and `status` (view current config).
+
 ## [1.7.0] - 2026-04-02
 
 ### Added
