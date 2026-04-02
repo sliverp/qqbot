@@ -4,6 +4,43 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/)。
 
+## [1.7.0] - 2026-04-02
+
+### 新增
+
+- **消息引用优化**：支持解析 QQ 消息事件中新增的引用消息字段，换设备也支持引用，使 AI 能够感知用户在回复哪条消息，从而在对话中准确理解引用上下文、实现更连贯的回复。
+- **`qqbot-upgrade` Skill**：新增插件升级引导 Skill，支持自然语言触发版本更新；优化 Skill 升级交互体验。
+
+### 修复
+
+- **Windows 文件路径编码异常**：修复 Windows 下路径编码异常导致文件无法正常发送的问题。
+
+### 变更
+
+- **升级脚本重构 v4**：重构降级架构，兼容OpenClaw 2026.3.31版本，提升升级流程的稳定性与兼容性。
+
+### ⚠️ 特别注意：OpenClaw 2026.3.31 内置插件冲突
+
+OpenClaw 于 2026.3.31 版本起已内置 QQBot 插件。若直接将 OpenClaw 升级到最新版，可能与独立插件产生冲突，导致新增功能不可用。
+
+**解决方案（二选一）：**
+
+**方案一：使用升级脚本更新本插件到最新版**（推荐）
+
+本版本已适配内置插件冲突，升级后自动接管优先级：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tencent-connect/openclaw-qqbot/main/scripts/upgrade-via-npm.sh | bash
+```
+
+**方案二：通过配置禁用内置版本**
+
+可通过以下命令禁用 OpenClaw 内置的 QQBot 插件：
+
+```bash
+openclaw config set plugins.entries.qqbot.enabled false
+```
+
 ## [1.6.7] - 2026-03-30
 
 ### 修复
