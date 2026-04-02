@@ -28,7 +28,7 @@ metadata: {"openclaw":{"emoji":"⬆️","requires":{"config":["channels.qqbot"]}
 LOCAL_VER=$(node -e "console.log(require('～/.openclaw/extensions/openclaw-qqbot/package.json').version)" 2>/dev/null || echo "未知")
 
 # 远端最新版本
-REMOTE_VER=$(npm view @leoqlin/openclaw-qqbot version 2>/dev/null || echo "查询失败")
+REMOTE_VER=$(npm view @tencent-connect/openclaw-qqbot version 2>/dev/null || echo "查询失败")
 
 echo "本地版本: $LOCAL_VER"
 echo "远端最新: $REMOTE_VER"
