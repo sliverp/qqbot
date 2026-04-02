@@ -10,7 +10,7 @@
 
 **Connect your AI assistant to QQ — private chat, group chat, and rich media, all in one plugin.**
 
-### 🚀 Current Version: `v1.6.7`
+### 🚀 Current Version: `v1.7.0`
 
 [![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![QQ Bot](https://img.shields.io/badge/QQ_Bot-API_v2-red)](https://bot.q.qq.com/wiki/)
@@ -45,8 +45,47 @@ Scan to join the QQ group chat
 | ⌨️ **Typing Indicator** | "Bot is typing..." status shown in real-time |
 | 📝 **Markdown** | Full Markdown formatting support |
 | 🛠️ **Commands** | Native OpenClaw command integration |
-| 💬 **Quoted Context** | Resolve QQ `REFIDX_*` quoted messages and inject quote body into AI context |
+| 💬 **Quoted Context** | Parses the original message a user is replying to and injects it into AI context, so the model always knows exactly which message is being referenced |
 | 📦 **Large File Support** | Auto chunked upload for large files (parallel upload with retry), up to 100 MB |
+
+---
+
+## 🆚 Standalone Plugin vs OpenClaw Built-in: Which to Choose?
+
+Starting from **OpenClaw 2026.3.31**, a QQBot plugin is bundled with OpenClaw. The two plugins **cannot run at the same time** — choose one based on your needs.
+
+| Feature | This Plugin (Standalone) | OpenClaw Built-in |
+|---------|:------------------------:|:-----------------:|
+| 🔒 Multi-scene (C2C / Group) | ✅ | ✅ |
+| 🖼️ Rich media (image / voice / video / file) | ✅ | ✅ |
+| 🎙️ Voice STT / TTS | ✅ | ✅ |
+| 🔥 One-click hot upgrade (`/bot-upgrade`) | ✅ | ❌ |
+| ⏰ Scheduled push (proactive messages) | ✅ | ✅ |
+| 🔗 URL support | ✅ | ✅ |
+| ⌨️ Typing indicator | ✅ | ✅ |
+| 📝 Markdown | ✅ | ✅ |
+| 🛠️ Slash commands / native commands | ✅ | ✅ |
+| 💬 Quoted context (injected into AI) | ✅ | ✅ |
+| 📦 Large file support (up to 100MB) | ✅ | ❌ |
+| Installation | Requires separate install | Bundled, zero setup |
+| Update cadence | Independent releases, faster iteration | Ships with OpenClaw |
+
+### Which should I pick?
+
+**Choose the OpenClaw built-in plugin if you:**
+
+- Want zero-setup out of the box
+- Are just getting started and want to try QQ Bot quickly
+
+**Choose this plugin (standalone) if you:**
+
+- Want faster feature iteration and more capabilities
+
+> ⚠️ Both plugins cannot run simultaneously. If you've upgraded to OpenClaw 2026.3.31+, run the following command to install this plugin — the built-in version will be disabled automatically:
+> ```bash
+> curl -fsSL https://raw.githubusercontent.com/tencent-connect/openclaw-qqbot/main/scripts/upgrade-via-npm.sh | bash
+> ```
+> After upgrading, you'll unlock large file transfers, message reference context, and all other advanced features.
 
 ---
 

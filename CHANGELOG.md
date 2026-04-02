@@ -4,6 +4,43 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.7.0] - 2026-04-02
+
+### Added
+
+- **Message Reference Improvements**: Supports parsing the new quoted-message field in QQ message events — quoted context now works across devices, enabling the AI to understand which message a user is replying to and deliver more contextually coherent responses.
+- **`qqbot-upgrade` Skill**: New guided upgrade Skill that supports natural-language version update requests; improved Skill upgrade interaction flow.
+
+### Fixed
+
+- **Windows file path encoding**: Fixed a path encoding issue on Windows that prevented files from being sent correctly.
+
+### Changed
+
+- **Upgrade script refactor v4**: Rebuilt the downgrade architecture for compatibility with OpenClaw 2026.3.31+, improving upgrade stability and reliability.
+
+### ⚠️ Important: Built-in Plugin Conflict in OpenClaw 2026.3.31
+
+Starting from OpenClaw 2026.3.31, a built-in QQBot plugin is included. Upgrading OpenClaw directly to the latest version without taking action may cause conflicts with this plugin, resulting in new features such as message reference parsing and large file uploads being unavailable.
+
+**Resolution (choose one):**
+
+**Option 1: Upgrade this plugin to the latest version** (recommended)
+
+This release includes built-in conflict handling and will automatically take priority after upgrade:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tencent-connect/openclaw-qqbot/main/scripts/upgrade-via-npm.sh | bash
+```
+
+**Option 2: Disable the built-in plugin via config**
+
+Disable the OpenClaw built-in QQBot plugin with the following command:
+
+```bash
+openclaw config set plugins.entries.qqbot.enabled false
+```
+
 ## [1.6.7] - 2026-03-30
 
 ### Fixed
