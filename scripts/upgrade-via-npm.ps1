@@ -28,7 +28,7 @@ param(
     [string]$Pkg = "",
     [switch]$Help,
     [int]$Timeout = 1000,
-    [switch]$DisableBuiltin
+    [switch]$DisableBuiltin = $true
 )
 
 # 设置 UTF-8 输出编码，防止 openclaw CLI 框线字符乱码
@@ -586,7 +586,11 @@ if ($OLD_VERSION) { Write-Host "  当前版本：$OLD_VERSION" }
 
 Write-Host ""
 Write-Host "[前置] 检查并禁用内置冲突插件..."
-Disable-BuiltinPlugins
+if ($DisableBuiltin) {
+    Disable-BuiltinPlugins
+} else {
+    Write-Host "  ℹ  跳过禁用内置冲突插件"
+}
 
 Snapshot-Config
 
