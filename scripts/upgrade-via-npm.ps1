@@ -848,54 +848,12 @@ if ($AppId -and $Secret) {
 } elseif ($AppId -or $Secret) {
     Write-Host ""
     Write-Host "⚠️  --appid 和 --secret 必须同时提供"
+} else {
+    Write-Host "  ℹ  未提供 appid/secret，跳过配置写入，请在完成后使用命令创建通道" -ForegroundColor Cyan
 }
 
 Write-Host ""
 Write-Host "[4/4] 重启 gateway..."
-
-if ($AppId -and $Secret) {
-    Write-Host "  正在写入 qqbot 通道配置..." -ForegroundColor Cyan
-    $DESIRED_TOKEN = "${AppId}:${Secret}"
-
-    $current = ""
-    if (Test-Path $CONFIG_FILE) {
-        try {
-            $cfg = Get-Content $CONFIG_FILE -Raw | ConvertFrom-Json
-            foreach ($k in @("qqbot", "openclaw-qqbot", "openclaw-qq")) {
-                if ($cfg.channels.$k) {
-                    if ($cfg.channels.$k.token) {
-                        $current = $cfg.channels.$k.token
-                        break
-                    }
-                    if ($cfg.channels.$k.appId -and $cfg.channels.$k.clientSecret) {
-                        $current = "$($cfg.channels.$k.appId):$($cfg.channels.$k.clientSecret)"
-                        break
-                    }
-                }
-            }
-        } catch {}
-    }
-
-    if ($current -eq $DESIRED_TOKEN) {
-        Write-Host "  ✅ 配置已是目标值，无需更新" -ForegroundColor Green
-    } elseif (Test-Path $CONFIG_FILE) {
-        try {
-            $cfg = Get-Content $CONFIG_FILE -Raw | ConvertFrom-Json
-            if (-not $cfg.channels) { $cfg | Add-Member -NotePropertyName channels -NotePropertyValue @{} }
-            if (-not $cfg.channels.qqbot) { $cfg.channels | Add-Member -NotePropertyName qqbot -NotePropertyValue @{} }
-            $cfg.channels.qqbot | Add-Member -NotePropertyName appId -NotePropertyValue $AppId -Force
-            $cfg.channels.qqbot | Add-Member -NotePropertyName clientSecret -NotePropertyValue $Secret -Force
-            $cfg | ConvertTo-Json -Depth 10 | Set-Content $CONFIG_FILE -Encoding UTF8
-            Write-Host "  ✅ 通道配置写入成功" -ForegroundColor Green
-        } catch {
-            Write-Host "  ❌ 写入失败，请手动编辑 ${CONFIG_FILE}" -ForegroundColor Red
-        }
-    }
-} elseif ($AppId -or $Secret) {
-    Write-Host "  ⚠️  --appid 和 --secret 必须同时提供" -ForegroundColor Yellow
-} else {
-    Write-Host "  ℹ  未提供 appid/secret，跳过配置写入" -ForegroundColor Cyan
-}
 
 Write-Host "  正在删除 gateway.reload.mode 配置（恢复自动重载）..." -ForegroundColor Cyan
 try { & $CMD config unset gateway.reload.mode 2>&1 | Out-Null } catch {}
