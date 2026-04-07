@@ -396,7 +396,7 @@ function Invoke-NpmPack {
         $packSrc = $INSTALL_SRC
         $packRegistry = $registry
 
-        $result = Run-WithTimeout -TimeoutSecs $Timeout -Description "npm pack" -ScriptBlock {
+        $result = Invoke-WithTimeout -TimeoutSecs $Timeout -Description "npm pack" -ScriptBlock {
             if ($using:packRegistry) {
                 & npm pack $using:packSrc --pack-destination $using:packDest --registry $using:packRegistry
             } else {
@@ -483,7 +483,7 @@ function Invoke-Level2Install {
     Write-Host "  [L2 3/3] 用 openclaw 安装本地目录..."
     $pkgDir = $packageDir
     $unsafeFlag = $FORCE_UNSAFE_FLAG
-    $installOutput = Run-WithTimeout -TimeoutSecs $Timeout -Description "plugins install (local dir)" -ScriptBlock {
+    $installOutput = Invoke-WithTimeout -TimeoutSecs $Timeout -Description "plugins install (local dir)" -ScriptBlock {
         if ($using:unsafeFlag) {
             & $using:CMD plugins install $using:pkgDir --pin $using:unsafeFlag
         } else {
@@ -636,7 +636,7 @@ $UPGRADE_OK = $false
 
 if ($useUpdate) {
     $updateTimeout = [Math]::Min($Timeout, 180)
-    $updateOutput = Run-WithTimeout -TimeoutSecs $updateTimeout -Description "plugins update" -ScriptBlock {
+    $updateOutput = Invoke-WithTimeout -TimeoutSecs $updateTimeout -Description "plugins update" -ScriptBlock {
         & $using:CMD plugins update $using:PLUGIN_ID
     }
     if (Test-Path $oldPkg) {
@@ -675,7 +675,7 @@ if (-not $UPGRADE_OK) {
         } catch {}
     }
 
-    $installOutput = Run-WithTimeout -TimeoutSecs $Timeout -Description "plugins install" -ScriptBlock {
+    $installOutput = Invoke-WithTimeout -TimeoutSecs $Timeout -Description "plugins install" -ScriptBlock {
         & $using:CMD plugins install $using:INSTALL_SRC --pin $using:FORCE_UNSAFE_FLAG
     }
 
@@ -769,7 +769,7 @@ Write-Host "  ✅ 验证全部通过"
 
 Write-Host ""
 Write-Host "  [健康检查] 确认插件注册..."
-$plistOutput = Run-WithTimeout -TimeoutSecs 20 -Description "plugins list" -ScriptBlock {
+$plistOutput = Invoke-WithTimeout -TimeoutSecs 20 -Description "plugins list" -ScriptBlock {
     & $using:CMD plugins list
 }
 if ($plistOutput -and $plistOutput -match $PLUGIN_ID) {
@@ -910,7 +910,7 @@ if ($NEW_VERSION -and $NEW_VERSION -ne "unknown") {
 }
 
 $GW_RC = 0
-$restartOutput = Run-WithTimeout -TimeoutSecs 90 -Description "gateway restart" -ScriptBlock {
+$restartOutput = Invoke-WithTimeout -TimeoutSecs 90 -Description "gateway restart" -ScriptBlock {
     & $using:CMD gateway restart
 }
 
@@ -929,7 +929,7 @@ if ($restartOutput) {
         Copy-Item -Path $CONFIG_FILE -Destination $preDoctorBak -Force
     }
 
-    $doctorOutput = Run-WithTimeout -TimeoutSecs 30 -Description "doctor --fix" -ScriptBlock {
+    $doctorOutput = Invoke-WithTimeout -TimeoutSecs 30 -Description "doctor --fix" -ScriptBlock {
         & $using:CMD doctor --fix
     }
 
@@ -952,7 +952,7 @@ if ($restartOutput) {
 
     Write-Host ""
     Write-Host "  [重试] gateway restart..."
-    $retryOutput = Run-WithTimeout -TimeoutSecs 90 -Description "gateway restart (重试)" -ScriptBlock {
+    $retryOutput = Invoke-WithTimeout -TimeoutSecs 90 -Description "gateway restart (重试)" -ScriptBlock {
         & $using:CMD gateway restart
     }
     if ($retryOutput) {
@@ -968,3 +968,4 @@ if ($restartOutput) {
 }
 
 Release-UpgradeLock
+
