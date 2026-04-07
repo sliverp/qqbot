@@ -199,7 +199,7 @@ $PREV_RELOAD_MODE = ""
 
 function Snapshot-Config {
     if (Test-Path $CONFIG_FILE) {
-        $CONFIG_SNAPSHOT_FILE = Join-Path ([System.IO.Path]::GetTempPath()) ".qqbot-config-snapshot-$([guid]::NewGuid().ToString('N').Substring(0,8)).json"
+        $script:CONFIG_SNAPSHOT_FILE = Join-Path ([System.IO.Path]::GetTempPath()) ".qqbot-config-snapshot-$([guid]::NewGuid().ToString('N').Substring(0,8)).json"
         Copy-Item -Path $CONFIG_FILE -Destination $CONFIG_SNAPSHOT_FILE -Force | Out-Null
         Write-Host "  [快照] 已保存配置快照"
     }
@@ -244,7 +244,7 @@ function Setup-TempConfig {
     if (-not (Test-Path $CONFIG_FILE)) { return $false }
     if (-not (Test-ConfigConflict)) { return $false }
 
-    $TEMP_CONFIG_FILE = Join-Path ([System.IO.Path]::GetTempPath()) ".openclaw-temp-$([guid]::NewGuid().ToString('N').Substring(0,8)).json"
+    $script:TEMP_CONFIG_FILE = Join-Path ([System.IO.Path]::GetTempPath()) ".openclaw-temp-$([guid]::NewGuid().ToString('N').Substring(0,8)).json"
     try {
         $cfg = Get-Content $CONFIG_FILE -Raw | ConvertFrom-Json
         if ($cfg.channels) { $cfg.channels.PSObject.Properties.Remove("qqbot") }
@@ -259,7 +259,7 @@ function Setup-TempConfig {
     } catch {
         Write-Host "  ⚠️  创建临时配置失败：$($_.Exception.Message)"
         if ($TEMP_CONFIG_FILE -and (Test-Path $TEMP_CONFIG_FILE)) { Remove-Item $TEMP_CONFIG_FILE -ErrorAction SilentlyContinue }
-        $TEMP_CONFIG_FILE = ""
+        $script:TEMP_CONFIG_FILE = ""
         return $false
     }
 }
