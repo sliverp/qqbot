@@ -304,5 +304,5 @@ export function registerRemindTool(api: OpenClawPluginApi): void {
     { name: "qqbot_remind" },
   );
 
-  api.logger.debug("[qqbot-remind] Registered QQBot remind tool");
+  api.logger?.debug?.("[qqbot-remind] Registered QQBot remind tool");
 }

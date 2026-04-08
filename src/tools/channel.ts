@@ -117,13 +117,13 @@ function validatePath(path: string): string | null {
 export function registerChannelTool(api: OpenClawPluginApi): void {
   const cfg = api.config;
   if (!cfg) {
-    api.logger.debug("[qqbot-channel-api] No config available, skipping");
+    api.logger?.debug?.("[qqbot-channel-api] No config available, skipping");
     return;
   }
 
   const accountIds = listQQBotAccountIds(cfg);
   if (accountIds.length === 0) {
-    api.logger.debug("[qqbot-channel-api] No QQBot accounts configured, skipping");
+    api.logger?.debug?.("[qqbot-channel-api] No QQBot accounts configured, skipping");
     return;
   }
 
@@ -131,7 +131,7 @@ export function registerChannelTool(api: OpenClawPluginApi): void {
   const account = resolveQQBotAccount(cfg, firstAccountId);
 
   if (!account.appId || !account.clientSecret) {
-    api.logger.debug("[qqbot-channel-api] Account not fully configured, skipping");
+    api.logger?.debug?.("[qqbot-channel-api] Account not fully configured, skipping");
     return;
   }
 
@@ -277,5 +277,5 @@ export function registerChannelTool(api: OpenClawPluginApi): void {
     { name: "qqbot_channel_api" },
   );
 
-  api.logger.debug("[qqbot-channel-api] Registered QQ channel API proxy tool");
+  api.logger?.debug?.("[qqbot-channel-api] Registered QQ channel API proxy tool");
 }
