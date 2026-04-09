@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.7.1] - 2026-04-10
+
+### Fixed
+
+- **Upgrade script adapted for OpenClaw 2026.4.9**:
+  - Fixed standalone plugin installation failure.
+  - Fixed compatibility issues between the standalone and built-in plugin.
+  - Added automatic channel config repair for `additional properties` validation errors.
+
+### ⚠️ OpenClaw 2026.4.5 Notice
+
+OpenClaw 2026.4.5 introduced strict validation for channel configurations. New config fields added by the standalone plugin — such as streaming output and group chat settings — are rejected as illegal properties, preventing the gateway from starting. The upgrade script now automatically backs up the original config and removes unrecognized fields to restore startup. If you need standalone-plugin-exclusive features like streaming output and group chat, downgrade OpenClaw to **2026.4.2 or earlier**.
+
 ## [1.7.1] - 2026-04-03
 
 ### Added
