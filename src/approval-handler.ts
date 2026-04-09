@@ -243,13 +243,27 @@ function resolveTarget(
   sessionKey: string | null | undefined,
   turnSourceTo: string | null | undefined
 ): { type: "c2c" | "group"; id: string } | null {
-  // 优先从 sessionKey 解析（如 agent:main:qqbot:direct:OPENID）
-  const sk = sessionKey ?? turnSourceTo;
-  if (!sk) return null;
-  const m = sk.match(/qqbot:(c2c|direct|group):([A-F0-9]+)/i);
-  if (!m) return null;
-  const type = m[1]!.toLowerCase() === "group" ? "group" : "c2c";
-  return { type, id: m[2]! };
+  const candidates = [turnSourceTo, sessionKey].filter((v): v is string => Boolean(v));
+
+  for (const raw of candidates) {
+    const value = raw.trim();
+
+    // 旧/显式格式：qqbot:c2c:OPENID / qqbot:direct:OPENID / qqbot:group:OPENID
+    let m = value.match(/qqbot:(c2c|direct|group):([A-F0-9]+)/i);
+    if (m) {
+      const type = m[1]!.toLowerCase() === "group" ? "group" : "c2c";
+      return { type, id: m[2]! };
+    }
+
+    // 当前 direct sessionKey 常见格式：agent:main:direct:OPENID / agent:main:group:OPENID
+    m = value.match(/agent:[^:]+:(direct|group):([A-F0-9]+)/i);
+    if (m) {
+      const type = m[1]!.toLowerCase() === "group" ? "group" : "c2c";
+      return { type, id: m[2]! };
+    }
+  }
+
+  return null;
 }
 
 // ─── Handler 类 ──────────────────────────────────────────────
