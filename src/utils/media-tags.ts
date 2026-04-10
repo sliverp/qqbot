@@ -61,6 +61,10 @@ ALL_TAG_NAMES.sort((a, b) => b.length - a.length);
 
 const TAG_NAME_PATTERN = ALL_TAG_NAMES.join("|");
 
+// 尖括号匹配模式（普通尖括号 + HTML 实体）
+const LEFT_BRACKET = "(?:[<＜<]|&lt;)";
+const RIGHT_BRACKET = "(?:[>＞>]|&gt;)";
+
 /**
  * 自闭合属性语法的正则：
  *   <qqmedia file="/path/to/file.png" />
@@ -72,7 +76,7 @@ const TAG_NAME_PATTERN = ALL_TAG_NAMES.join("|");
  */
 const SELF_CLOSING_TAG_REGEX = new RegExp(
   "`?" +
-  "[<＜<]\\s*(" + TAG_NAME_PATTERN + ")" +
+  LEFT_BRACKET + "\\s*(" + TAG_NAME_PATTERN + ")" +
   // 允许前面有任意其他属性（如 type="file"），非贪婪跳过
   "(?:\\s+(?!file|src|path|url)[a-z_-]+\\s*=\\s*[\"']?[^\"'/>＞>]*?[\"']?)*" +
   "\\s+(?:file|src|path|url)\\s*=\\s*" +
@@ -83,7 +87,7 @@ const SELF_CLOSING_TAG_REGEX = new RegExp(
   // 允许后面还有其他属性
   "(?:\\s+[a-z_-]+\\s*=\\s*[\"']?[^\"'/>＞>]*?[\"']?)*" +
   "\\s*/?" +
-  "\\s*[>＞>]" +
+  "\\s*" + RIGHT_BRACKET +
   "`?",
   "gi"
 );
@@ -101,18 +105,19 @@ const SELF_CLOSING_TAG_REGEX = new RegExp(
  *  7. 多余引号包裹路径：<qqimg>"path"</qqimg>
  *  8. Markdown 代码块包裹：`<qqimg>path</qqimg>`
  *  9. 自闭合属性语法：<qqmedia file="/path" /> (由 SELF_CLOSING_TAG_REGEX 处理)
+ * 10. HTML 实体标签：&lt;qqimg&gt;path&lt;/qqimg&gt;
  */
 const FUZZY_MEDIA_TAG_REGEX = new RegExp(
   // 可选 Markdown 行内代码反引号
   "`?" +
-  // 开头标签：允许中文/英文尖括号，标签名前后可有空格
-  "[<＜<]\\s*(" + TAG_NAME_PATTERN + ")\\s*[>＞>]" +
+  // 开头标签：允许普通/中文尖括号或 HTML 实体，标签名前后可有空格
+  LEFT_BRACKET + "\\s*(" + TAG_NAME_PATTERN + ")\\s*" + RIGHT_BRACKET +
   // 内容：非贪婪匹配，允许引号包裹
   "[\"']?\\s*" +
   "([^<＜<＞>\"'`]+?)" +
   "\\s*[\"']?" +
   // 闭合标签：允许各种不规范写法
-  "[<＜<]\\s*/?\\s*(?:" + TAG_NAME_PATTERN + ")\\s*[>＞>]" +
+  LEFT_BRACKET + "\\s*/?\\s*(?:" + TAG_NAME_PATTERN + ")\\s*" + RIGHT_BRACKET +
   // 可选结尾反引号
   "`?",
   "gi"
@@ -140,9 +145,9 @@ function resolveTagName(raw: string): typeof VALID_TAGS[number] {
  * 将内部所有 [\r\n\t] 替换为空格，然后压缩连续空格。
  */
 const MULTILINE_TAG_CLEANUP = new RegExp(
-  "([<＜<]\\s*(?:" + TAG_NAME_PATTERN + ")\\s*[>＞>])" +
+  "(" + LEFT_BRACKET + "\\s*(?:" + TAG_NAME_PATTERN + ")\\s*" + RIGHT_BRACKET + ")" +
   "([\\s\\S]*?)" +
-  "([<＜<]\\s*/?\\s*(?:" + TAG_NAME_PATTERN + ")\\s*[>＞>])",
+  "(" + LEFT_BRACKET + "\\s*/?\\s*(?:" + TAG_NAME_PATTERN + ")\\s*" + RIGHT_BRACKET + ")",
   "gi"
 );
 
