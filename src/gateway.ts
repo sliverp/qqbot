@@ -28,7 +28,7 @@ import { triggerUpdateCheck } from "./update-checker.js";
 import { startImageServer, isImageServerRunning, type ImageServerConfig } from "./image-server.js";
 import { resolveTTSConfig } from "./utils/audio-convert.js";
 import { processAttachments, formatVoiceText } from "./inbound-attachments.js";
-import { getQQBotDataDir, runDiagnostics } from "./utils/platform.js";
+import { getQQBotDataDir, runDiagnostics, getHomeDir, getOpenclawStateDir, getImageServerPort, getImageServerDir } from "./utils/platform.js";
 
 import { sendDocument, sendMedia as sendMediaAuto, type MediaTargetContext } from "./outbound.js";
 import { parseFaceTags, parseRefIndices, buildAttachmentSummaries } from "./utils/text-parsing.js";
@@ -216,16 +216,14 @@ function resolveSessionStorePath(cfg: Record<string, unknown>, agentId?: string)
       expanded = expanded.replaceAll("{agentId}", resolvedAgentId);
     }
     if (expanded.startsWith("~")) {
-      const home = process.env.HOME || process.env.USERPROFILE || "";
+      const home = getHomeDir();
       expanded = expanded.replace(/^~/, home);
     }
     return path.resolve(expanded);
   }
 
   // 默认路径: ~/.openclaw/agents/{agentId}/sessions/sessions.json
-  const stateDir = process.env.OPENCLAW_STATE_DIR?.trim()
-    || process.env.CLAWDBOT_STATE_DIR?.trim()
-    || path.join(process.env.HOME || process.env.USERPROFILE || "", ".openclaw");
+  const stateDir = getOpenclawStateDir();
   return path.join(stateDir, "agents", resolvedAgentId, "sessions", "sessions.json");
 }
 
@@ -358,10 +356,10 @@ const MAX_RECONNECT_ATTEMPTS = 100;
 const MAX_QUICK_DISCONNECT_COUNT = 3; // 连续快速断开次数阈值
 const QUICK_DISCONNECT_THRESHOLD = 5000; // 5秒内断开视为快速断开
 
-// 图床服务器配置（可通过环境变量覆盖）
-const IMAGE_SERVER_PORT = parseInt(process.env.QQBOT_IMAGE_SERVER_PORT || "18765", 10);
+// 图床服务器配置（可通过环境变量覆盖，读取逻辑集中在 platform.ts）
+const IMAGE_SERVER_PORT = getImageServerPort(18765);
 // 使用绝对路径，确保文件保存和读取使用同一目录
-const IMAGE_SERVER_DIR = process.env.QQBOT_IMAGE_SERVER_DIR || getQQBotDataDir("images");
+const IMAGE_SERVER_DIR = getImageServerDir("images");
 
 
 export interface GatewayContext {

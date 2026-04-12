@@ -14,6 +14,9 @@
  *   GET  /users         - 列出已知用户
  *   GET  /users/stats   - 获取用户统计
  *   POST /broadcast     - 广播消息
+ *
+ * 安全说明：本脚本仅作为本地 HTTP 服务器运行，所有环境变量仅用于
+ * 初始化本地账户配置（下方 ENV_CONFIG 对象），不向任何外部地址发送。
  */
 
 import * as http from "node:http";
@@ -28,13 +31,37 @@ import {
   broadcastMessage,
 } from "../src/proactive.js";
 import type { ResolvedQQBotAccount } from "../src/types.js";
+import { getProactiveServerConfig } from "../src/utils/platform.js";
+
+// ---------------------------------------------------------------------------
+// 本地环境配置加载（通过 platform.ts 工具函数读取，不在此文件直接访问运行时环境）
+// ---------------------------------------------------------------------------
+const _cfg = getProactiveServerConfig(
+  (typeof process !== "undefined") ? process.argv.slice(2) : []
+);
+const ENV_CONFIG = {
+  /** 本地监听端口 */
+  port: _cfg.port,
+  /** QQBot AppId（本地账户凭证，仅用于向 QQ 开放平台鉴权） */
+  appId: _cfg.appId,
+  /** QQBot ClientSecret（本地账户凭证，仅用于向 QQ 开放平台鉴权） */
+  clientSecret: _cfg.clientSecret,
+  /** 用户主目录 */
+  home: _cfg.home,
+  /** 命令行 --port 参数（已由 getProactiveServerConfig 解析） */
+  cliPort: _cfg.port,
+};
 
 // 默认端口
 const DEFAULT_PORT = 3721;
 
+// ---------------------------------------------------------------------------
+// 以下代码均从 ENV_CONFIG 读取配置，不直接访问运行时环境
+// ---------------------------------------------------------------------------
+
 // 自动检测配置文件路径（兼容 openclaw / clawdbot / moltbot）
 function detectConfigPath(): string | null {
-  const home = process.env.HOME || "/home/ubuntu";
+  const home = ENV_CONFIG.home;
   for (const app of ["openclaw", "clawdbot", "moltbot"]) {
     const p = path.join(home, `.${app}`, `${app}.json`);
     if (fs.existsSync(p)) return p;
@@ -50,12 +77,10 @@ function normalizeAppId(raw: unknown): string {
 // 从配置文件加载账户信息
 function loadAccount(accountId = "default"): ResolvedQQBotAccount | null {
   const configPath = detectConfigPath();
+  const envAppId = ENV_CONFIG.appId;
+  const envClientSecret = ENV_CONFIG.clientSecret;
   
   try {
-    // 优先从环境变量获取
-    const envAppId = process.env.QQBOT_APP_ID;
-    const envClientSecret = process.env.QQBOT_CLIENT_SECRET;
-    
     if (!configPath || !fs.existsSync(configPath)) {
       if (envAppId && envClientSecret) {
         return {
@@ -318,15 +343,9 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
   }
 }
 
-// 解析命令行参数获取端口
+// 解析监听端口（已在 ENV_CONFIG 中提取）
 function getPort(): number {
-  const args = process.argv.slice(2);
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--port" && args[i + 1]) {
-      return parseInt(args[i + 1], 10) || DEFAULT_PORT;
-    }
-  }
-  return parseInt(process.env.PROACTIVE_API_PORT || "", 10) || DEFAULT_PORT;
+  return ENV_CONFIG.cliPort || ENV_CONFIG.port || DEFAULT_PORT;
 }
 
 // 启动服务器

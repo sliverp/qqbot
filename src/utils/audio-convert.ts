@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { execFile } from "node:child_process";
+import { execFile } from "./shell.js";
 import { decode, encode, isSilk } from "silk-wasm";
 import { detectFfmpeg, isWindows } from "./platform.js";
 
@@ -688,7 +688,7 @@ function ffmpegToPCM(ffmpegCmd: string, inputPath: string, sampleRate: number = 
       encoding: "buffer",
       // Windows: 隐藏弹出的 cmd 窗口
       ...(isWindows() ? { windowsHide: true } : {}),
-    }, (err, stdout) => {
+    }, (err: Error | null, stdout: string) => {
       if (err) {
         reject(new Error(`ffmpeg failed: ${err.message}`));
         return;

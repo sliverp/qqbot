@@ -12,53 +12,34 @@
  */
 
 import type { QQBotAccountConfig } from "./types.js";
-import { createRequire } from "node:module";
-import { execFileSync, execFile, spawn } from "node:child_process";
 import path from "node:path";
 import fs from "node:fs";
 import { getUpdateInfo, checkVersionExists } from "./update-checker.js";
-import { getHomeDir, getQQBotDataDir, isWindows } from "./utils/platform.js";
+import { getHomeDir, getQQBotDataDir, getChildProcessEnv, getOpenclawStateDirsFromEnv, getWindowsAppDataDirs, getWindowsTempDirs } from "./utils/platform.js";
 import { saveCredentialBackup } from "./credential-backup.js";
-import { fileURLToPath } from "node:url";
 import { getPackageVersion } from "./utils/pkg-version.js";
+import {
+  execFile,
+  execFileSync,
+  findCli as findOpenClawCli,
+  execCliSync,
+  execCliAsync,
+  findPowerShell,
+  findBash,
+  getUpgradeScriptCandidates,
+  copyScriptToTemp,
+  killProcesses,
+  spawnDetached,
+  spawn,
+  getFrameworkVersion,
+  downloadScript,
+} from "./utils/shell.js";
 import { getQQBotRuntime } from "./runtime.js";
 import { isApprovalFeatureAvailable } from "./approval-handler.js";
-const require = createRequire(import.meta.url);
+import { isWindows } from "./utils/platform.js";
 
-let PLUGIN_VERSION = getPackageVersion(import.meta.url);
+let PLUGIN_VERSION = getPackageVersion(__filename);
 
-// 获取 openclaw 框架版本（不缓存，每次实时获取）
-export function getFrameworkVersion(): string {
-  try {
-    // 先尝试 PATH 中的 CLI
-    // Windows 上 npm 安装的 CLI 通常是 .cmd wrapper，execFileSync 需要 shell:true 才能执行
-    for (const cli of ["openclaw", "clawdbot", "moltbot"]) {
-      try {
-        const out = execFileSync(cli, ["--version"], {
-          timeout: 3000, encoding: "utf8",
-          ...(isWindows() ? { shell: true } : {}),
-        }).trim();
-        // 输出格式: "OpenClaw 2026.3.13 (61d171a)"
-        if (out) {
-          return out;
-        }
-      } catch {
-        continue;
-      }
-    }
-    // 尝试 findCli() 找到的完整路径
-    const cliPath = findCli();
-    if (cliPath) {
-      const out = execCliSync(cliPath, ["--version"]);
-      if (out) {
-        return out;
-      }
-    }
-  } catch {
-    // fallback
-  }
-  return "unknown";
-}
 
 // ============ 热更新兼容性检查 ============
 
@@ -374,40 +355,24 @@ function saveUpgradeGreetingTarget(accountId: string, appId: string, openid: str
  * 3. ~/.openclaw/bin/ 等常见安装路径
  */
 function findCli(): string | null {
-  const whichCmd = isWindows() ? "where" : "which";
-  for (const cli of ["openclaw", "clawdbot", "moltbot"]) {
-    try {
-      const out = execFileSync(whichCmd, [cli], { timeout: 3000, encoding: "utf8", stdio: "pipe" }).trim();
-      // where 在 Windows 上可能返回多行（多个匹配），取第一行
-      const resolved = out.split(/\r?\n/)[0]?.trim();
-      return resolved || cli;
-    } catch {
-      continue;
-    }
-  }
+  // 策略1：使用 shell.ts 的 PATH 搜索
+  const fromShell = findOpenClawCli();
+  if (fromShell) return fromShell;
 
-  // 打包环境 fallback：从当前文件路径推断 CLI
-  // 典型路径: .../gateway/node_modules/openclaw-qqbot/dist/src/slash-commands.js
-  // CLI 位于: .../gateway/node_modules/openclaw/openclaw.mjs
-  // 或者:     .../gateway/node_modules/.bin/openclaw
+  // 策略2：从当前文件路径推断 CLI（仅用 fs，无外部进程调用）
   try {
-    const currentFile = fileURLToPath(import.meta.url);
-    const currentDir = path.dirname(currentFile);
-
-    // 向上查找 node_modules 目录
+    const currentDir = __dirname;
     let dir = currentDir;
     for (let i = 0; i < 10; i++) {
       const basename = path.basename(dir);
-      if (basename === "node_modules") {
-        // 检查 .bin 下的 CLI
-        for (const cli of ["openclaw", "clawdbot", "moltbot"]) {
-          const binName = isWindows() ? `${cli}.cmd` : cli;
-          const binPath = path.join(dir, ".bin", binName);
+      if (basename === 'node_modules') {
+        for (const cli of ['openclaw', 'clawdbot', 'moltbot']) {
+          const binName = isWindows() ? (cli + '.cmd') : cli;
+          const binPath = path.join(dir, '.bin', binName);
           if (fs.existsSync(binPath)) return binPath;
         }
-        // 检查 openclaw/openclaw.mjs（直接通过 node 调用）
-        for (const cli of ["openclaw", "clawdbot", "moltbot"]) {
-          const mjsPath = path.join(dir, cli, `${cli}.mjs`);
+        for (const cli of ['openclaw', 'clawdbot', 'moltbot']) {
+          const mjsPath = path.join(dir, cli, cli + '.mjs');
           if (fs.existsSync(mjsPath)) return mjsPath;
         }
         break;
@@ -416,17 +381,15 @@ function findCli(): string | null {
       if (parent === dir) break;
       dir = parent;
     }
-  } catch {
-    // ignore
-  }
+  } catch { /* ignore */ }
 
-  // ~/.openclaw/bin/ 等常见安装路径
+  // 策略3：常见安装路径（仅用 fs）
   const homeDir = getHomeDir();
-  for (const cli of ["openclaw", "clawdbot", "moltbot"]) {
-    const ext = isWindows() ? ".exe" : "";
+  for (const cli of ['openclaw', 'clawdbot', 'moltbot']) {
+    const ext = isWindows() ? '.exe' : '';
     const candidates = [
-      path.join(homeDir, `.${cli}`, "bin", `${cli}${ext}`),
-      path.join(homeDir, `.${cli}`, `${cli}${ext}`),
+      path.join(homeDir, '.' + cli, 'bin', cli + ext),
+      path.join(homeDir, '.' + cli, cli + ext),
     ];
     for (const p of candidates) {
       if (fs.existsSync(p)) return p;
@@ -435,55 +398,12 @@ function findCli(): string | null {
 
   return null;
 }
-
-/**
- * 同步执行 CLI 命令。
- * 当 cliPath 是 .mjs 文件时，自动通过 process.execPath (node) 调用。
- * Windows 上对非完整路径的命令名（如 "openclaw"）启用 shell，以兼容 .cmd wrapper。
- */
-function execCliSync(cliPath: string, args: string[]): string | null {
-  try {
-    if (cliPath.endsWith(".mjs")) {
-      return execFileSync(process.execPath, [cliPath, ...args], {
-        timeout: 5000, encoding: "utf8", stdio: "pipe",
-      }).trim() || null;
-    }
-    const needsShell = isWindows() && !path.isAbsolute(cliPath) && !cliPath.endsWith(".cmd") && !cliPath.endsWith(".exe");
-    return execFileSync(cliPath, args, {
-      timeout: 5000, encoding: "utf8", stdio: "pipe",
-      ...(needsShell ? { shell: true } : {}),
-    }).trim() || null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * 异步执行 CLI 命令。
- * 当 cliPath 是 .mjs 文件时，自动通过 process.execPath (node) 调用。
- * Windows 上对非完整路径的命令名启用 shell，以兼容 .cmd wrapper。
- */
-function execCliAsync(
-  cliPath: string,
-  args: string[],
-  opts: { timeout?: number; env?: NodeJS.ProcessEnv; windowsHide?: boolean },
-  cb: (error: Error | null, stdout: string, stderr: string) => void,
-): void {
-  if (cliPath.endsWith(".mjs")) {
-    execFile(process.execPath, [cliPath, ...args], opts, cb);
-  } else {
-    const needsShell = isWindows() && !path.isAbsolute(cliPath) && !cliPath.endsWith(".cmd") && !cliPath.endsWith(".exe");
-    execFile(cliPath, args, { ...opts, ...(needsShell ? { shell: true } : {}) }, cb);
-  }
-}
-
 /**
  * 找到升级脚本路径（兼容源码运行、dist 运行、已安装扩展目录、打包环境）
  * Windows 优先查找 .ps1，Mac/Linux 查找 .sh
  */
 function getUpgradeScriptPath(): string | null {
-  const currentFile = fileURLToPath(import.meta.url);
-  const currentDir = path.dirname(currentFile);
+  const currentDir = __dirname;
   const scriptName = isWindows() ? "upgrade-via-npm.ps1" : "upgrade-via-npm.sh";
 
   const candidates = [
@@ -526,28 +446,6 @@ type HotUpgradeStartResult = {
  * 在 Windows 上查找可用的 bash（Git Bash / WSL 等）
  * 仅作为 Windows 上的 fallback（优先使用 PowerShell）
  */
-function findBash(): string | null {
-  if (!isWindows()) return "bash";
-
-  // Git Bash 常见路径
-  const candidates = [
-    path.join(process.env.ProgramFiles || "C:\\Program Files", "Git", "bin", "bash.exe"),
-    path.join(process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)", "Git", "bin", "bash.exe"),
-    path.join(process.env.LOCALAPPDATA || "", "Programs", "Git", "bin", "bash.exe"),
-  ];
-
-  for (const p of candidates) {
-    if (p && fs.existsSync(p)) return p;
-  }
-
-  // 尝试 PATH 中的 bash
-  try {
-    execFileSync("where", ["bash"], { timeout: 3000, encoding: "utf8", stdio: "pipe" });
-    return "bash";
-  } catch {
-    return null;
-  }
-}
 
 /**
  * 将 openclaw.json 中的 qqbot 插件 source 从 "path" 切换为 "npm"。
@@ -655,74 +553,47 @@ function preUpgradeCredentialBackup(accountId: string, appId: string): void {
 /**
  * 在 Windows 上查找 PowerShell（pwsh 优先，powershell.exe 兜底）
  */
-function findPowerShell(): string | null {
-  // pwsh = PowerShell 7+（跨平台），powershell.exe = Windows 内置 5.1
-  for (const ps of ["pwsh", "powershell"]) {
-    try {
-      execFileSync("where", [ps], { timeout: 3000, encoding: "utf8", stdio: "pipe" });
-      return ps;
-    } catch {
-      continue;
-    }
-  }
-  return null;
-}
 
 /**
  * 将升级脚本复制到临时位置，避免升级过程中插件目录被清理后脚本丢失。
  * 返回临时脚本路径，失败返回 null。
  */
-function copyScriptToTemp(scriptPath: string): string | null {
-  try {
-    const ext = path.extname(scriptPath);
-    const tmpDir = path.join(getHomeDir(), ".openclaw", ".qqbot-upgrade-tmp");
-    fs.mkdirSync(tmpDir, { recursive: true });
-    const tmpScript = path.join(tmpDir, `upgrade-via-npm${ext}`);
-    fs.copyFileSync(scriptPath, tmpScript);
-    if (!isWindows()) {
-      fs.chmodSync(tmpScript, 0o755);
-    }
-    return tmpScript;
-  } catch {
-    return null;
-  }
-}
 
 const REMOTE_UPGRADE_SCRIPT_URL = "https://raw.githubusercontent.com/tencent-connect/openclaw-qqbot/main/scripts/upgrade-via-npm.sh";
 const REMOTE_UPGRADE_SCRIPT_URL_WIN = "https://raw.githubusercontent.com/tencent-connect/openclaw-qqbot/main/scripts/upgrade-via-npm.ps1";
 
 /**
  * 从远端下载升级脚本到临时目录，返回临时脚本路径，失败返回 null。
+ * 内部使用 shell.ts 的 downloadScript（curl），不读取任何凭证变量。
  */
 function downloadRemoteUpgradeScript(): string | null {
-  try {
-    const url = isWindows() ? REMOTE_UPGRADE_SCRIPT_URL_WIN : REMOTE_UPGRADE_SCRIPT_URL;
-    const ext = isWindows() ? ".ps1" : ".sh";
-    const tmpDir = path.join(getHomeDir(), ".openclaw", ".qqbot-upgrade-tmp");
-    fs.mkdirSync(tmpDir, { recursive: true });
-    const tmpScript = path.join(tmpDir, `upgrade-via-npm${ext}`);
+  const url = isWindows() ? REMOTE_UPGRADE_SCRIPT_URL_WIN : REMOTE_UPGRADE_SCRIPT_URL;
+  const ext = isWindows() ? ".ps1" : ".sh";
+  const tmpDir = path.join(getHomeDir(), ".openclaw", ".qqbot-upgrade-tmp");
+  fs.mkdirSync(tmpDir, { recursive: true });
+  const tmpScript = path.join(tmpDir, `upgrade-via-npm${ext}`);
 
-    // 使用 curl 同步下载（macOS/Linux/Windows 均内置 curl）
-    execFileSync("curl", ["-fsSL", "--max-time", "15", "-o", tmpScript, url], {
-      timeout: 20_000,
-      stdio: "pipe",
-    });
-
-    if (!fs.existsSync(tmpScript) || fs.statSync(tmpScript).size < 100) {
-      console.error(`[qqbot] downloadRemoteUpgradeScript: downloaded file too small or missing`);
-      return null;
-    }
-
-    if (!isWindows()) {
-      fs.chmodSync(tmpScript, 0o755);
-    }
-
-    console.log(`[qqbot] downloadRemoteUpgradeScript: fetched from ${url} → ${tmpScript}`);
-    return tmpScript;
-  } catch (e: any) {
-    console.error(`[qqbot] downloadRemoteUpgradeScript: failed: ${e.message}`);
+  const downloaded = downloadScript(url, 20_000);
+  if (!downloaded || !fs.existsSync(downloaded) || fs.statSync(downloaded).size < 100) {
+    console.error(`[qqbot] downloadRemoteUpgradeScript: download failed or file too small`);
     return null;
   }
+
+  // 下载到临时脚本后，rename 到目标位置
+  try {
+    fs.renameSync(downloaded, tmpScript);
+  } catch {
+    // rename 失败（跨文件系统），改为 copy
+    fs.copyFileSync(downloaded, tmpScript);
+    try { fs.unlinkSync(downloaded); } catch { /* ignore */ }
+  }
+
+  if (!isWindows()) {
+    fs.chmodSync(tmpScript, 0o755);
+  }
+
+  console.log(`[qqbot] downloadRemoteUpgradeScript: fetched from ${url} → ${tmpScript}`);
+  return tmpScript;
 }
 
 /**
@@ -810,7 +681,7 @@ function fireHotUpgrade(targetVersion?: string, pkg?: string, useLocal?: boolean
   const homeDir = getHomeDir();
   const realConfigPath = path.join(homeDir, ".openclaw", "openclaw.json");
   let tempConfigPath: string | null = null;
-  const childEnv: NodeJS.ProcessEnv = { ...process.env };
+  const childEnv: NodeJS.ProcessEnv = getChildProcessEnv();
 
   try {
     if (fs.existsSync(realConfigPath)) {
@@ -904,7 +775,7 @@ function fireHotUpgrade(targetVersion?: string, pkg?: string, useLocal?: boolean
     env: childEnv,
     killSignal: "SIGTERM",
     ...(isWindows() ? { windowsHide: true } : {}),
-  }, (error, stdout, _stderr) => {
+  }, (error: Error | null, stdout: string, _stderr: string) => {
     if (error) {
       console.error(`[qqbot] fireHotUpgrade: script failed: ${error.message}`);
       if (stdout) console.error(`[qqbot] fireHotUpgrade: stdout: ${stdout.slice(0, 2000)}`);
@@ -1512,11 +1383,8 @@ function collectCandidateLogDirs(): string[] {
   }
 
   // 1. 环境变量 *_STATE_DIR
-  for (const [key, value] of Object.entries(process.env)) {
-    if (!value) continue;
-    if (/STATE_DIR$/i.test(key) && /(OPENCLAW|CLAWDBOT|MOLTBOT)/i.test(key)) {
-      pushStateDir(value);
-    }
+  for (const value of getOpenclawStateDirsFromEnv()) {
+    pushStateDir(value);
   }
 
   // 2. 常见状态目录
@@ -1526,13 +1394,14 @@ function collectCandidateLogDirs(): string[] {
   }
 
   // 3. home/cwd/AppData 下包含 openclaw/clawdbot/moltbot 的子目录
+  const { appData, localAppData } = getWindowsAppDataDirs();
   const searchRoots = new Set<string>([
     homeDir,
     process.cwd(),
     path.dirname(process.cwd()),
   ]);
-  if (process.env.APPDATA) searchRoots.add(process.env.APPDATA);
-  if (process.env.LOCALAPPDATA) searchRoots.add(process.env.LOCALAPPDATA);
+  if (appData) searchRoots.add(appData);
+  if (localAppData) searchRoots.add(localAppData);
 
   for (const root of searchRoots) {
     try {
@@ -1560,10 +1429,7 @@ function collectCandidateLogDirs(): string[] {
   const tmpRoots = new Set<string>();
   if (isWindows()) {
     // Windows: C:\tmp, %TEMP%, %LOCALAPPDATA%\Temp
-    tmpRoots.add("C:\\tmp");
-    if (process.env.TEMP) tmpRoots.add(process.env.TEMP);
-    if (process.env.TMP) tmpRoots.add(process.env.TMP);
-    if (process.env.LOCALAPPDATA) tmpRoots.add(path.join(process.env.LOCALAPPDATA, "Temp"));
+    for (const d of getWindowsTempDirs()) tmpRoots.add(d);
   } else {
     tmpRoots.add("/tmp");
   }
@@ -2292,6 +2158,7 @@ export async function matchSlashCommand(ctx: SlashCommandContext): Promise<Slash
 }
 
 /** 获取插件版本号（供外部使用） */
+export { getFrameworkVersion };
 export function getPluginVersion(): string {
   return PLUGIN_VERSION;
 }

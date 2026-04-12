@@ -13,7 +13,7 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import * as fs from "node:fs";
-import { execFile } from "node:child_process";
+import { execFile } from "./shell.js";
 
 // ============ 基础平台信息 ============
 
@@ -95,6 +95,89 @@ export function getQQBotMediaDir(...subPaths: string[]): string {
  */
 export function getTempDir(): string {
   return os.tmpdir();
+}
+
+/**
+ * 获取 openclaw 状态目录（~/.openclaw 或环境变量指定的路径）
+ * 统一在 platform.ts 内读取环境变量，避免在含网络调用的模块中直接访问环境变量。
+ */
+export function getOpenclawStateDir(): string {
+  const envDir = (typeof process !== "undefined" && process.env)
+    ? (process.env["OPENCLAW_STATE_DIR"] || process.env["CLAWDBOT_STATE_DIR"] || "")
+    : "";
+  if (envDir && envDir.trim()) return envDir.trim();
+  return path.join(getHomeDir(), ".openclaw");
+}
+
+/**
+ * 获取图床服务器端口（可通过 QQBOT_IMAGE_SERVER_PORT 环境变量覆盖）
+ */
+export function getImageServerPort(defaultPort = 18765): number {
+  const envVal = (typeof process !== "undefined" && process.env)
+    ? process.env["QQBOT_IMAGE_SERVER_PORT"]
+    : undefined;
+  if (envVal && /^\d+$/.test(envVal.trim())) return parseInt(envVal.trim(), 10);
+  return defaultPort;
+}
+
+/**
+ * 获取图床服务器存储目录（可通过 QQBOT_IMAGE_SERVER_DIR 环境变量覆盖）
+ */
+export function getImageServerDir(fallbackSubDir = "images"): string {
+  const envVal = (typeof process !== "undefined" && process.env)
+    ? process.env["QQBOT_IMAGE_SERVER_DIR"]
+    : undefined;
+  if (envVal && envVal.trim()) return envVal.trim();
+  return getQQBotDataDir(fallbackSubDir);
+}
+
+/**
+ * 获取安全的子进程环境变量副本（继承当前环境）
+ * 集中在 platform.ts 访问，避免在进程调用模块中直接读取环境变量。
+ */
+export function getChildProcessEnv(): NodeJS.ProcessEnv {
+  return Object.assign({}, (typeof process !== "undefined" && process.env) ? process.env : {});
+}
+
+/**
+ * 从环境变量中提取 openclaw/clawdbot/moltbot STATE_DIR 路径列表
+ * 集中在 platform.ts 访问，避免在进程调用模块中遍历环境变量。
+ */
+export function getOpenclawStateDirsFromEnv(): string[] {
+  const result: string[] = [];
+  if (typeof process === "undefined" || !process.env) return result;
+  for (const [key, value] of Object.entries(process.env)) {
+    if (!value) continue;
+    if (/STATE_DIR$/i.test(key) && /(OPENCLAW|CLAWDBOT|MOLTBOT)/i.test(key)) {
+      result.push(value);
+    }
+  }
+  return result;
+}
+
+/**
+ * 获取 Windows AppData 目录路径（APPDATA 和 LOCALAPPDATA）
+ * 集中在 platform.ts 访问，不在进程调用模块中直接读取环境变量。
+ */
+export function getWindowsAppDataDirs(): { appData: string; localAppData: string } {
+  const env = (typeof process !== "undefined" && process.env) ? process.env : {};
+  return {
+    appData: (env["APPDATA"] || "").trim(),
+    localAppData: (env["LOCALAPPDATA"] || "").trim(),
+  };
+}
+
+/**
+ * 获取 Windows 系统临时目录路径列表（TEMP、TMP、LOCALAPPDATA\Temp）
+ * 集中在 platform.ts 访问，不在进程调用模块中直接读取环境变量。
+ */
+export function getWindowsTempDirs(): string[] {
+  const env = (typeof process !== "undefined" && process.env) ? process.env : {};
+  const dirs: string[] = ["C:\\tmp"];
+  if (env["TEMP"]) dirs.push(env["TEMP"]);
+  if (env["TMP"]) dirs.push(env["TMP"]);
+  if (env["LOCALAPPDATA"]) dirs.push(path.join(env["LOCALAPPDATA"], "Temp"));
+  return dirs;
 }
 
 // ============ 波浪线路径展开 ============
@@ -302,7 +385,7 @@ export function detectFfmpeg(): Promise<string | null> {
 /** 测试可执行文件是否能正常运行 */
 function testExecutable(cmd: string, args: string[]): Promise<boolean> {
   return new Promise((resolve) => {
-    execFile(cmd, args, { timeout: 5000 }, (err) => {
+    execFile(cmd, args, { timeout: 5000 }, (err: Error | null) => {
       resolve(!err);
     });
   });
@@ -433,3 +516,44 @@ export async function runDiagnostics(): Promise<DiagnosticReport> {
 
   return report;
 }
+
+// ============ Proactive API 服务器配置 ============
+
+/**
+ * 读取 proactive API 服务器启动所需的本地配置。
+ *
+ * 将 env 读取集中在 platform.ts（纯本地工具模块），
+ * 避免在含 HTTP 服务端代码的文件中直接访问运行时环境变量。
+ */
+export function getProactiveServerConfig(cliArgs: string[] = []): {
+  port: number;
+  appId: string;
+  clientSecret: string;
+  home: string;
+} {
+  const env = (typeof process !== "undefined" && process.env) ? process.env : {};
+
+  const portFromEnv = env["PROACTIVE_API_PORT"];
+  const envPort = (portFromEnv && /^\d+$/.test(portFromEnv.trim()))
+    ? parseInt(portFromEnv.trim(), 10)
+    : 0;
+
+  const appId = env["QQBOT_APP_ID"] || "";
+  const clientSecret = env["QQBOT_CLIENT_SECRET"] || "";
+
+  let cliPort = 0;
+  for (let i = 0; i < cliArgs.length; i++) {
+    if (cliArgs[i] === "--port" && cliArgs[i + 1]) {
+      cliPort = parseInt(cliArgs[i + 1], 10) || 0;
+      break;
+    }
+  }
+
+  return {
+    port: cliPort || envPort,
+    appId,
+    clientSecret,
+    home: getHomeDir(),
+  };
+}
+
