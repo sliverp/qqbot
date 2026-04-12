@@ -10,9 +10,7 @@
  */
 
 import type { OpenClawConfig } from "openclaw/plugin-sdk";
-import { createRequire } from "node:module";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import {
   getAccessToken,
   sendC2CMessageWithInlineKeyboard,
@@ -23,17 +21,15 @@ import type { InlineKeyboard, KeyboardButton } from "./types.js";
 // ─── 动态加载 gateway-runtime（兼容不同安装环境） ────────
 
 function loadGatewayRuntime(): { createOperatorApprovalsGatewayClient: (...args: any[]) => Promise<GatewayClient> } {
-  const req = createRequire(import.meta.url);
-  const currentFile = fileURLToPath(import.meta.url);
-  const pluginRoot = path.resolve(path.dirname(currentFile), "..", "..");
-  const fs = req("node:fs") as typeof import("node:fs");
+  const pluginRoot = path.resolve(__dirname, "..", "..");
+  const fs = require("node:fs") as typeof import("node:fs");
 
   // 尝试从找到的 openclaw 根目录加载 gateway-runtime.js
   const tryLoadFromRoot = (root: string) => {
     for (const rel of ["dist/plugin-sdk/gateway-runtime.js", "plugin-sdk/gateway-runtime.js"]) {
       const p = path.join(root, rel);
       try {
-        if (fs.existsSync(p)) return req(p);
+        if (fs.existsSync(p)) return require(p);
       } catch { /* try next */ }
     }
     return null;
@@ -41,7 +37,7 @@ function loadGatewayRuntime(): { createOperatorApprovalsGatewayClient: (...args:
 
   // 策略 1: link-sdk-core.cjs findOpenclawRoot
   try {
-    const { findOpenclawRoot } = req(path.join(pluginRoot, "scripts", "link-sdk-core.cjs")) as {
+    const { findOpenclawRoot } = require(path.join(pluginRoot, "scripts", "link-sdk-core.cjs")) as {
       findOpenclawRoot: (root: string) => string | null;
     };
     const root = findOpenclawRoot(pluginRoot);

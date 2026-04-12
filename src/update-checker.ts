@@ -8,11 +8,8 @@
  * 支持多 registry fallback：npmjs.org → npmmirror.com，解决国内网络问题。
  */
 
-import { createRequire } from "node:module";
 import https from "node:https";
 import { getPackageVersion } from "./utils/pkg-version.js";
-
-const require = createRequire(import.meta.url);
 
 const PKG_NAME = "@tencent-connect/openclaw-qqbot";
 const ENCODED_PKG = encodeURIComponent(PKG_NAME);
@@ -22,7 +19,7 @@ const REGISTRIES = [
   `https://registry.npmmirror.com/${ENCODED_PKG}`,
 ];
 
-let CURRENT_VERSION = getPackageVersion(import.meta.url);
+let CURRENT_VERSION = getPackageVersion(__filename);
 
 export interface UpdateInfo {
   current: string;
