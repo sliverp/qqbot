@@ -30,6 +30,13 @@
     "channel": {
       "id": "qqbot",
       "label": "QQ Bot"
+    },
+    "compat": {
+      "pluginApi": ">=2026.4.27",
+      "minGatewayVersion": ">=2026.4.27"
+    },
+    "build": {
+      "openclawVersion": "2026.4.27"
     }
   },
   "scripts": {
