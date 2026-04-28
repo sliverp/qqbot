@@ -1,9 +1,9 @@
 {
   "generatedAt": "deterministic",
   "targetOpenClaw": {
-    "configuredPath": "/Users/vincentkoc/GIT/_Perso/openclaw",
+    "configuredPath": "<OPENCLAW_PATH>",
     "searchedPaths": [
-      "/Users/vincentkoc/GIT/_Perso/openclaw"
+      "<OPENCLAW_PATH>"
     ],
     "status": "ok",
     "compatRegistryPath": "../../openclaw/src/plugins/compat/registry.ts",
@@ -1051,7 +1051,7 @@
       "live": false,
       "deprecated": false,
       "compatStatus": "none",
-      "title": "openclaw-qqbot: cold import requires isolated dependency installation",
+      "title": "openclaw-qqbot: cold import requires dependency installation in an isolated workspace",
       "evidence": [
         "mpg123-decoder @ package.json",
         "silk-wasm @ package.json",

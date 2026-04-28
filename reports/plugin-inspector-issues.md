@@ -72,7 +72,7 @@ _none_
     - registerChannel @ index.ts:16
 
 - P2 **openclaw-qqbot** `inspector-gap` `inspector-follow-up`
-  - **package-dependency-install-required**: openclaw-qqbot: cold import requires isolated dependency installation
+  - **package-dependency-install-required**: openclaw-qqbot: cold import requires dependency installation in an isolated workspace
   - state: open · compat:none
   - evidence:
     - mpg123-decoder @ package.json
@@ -120,7 +120,7 @@ _none_
     - openclaw/plugin-sdk @ src/tools/remind.ts:1
 
 - P2 **openclaw-qqbot** `inspector-gap` `inspector-follow-up`
-  - **package-dependency-install-required**: openclaw-qqbot: cold import requires isolated dependency installation
+  - **package-dependency-install-required**: openclaw-qqbot: cold import requires dependency installation in an isolated workspace
   - state: open · compat:none
   - evidence:
     - mpg123-decoder @ package.json
