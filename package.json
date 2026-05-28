@@ -33,7 +33,7 @@
     }
   },
   "scripts": {
-    "build": "tsc || true",
+    "build": "tsc",
     "postbuild": "node -e \"const fs=require('fs'),p=require('path'),ext=p.join(require('os').homedir(),'.openclaw/extensions/openclaw-qqbot');if(fs.existsSync(ext)&&!fs.lstatSync(ext).isSymbolicLink()){const d=p.join(ext,'dist'),pr=p.join(ext,'preload.cjs');fs.cpSync('dist',d,{recursive:true});fs.copyFileSync('preload.cjs',pr);console.log('[postbuild] synced to',ext)}\"",
     "dev": "tsc --watch",
     "prepack": "npm install --omit=dev",
@@ -62,9 +62,4 @@
     "type": "git",
     "url": "git+https://github.com/tencent-connect/openclaw-qqbot.git"
   },
-  "bundleDependencies": [
-    "mpg123-decoder",
-    "silk-wasm",
-    "ws"
-  ]
 }

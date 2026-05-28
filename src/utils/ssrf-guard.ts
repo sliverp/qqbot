@@ -41,6 +41,11 @@ export function isReservedAddr(ip: string): boolean {
   if (lower === "::1" || lower === "::") return true;
   if (lower.startsWith("fe80:")) return true;           // link-local
   if (lower.startsWith("fc") || lower.startsWith("fd")) return true; // unique local
+
+  // IPv4-mapped IPv6 (::ffff:x.x.x.x) → 提取内嵌的 IPv4 再判定
+  const v4Mapped = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  if (v4Mapped) return isReservedAddr(v4Mapped[1]);
+
   return false;
 }
 

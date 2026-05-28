@@ -135,7 +135,7 @@ export async function getAccessToken(appId: string, clientSecret: string): Promi
   // 检查缓存：未过期时复用
   // 提前刷新阈值：取 expiresIn 的 1/3 和 5 分钟的较小值，避免短有效期 token 永远被判定过期
   const REFRESH_AHEAD_MS = cachedToken
-    ? Math.min(5 * 60 * 1000, (cachedToken.expiresAt - Date.now()) / 3)
+    ? Math.max(0, Math.min(5 * 60 * 1000, (cachedToken.expiresAt - Date.now()) / 3))
     : 0;
   if (cachedToken && Date.now() < cachedToken.expiresAt - REFRESH_AHEAD_MS) {
     return cachedToken.token;
@@ -1259,14 +1259,17 @@ export function isBackgroundTokenRefreshRunning(appId?: string): boolean {
 
 async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(resolve, ms);
+    const timer = setTimeout(() => {
+      if (signal) signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
     if (signal) {
       if (signal.aborted) {
         clearTimeout(timer);
         reject(new Error("Aborted"));
         return;
       }
-      const onAbort = () => {
+      let onAbort = () => {
         clearTimeout(timer);
         reject(new Error("Aborted"));
       };
