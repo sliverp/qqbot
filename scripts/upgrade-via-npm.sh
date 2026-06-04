@@ -17,6 +17,9 @@
 
 set -eo pipefail
 
+# 忽略 SIGTERM：gateway restart 时可能向进程组发送 SIGTERM，不能让它中断升级
+trap 'echo "  ⚠️  收到 SIGTERM，已忽略（升级进行中）"' SIGTERM
+
 # ============================================================================
 #  进程隔离 — 脱离 gateway 进程组
 # ============================================================================
@@ -28,6 +31,8 @@ fi
 # ============================================================================
 #  环境准备
 # ============================================================================
+_SCRIPT_START_MS="$(node -e "process.stdout.write(String(Date.now()))" 2>/dev/null || echo "$(date +%s)000")"
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || SCRIPT_DIR=""
 PROJECT_DIR=""
 [ -n "$SCRIPT_DIR" ] && PROJECT_DIR="$(cd "$SCRIPT_DIR/.." 2>/dev/null && pwd)" || true
@@ -54,6 +59,132 @@ done
 NPM_REGISTRIES="https://registry.npmjs.org/ https://mirrors.cloud.tencent.com/npm/"
 
 # ============================================================================
+#  CLS 日志上报（腾讯云日志服务）
+# ============================================================================
+CLS_HOST="ap-guangzhou.cls.tencentcs.com"
+CLS_TOPIC_ID="${CLS_TOPIC_ID:-845a0802-ec56-49a0-afa0-fe686b0a16f2}"
+CLS_ENABLED="${CLS_ENABLED:-true}"
+
+# 静态字段（全局变量，启动时采集一次）
+_STATIC_FIELDS=""
+_SESSION_ID=""
+
+# 采集静态字段（只执行一次）
+init_track_log() {
+    [ "$CLS_ENABLED" != "true" ] && return 0
+    [ -n "$_STATIC_FIELDS" ] && return 0  # 已初始化
+    
+    _SESSION_ID="$(node -e "try{process.stdout.write(require('crypto').randomUUID())}catch{process.stdout.write(Date.now().toString())}" 2>/dev/null || echo "$$-$(date +%s)")"
+    
+    local node_ver="${NODE_VERSION:-$(node --version 2>/dev/null || echo "")}"
+    local os_type="$(uname -s 2>/dev/null || echo "unknown")"
+    
+    # 构造静态字段 JSON（转义处理）
+    _STATIC_FIELDS=$(node -e "
+      const fields = {
+        session_id: '$_SESSION_ID',
+        script_version: 'v4',
+        node_version: '$node_ver',
+        os: '$os_type'
+      };
+      process.stdout.write(JSON.stringify(fields));
+    " 2>/dev/null || echo "{}")
+}
+
+# 上报日志到 CLS
+# 用法: track_log <event> <result> <log_message> [extra_key1=val1] [extra_key2=val2] ...
+track_log() {
+    [ "$CLS_ENABLED" != "true" ] && return 0
+    [ -z "$CLS_TOPIC_ID" ] && return 0
+    
+    local event="$1"
+    local result="$2"
+    local log_msg="$3"
+    shift 3
+    
+    # 确保静态字段已初始化
+    [ -z "$_STATIC_FIELDS" ] && init_track_log
+    
+    # 计算耗时（毫秒）
+    local _now_ms="$(node -e "process.stdout.write(String(Date.now()))" 2>/dev/null || echo "$(date +%s)000")"
+    local _elapsed_ms="$(( _now_ms - _SCRIPT_START_MS ))"
+    
+    # 构造额外字段
+    local extra_fields=",\"elapsed_ms\":\"$_elapsed_ms\""
+    for arg in "$@"; do
+        if [[ "$arg" == *=* ]]; then
+            local key="${arg%%=*}"
+            local val="${arg#*=}"
+            extra_fields="$extra_fields,\"$key\":\"$val\""
+        fi
+    done
+    
+    # 后台异步上报（不阻塞主流程）
+    (
+        node -e "
+          (() => {
+            try {
+              const https = require('https');
+              const staticFields = $_STATIC_FIELDS;
+              const contents = {
+                ...staticFields,
+                event: '$event',
+                result: '$result',
+                log: $(node -e "process.stdout.write(JSON.stringify('$log_msg'))" 2>/dev/null || echo "'$log_msg'"),
+                openclaw_version: '${OPENCLAW_VERSION:-}',
+                old_version: '${OLD_VERSION:-}',
+                new_version: '${NEW_VERSION:-}',
+                target_version: '${TARGET_VERSION:-}'$extra_fields
+              };
+              
+              const body = JSON.stringify({
+                logs: [{
+                  contents: contents,
+                  time: Math.floor(Date.now() / 1000)
+                }],
+                source: 'qqbot-upgrade-script'
+              });
+              
+              const req = https.request({
+                hostname: '$CLS_HOST',
+                path: '/tracklog?topic_id=$CLS_TOPIC_ID',
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Content-Length': Buffer.byteLength(body)
+                },
+                timeout: 5000
+              }, (res) => { res.resume(); });
+              
+              req.on('error', () => {});
+              req.on('timeout', () => req.destroy());
+              req.end(body);
+            } catch {}
+          })();
+        " 2>/dev/null
+    ) &
+}
+
+# 封装 echo：同时输出到终端 + 上报 CLS
+# 用法: log <message>                        → event=log, result=info
+#        log <event> <result> <message>       → 自定义 event/result
+#        log <event> <result> <message> k=v   → 带额外字段
+log() {
+    if [ $# -eq 1 ]; then
+        echo "$1"
+        track_log "log" "info" "$1"
+    elif [ $# -ge 3 ]; then
+        local _event="$1" _result="$2" _msg="$3"
+        shift 3
+        echo "$_msg"
+        track_log "$_event" "$_result" "$_msg" "$@"
+    else
+        # 2 个参数：当普通 echo，不上报
+        echo "$@"
+    fi
+}
+
+# ============================================================================
 #  超时执行包装器（兼容 macOS 无 GNU timeout）
 # ============================================================================
 run_with_timeout() {
@@ -62,7 +193,11 @@ run_with_timeout() {
     if command -v timeout &>/dev/null; then
         timeout --kill-after=10 "$timeout_secs" "$@" && return 0
         local rc=$?
-        [ $rc -eq 124 ] && echo "  ⏰ ${description} 超时 (${timeout_secs}s)"
+        # GNU coreutils timeout 超时返回 124；uutils coreutils 返回 125
+        if [ $rc -eq 124 ] || [ $rc -eq 125 ]; then
+            echo "  ⏰ ${description} 超时 (${timeout_secs}s)"
+            return 124  # 统一返回 124 表示超时
+        fi
         return $rc
     fi
 
@@ -117,15 +252,21 @@ restore_reload_mode() {
 
 rollback_plugin_dir() {
     local reason="${1:-未知原因}"
+    log "rollback" "start" "  开始回滚..." "reason=$reason"
     if [ -n "$BACKUP_DIR" ] && [ -d "$BACKUP_DIR/$PLUGIN_ID" ]; then
         rm -rf "$EXTENSIONS_DIR/$PLUGIN_ID" 2>/dev/null || true
         mv "$BACKUP_DIR/$PLUGIN_ID" "$EXTENSIONS_DIR/$PLUGIN_ID" 2>/dev/null || \
             cp -a "$BACKUP_DIR/$PLUGIN_ID" "$EXTENSIONS_DIR/$PLUGIN_ID" 2>/dev/null || true
-        [ -f "$EXTENSIONS_DIR/$PLUGIN_ID/package.json" ] && \
-            echo "  ↩️  已回滚到旧版本 v$(read_pkg_version "$EXTENSIONS_DIR/$PLUGIN_ID/package.json")（原因: ${reason}）" && return 0
-        echo "  ❌ 回滚后插件目录仍不完整！"; return 1
+        if [ -f "$EXTENSIONS_DIR/$PLUGIN_ID/package.json" ]; then
+            local rollback_ver="$(read_pkg_version "$EXTENSIONS_DIR/$PLUGIN_ID/package.json")"
+            log "rollback" "success" "  ↩️  已回滚到旧版本 v${rollback_ver}（原因: ${reason}）" "rollback_version=$rollback_ver"
+            return 0
+        fi
+        log "rollback" "fail" "  ❌ 回滚后插件目录仍不完整！"
+        return 1
     fi
-    echo "  ⚠️  无备份可回滚（原因: ${reason}）"; return 1
+    log "rollback" "fail" "  ⚠️  无备份可回滚（原因: ${reason}）" "reason=$reason"
+    return 1
 }
 
 # ============================================================================
@@ -138,7 +279,7 @@ acquire_upgrade_lock() {
     if [ -f "$UPGRADE_LOCK_FILE" ]; then
         local lock_pid="$(cat "$UPGRADE_LOCK_FILE" 2>/dev/null || true)"
         if [ -n "$lock_pid" ] && kill -0 "$lock_pid" 2>/dev/null; then
-            echo "❌ 另一个升级进程正在运行 (PID: $lock_pid)"; exit 1
+            log "lock_conflict" "fail" "❌ 另一个升级进程正在运行 (PID: $lock_pid)" "lock_pid=$lock_pid"; exit 1
         fi
         rm -f "$UPGRADE_LOCK_FILE" 2>/dev/null || true
     fi
@@ -165,7 +306,9 @@ setup_temp_config() {
     " 2>/dev/null || true)"
     [ "$need_temp" != "1" ] && return 0
 
-    TEMP_CONFIG_FILE="$(mktemp)"
+    # 临时配置必须放在 $OPENCLAW_HOME 下，避免 openclaw ≥2026.4.9 将其父目录当作 CONFIG_DIR
+    # （2026-04-07 新增逻辑：OPENCLAW_CONFIG_PATH 的 dirname 会被用作 CONFIG_DIR）
+    TEMP_CONFIG_FILE="$(mktemp "$OPENCLAW_HOME/.qqbot-temp-config-XXXXXX")"
     if node -e "
       const fs = require('fs');
       const cfg = JSON.parse(fs.readFileSync('$CONFIG_FILE', 'utf8'));
@@ -179,10 +322,10 @@ setup_temp_config() {
       cfg.plugins?.entries && Object.keys(cfg.plugins.entries).length === 0 && delete cfg.plugins.entries;
       fs.writeFileSync('$TEMP_CONFIG_FILE', JSON.stringify(cfg, null, 4) + '\n');
     " 2>/dev/null; then
-        echo "  [兼容] 创建临时配置副本以通过 3.23+ 配置校验"
+        log "temp_config" "success" "  [兼容] 创建临时配置副本以通过 3.23+ 配置校验"
         export OPENCLAW_CONFIG_PATH="$TEMP_CONFIG_FILE"
     else
-        echo "  ⚠️  创建临时配置失败，继续使用原配置"
+        log "temp_config" "fail" "  ⚠️  创建临时配置失败，继续使用原配置"
         rm -f "$TEMP_CONFIG_FILE" 2>/dev/null || true; TEMP_CONFIG_FILE=""
     fi
 }
@@ -235,15 +378,15 @@ npm_pack_download() {
         fi
     done
     if [ "$ok" != "true" ]; then
-        echo "  ❌ npm pack 失败（所有 registry 均不可用）"
+        log "npm_pack" "fail" "  ❌ npm pack 失败（所有 registry 均不可用）"
         rm -rf "$PACK_TMP_DIR" 2>/dev/null; PACK_TMP_DIR=""; return 1
     fi
     PACK_TGZ_FILE="$(find "$PACK_TMP_DIR" -maxdepth 1 -name '*.tgz' -type f | head -1)"
     if [ -z "$PACK_TGZ_FILE" ]; then
-        echo "  ❌ 未找到 tgz 文件"
+        log "npm_pack" "fail" "  ❌ 未找到 tgz 文件"
         rm -rf "$PACK_TMP_DIR" 2>/dev/null; PACK_TMP_DIR=""; return 1
     fi
-    echo "    已下载: $(basename "$PACK_TGZ_FILE")"
+    log "npm_pack" "success" "    已下载: $(basename "$PACK_TGZ_FILE")"
     return 0
 }
 
@@ -264,25 +407,47 @@ npm_pack_native_install() {
     echo "  [Level 2] npm pack + openclaw install 本地目录"
     echo "  ============================================"
 
-    echo "  [L2 1/3] 下载 tarball..."
+    echo "  [L2 1/4] 下载 tarball..."
     npm_pack_download || return 1
 
     # 先解压再传目录路径给 openclaw，而非直接传 tarball 路径
     # 原因：openclaw installPluginFromArchive 漏传 --dangerously-force-unsafe-install，
     #       installPluginFromDir 正确传递，传目录可绕过此 bug
-    echo "  [L2 2/3] 解压 tarball..."
+    echo "  [L2 2/4] 解压 tarball..."
     local extract_dir
     extract_dir="$(mktemp -d "${TMPDIR:-/tmp}/.qqbot-extract-XXXXXX")"
     if ! tar xzf "$PACK_TGZ_FILE" -C "$extract_dir" 2>&1; then
-        echo "  ❌ 解压失败"; cleanup_pack; rm -rf "$extract_dir"; return 1
+        log "l2_extract" "fail" "  ❌ 解压失败"; cleanup_pack; rm -rf "$extract_dir"; return 1
     fi
     cleanup_pack
     local package_dir="$extract_dir/package"
     if [ ! -f "$package_dir/package.json" ]; then
-        echo "  ❌ 解压后未找到 package.json"; rm -rf "$extract_dir"; return 1
+        log "l2_extract" "fail" "  ❌ 解压后未找到 package.json"; rm -rf "$extract_dir"; return 1
     fi
 
-    echo "  [L2 3/3] 用 openclaw 安装本地目录..."
+    # L1 失败可能留下残缺目录或 stage，L2 安装前再次清理
+    echo "  [L2 3/4] 清理残留..."
+    [ -d "$EXTENSIONS_DIR/$PLUGIN_ID" ] && rm -rf "$EXTENSIONS_DIR/$PLUGIN_ID" 2>/dev/null || true
+    find "${EXTENSIONS_DIR:-/dev/null}" "${TMPDIR:-/tmp}" -maxdepth 1 -name ".openclaw-install-stage-*" \
+        -exec rm -rf {} + 2>/dev/null || true
+    # 从配置中移除插件记录，防止 openclaw CLI 报 "already exists"
+    local _l2_cfg="${TEMP_CONFIG_FILE:-$CONFIG_FILE}"
+    [ -f "$_l2_cfg" ] && node -e "
+      try {
+        const fs = require('fs');
+        const cfg = JSON.parse(fs.readFileSync('$_l2_cfg', 'utf8'));
+        let c = false;
+        if (cfg.plugins?.installs?.['$PLUGIN_ID']) { delete cfg.plugins.installs['$PLUGIN_ID']; c = true; }
+        if (cfg.plugins?.entries?.['$PLUGIN_ID']) { delete cfg.plugins.entries['$PLUGIN_ID']; c = true; }
+        if (Array.isArray(cfg.plugins?.allow)) {
+          const i = cfg.plugins.allow.indexOf('$PLUGIN_ID');
+          if (i >= 0) { cfg.plugins.allow.splice(i, 1); c = true; }
+        }
+        if (c) fs.writeFileSync('$_l2_cfg', JSON.stringify(cfg, null, 4) + '\n');
+      } catch {}
+    " 2>/dev/null || true
+
+    echo "  [L2 4/4] 用 openclaw 安装本地目录..."
     ensure_valid_cwd
     local rc=0
     run_with_timeout "$INSTALL_TIMEOUT" "plugins install (local dir)" \
@@ -291,10 +456,10 @@ npm_pack_native_install() {
     rm -rf "$extract_dir" 2>/dev/null || true
 
     if [ $rc -eq 0 ] && [ -f "$EXTENSIONS_DIR/$PLUGIN_ID/package.json" ]; then
-        echo "  ✅ Level 2 安装成功"
+        log "l2_install" "success" "  ✅ Level 2 安装成功"
         return 0
     fi
-    echo "  Level 2 失败 (exit=$rc)"
+    log "l2_install" "fail" "  Level 2 失败 (exit=$rc)" "exit_code=$rc"
     [ -d "$EXTENSIONS_DIR/$PLUGIN_ID" ] && [ ! -f "$EXTENSIONS_DIR/$PLUGIN_ID/package.json" ] && \
         rm -rf "$EXTENSIONS_DIR/$PLUGIN_ID" 2>/dev/null || true
     find "${EXTENSIONS_DIR:-/dev/null}" "${TMPDIR:-/tmp}" -maxdepth 1 -name ".openclaw-install-stage-*" \
@@ -321,8 +486,8 @@ cleanup_on_exit() {
 
     if [ "$INSTALL_COMPLETED" != "true" ] && [ $exit_code -ne 0 ]; then
         local reason="异常退出 (code=$exit_code)"
-        case $exit_code in 124) reason="安装超时";; 130) reason="用户中断";; 143) reason="SIGTERM";; 129) reason="SIGHUP";; esac
-        echo "  ⚠️  ${reason}"
+        case $exit_code in 124|125) reason="安装超时";; 130) reason="用户中断";; 143) reason="SIGTERM";; 129) reason="SIGHUP";; esac
+        log "abnormal_exit" "fail" "  ⚠️  ${reason}" "reason=$reason" "exit_code=$exit_code"
         restore_config_snapshot
         rollback_plugin_dir "$reason"
     fi
@@ -335,17 +500,18 @@ cleanup_on_exit() {
     find "${EXTENSIONS_DIR:-/dev/null}" -maxdepth 1 -name ".openclaw-install-stage-*" -exec rm -rf {} + 2>/dev/null || true
     find "${TMPDIR:-/tmp}" -maxdepth 1 \( -name ".openclaw-install-stage-*" -o -name ".qqbot-pack-*" \
         -o -name ".qqbot-extract-*" -o -name ".qqbot-upgrade-backup-*" \) -exec rm -rf {} + 2>/dev/null || true
+    find "${OPENCLAW_HOME:-/dev/null}" -maxdepth 1 -name ".qqbot-temp-config-*" -exec rm -f {} + 2>/dev/null || true
     release_upgrade_lock
     exit $exit_code
 }
 trap cleanup_on_exit EXIT
-trap 'exit 143' TERM
 trap 'echo "  中断"; exit 130' INT
 trap 'exit 129' HUP
 
 # 清理上次升级遗留（>60min）
 find "${TMPDIR:-/tmp}" -maxdepth 1 \( -name ".qqbot-upgrade-backup-*" -o -name ".qqbot-pack-*" \
     -o -name ".qqbot-extract-*" \) -mmin +60 -exec rm -rf {} + 2>/dev/null || true
+find "${OPENCLAW_HOME:-/dev/null}" -maxdepth 1 -name ".qqbot-temp-config-*" -mmin +60 -exec rm -f {} + 2>/dev/null || true
 
 # ============================================================================
 #  参数解析
@@ -425,7 +591,7 @@ if [ -n "$OPENCLAW_VERSION" ] && version_gte "$OPENCLAW_VERSION" "2026.3.30"; th
     FORCE_UNSAFE_FLAG="--dangerously-force-unsafe-install"
 fi
 
-echo "==========================================="
+log "upgrade_start" "start" "==========================================="
 echo "  qqbot 升级: $INSTALL_SRC"
 echo "  openclaw: v${OPENCLAW_VERSION:-unknown}"
 echo "  隔离: ${_UPGRADE_ISOLATED:+✓ setsid}${_UPGRADE_ISOLATED:-✗}  超时: ${INSTALL_TIMEOUT}s"
@@ -437,20 +603,60 @@ OLD_PKG="$EXTENSIONS_DIR/$PLUGIN_ID/package.json"
 [ -f "$OLD_PKG" ] && OLD_VERSION="$(read_pkg_version "$OLD_PKG")"
 [ -n "$OLD_VERSION" ] && echo "  当前版本: $OLD_VERSION"
 
+# 初始化日志上报
+init_track_log
+
 # ============================================================================
-#  禁用内置冲突插件（配置禁用 + 目录删除 + 验证）
+#  禁用内置冲突插件（配置禁用 + 验证）
 # ============================================================================
+# 记录已确认存在的内置冲突插件 ID，供 verify_builtin_disabled 复用
+CONFIRMED_BUILTIN_IDS=""
+
 disable_builtin_plugins() {
     local found_any=false
+    CONFIRMED_BUILTIN_IDS=""
+
+    # 一次性获取 openclaw 已知的所有插件 ID（stock + global）
+    local _known_ids=""
+    ensure_valid_cwd
+    _known_ids="$(run_with_timeout 15 "plugins list" openclaw plugins list 2>/dev/null \
+        | sed -n 's/^│[^│]*│[[:space:]]*\([a-zA-Z0-9_-]*\)[[:space:]]*│.*/\1/p' || true)"
+
     for bid in $BUILTIN_CONFLICT_IDS; do
         [ "$bid" = "$PLUGIN_ID" ] && continue
+
+        # 判断该内置插件是否存在：plugins list 中有 / 配置中有记录 / user extensions 目录有
+        local _bid_exists=false
+        echo "$_known_ids" | grep -qx "$bid" 2>/dev/null && _bid_exists=true
+        [ "$_bid_exists" != "true" ] && [ -d "$EXTENSIONS_DIR/$bid" ] && _bid_exists=true
+        [ "$_bid_exists" != "true" ] && node -e "
+          try {
+            const c = JSON.parse(require('fs').readFileSync('$CONFIG_FILE', 'utf8'));
+            if (c.plugins?.entries?.['$bid'] || c.plugins?.installs?.['$bid'] ||
+                (Array.isArray(c.plugins?.allow) && c.plugins.allow.includes('$bid')))
+              process.stdout.write('1');
+          } catch {}
+        " 2>/dev/null | grep -q '1' && _bid_exists=true
+
+        if [ "$_bid_exists" != "true" ]; then
+            echo "  [禁用内置] $bid: 未检测到，跳过"
+            continue
+        fi
+
+        CONFIRMED_BUILTIN_IDS="$CONFIRMED_BUILTIN_IDS $bid"
+
         local _changed=""
         _changed="$(node -e "
           try {
             const fs = require('fs');
             const cfg = JSON.parse(fs.readFileSync('$CONFIG_FILE', 'utf8'));
             let c = [];
-            if (cfg.plugins?.entries?.['$bid']) { cfg.plugins.entries['$bid'].enabled = false; c.push('entries'); }
+            // 显式写入 enabled:false，内置插件即使没有 entries 记录也会自动加载
+            (cfg.plugins ??= {}).entries ??= {};
+            if (!cfg.plugins.entries['$bid'] || cfg.plugins.entries['$bid'].enabled !== false) {
+              cfg.plugins.entries['$bid'] = { ...cfg.plugins.entries['$bid'], enabled: false };
+              c.push('entries');
+            }
             if (Array.isArray(cfg.plugins?.allow) && cfg.plugins.allow.includes('$bid')) {
               cfg.plugins.allow = cfg.plugins.allow.filter(p => p !== '$bid'); c.push('allow');
             }
@@ -460,20 +666,36 @@ disable_builtin_plugins() {
           } catch {}
         " 2>/dev/null || true)"
         [ -n "$_changed" ] && echo "  [禁用内置] $bid: 已修改 $_changed" && found_any=true
-        if [ -d "$EXTENSIONS_DIR/$bid" ]; then
-            rm -rf "$EXTENSIONS_DIR/$bid"; echo "  [禁用内置] 已删除 extensions/$bid"; found_any=true
-        fi
     done
-    [ "$found_any" = "true" ] && echo "  ✅ 内置冲突插件已禁用" || echo "  ℹ️  未发现需要禁用的内置冲突插件"
+    if [ "$found_any" = "true" ]; then
+        log "disable_builtin" "success" "  ✅ 内置冲突插件已禁用" "confirmed_ids=$CONFIRMED_BUILTIN_IDS"
+    else
+        log "disable_builtin" "skip" "  ℹ️  未发现需要禁用的内置冲突插件"
+    fi
 }
 
 verify_builtin_disabled() {
-    for bid in $BUILTIN_CONFLICT_IDS; do
-        [ "$bid" = "$PLUGIN_ID" ] && continue
-        local _e="$(node -e "try{const c=JSON.parse(require('fs').readFileSync('$CONFIG_FILE','utf8'));if(c.plugins?.entries?.['$bid']?.enabled)process.stdout.write('1')}catch{}" 2>/dev/null || true)"
+    [ -z "$CONFIRMED_BUILTIN_IDS" ] && return 0
+    for bid in $CONFIRMED_BUILTIN_IDS; do
+        local _e="$(node -e "
+          try {
+            const c = JSON.parse(require('fs').readFileSync('$CONFIG_FILE', 'utf8'));
+            const e = c.plugins?.entries?.['$bid'];
+            // 不存在或 enabled 不为 false 都需要修复
+            if (!e || e.enabled !== false) process.stdout.write('1');
+          } catch {}
+        " 2>/dev/null || true)"
         if [ "$_e" = "1" ]; then
-            echo "  ⚠️  内置插件 $bid 仍启用，再次禁用..."
-            node -e "try{const f=require('fs'),c=JSON.parse(f.readFileSync('$CONFIG_FILE','utf8'));if(c.plugins?.entries?.['$bid'])c.plugins.entries['$bid'].enabled=false;f.writeFileSync('$CONFIG_FILE',JSON.stringify(c,null,4)+'\n')}catch{}" 2>/dev/null || true
+            log "verify_builtin" "fix" "  ⚠️  内置插件 $bid 未禁用，写入 entries..." "bid=$bid"
+            node -e "
+              try {
+                const f = require('fs');
+                const c = JSON.parse(f.readFileSync('$CONFIG_FILE', 'utf8'));
+                (c.plugins ??= {}).entries ??= {};
+                c.plugins.entries['$bid'] = { ...c.plugins.entries['$bid'], enabled: false };
+                f.writeFileSync('$CONFIG_FILE', JSON.stringify(c, null, 4) + '\n');
+              } catch {}
+            " 2>/dev/null || true
         fi
     done
 }
@@ -502,13 +724,16 @@ setup_temp_config
 
 # 清理历史遗留 ID 的配置记录（qqbot/openclaw-qq 是旧版本使用的 ID，
 # entries 中残留会导致 gateway 重复加载同一插件报 tool name conflict）
+# 注意：跳过 enabled===false 的 entries，那是 disable_builtin_plugins 写入的禁用记录
 [ -f "$CONFIG_FILE" ] && node -e "
   try {
     const fs = require('fs');
     const cfg = JSON.parse(fs.readFileSync('$CONFIG_FILE', 'utf8'));
     let c = false;
     for (const old of ['qqbot', 'openclaw-qq']) {
-      if (cfg.plugins?.entries?.[old]) { delete cfg.plugins.entries[old]; c = true; }
+      if (cfg.plugins?.entries?.[old] && cfg.plugins.entries[old].enabled !== false) {
+        delete cfg.plugins.entries[old]; c = true;
+      }
       if (cfg.plugins?.installs?.[old]) { delete cfg.plugins.installs[old]; c = true; }
       if (Array.isArray(cfg.plugins?.allow)) {
         const i = cfg.plugins.allow.indexOf(old);
@@ -539,10 +764,10 @@ HAS_PLUGIN_DIR=false
 USE_UPDATE=false
 if [ "$HAS_INSTALL_RECORD" = "yes" ] && [ "$HAS_PLUGIN_DIR" = "true" ] && [ -z "$TARGET_VERSION" ]; then
     if [ -n "$FORCE_UNSAFE_FLAG" ]; then
-        echo "  [检测] 配置 ✓ | 目录 ✓ | openclaw ≥3.30 → 跳过 update，直接 install（安全扫描兼容）"
+        log "install_decision" "info" "  [检测] 配置 ✓ | 目录 ✓ | openclaw ≥3.30 → 跳过 update，直接 install（安全扫描兼容）" "decision=install" "reason=force_unsafe"
     else
         USE_UPDATE=true
-        echo "  [检测] 配置 ✓ | 目录 ✓ | 未指定版本 → update"
+        log "install_decision" "info" "  [检测] 配置 ✓ | 目录 ✓ | 未指定版本 → update" "decision=update"
         # spec 解锁
         if [ -n "$INSTALL_SPEC" ]; then
             SPEC_SUFFIX="${INSTALL_SPEC##*@}"
@@ -562,9 +787,9 @@ if [ "$HAS_INSTALL_RECORD" = "yes" ] && [ "$HAS_PLUGIN_DIR" = "true" ] && [ -z "
         fi
     fi
 elif [ "$HAS_PLUGIN_DIR" = "true" ]; then
-    echo "  [检测] 目录 ✓ | 指定版本或无配置记录 → reinstall"
+    log "install_decision" "info" "  [检测] 目录 ✓ | 指定版本或无配置记录 → reinstall" "decision=reinstall"
 else
-    echo "  [检测] 目录 ✗ → 全新安装"
+    log "install_decision" "info" "  [检测] 目录 ✗ → 全新安装" "decision=fresh_install"
 fi
 
 mark_success() {
@@ -585,29 +810,39 @@ if [ "$USE_UPDATE" = "true" ]; then
     if [ $UPDATE_RC -eq 0 ]; then
         POST_VER=""; [ -f "$OLD_PKG" ] && POST_VER="$(read_pkg_version "$OLD_PKG")"
         if [ -n "$POST_VER" ] && [ "$POST_VER" != "$OLD_VERSION" ]; then
-            mark_success; echo "  ✅ update 成功 ($OLD_VERSION → $POST_VER)"
+            mark_success; log "level1_update" "success" "  ✅ update 成功 ($OLD_VERSION → $POST_VER)" "method=update" "post_version=$POST_VER"
         elif [ -z "$OLD_VERSION" ]; then
-            mark_success; echo "  ✅ update 成功"
+            mark_success; log "level1_update" "success" "  ✅ update 成功" "method=update"
         else
             echo "  ℹ️  版本未变 ($POST_VER)，查询 npm latest..."
             NPM_LATEST="$(npm view "$PKG_NAME" version 2>/dev/null || true)"
             if [ -n "$NPM_LATEST" ] && [ "$NPM_LATEST" = "$POST_VER" ]; then
-                mark_success; echo "  ✅ 已是最新版本 $POST_VER"
+                mark_success; log "level1_update" "success" "  ✅ 已是最新版本 $POST_VER" "method=update" "version=$POST_VER"
             else
-                echo "  npm latest=${NPM_LATEST:-unknown}，当前=$POST_VER"
+                log "level1_update" "fail" "  npm latest=${NPM_LATEST:-unknown}，当前=$POST_VER" "npm_latest=$NPM_LATEST" "current=$POST_VER"
             fi
         fi
     else
-        [ $UPDATE_RC -eq 124 ] && echo "  ⏰ update 超时" || echo "  update 失败 (exit=$UPDATE_RC)"
+        if [ $UPDATE_RC -eq 124 ]; then
+            log "level1_update" "fail" "  ⏰ update 超时" "method=update" "exit_code=$UPDATE_RC"
+        else
+            log "level1_update" "fail" "  update 失败 (exit=$UPDATE_RC)" "method=update" "exit_code=$UPDATE_RC"
+        fi
     fi
 
     # Level 1 失败 → Level 2 降级
     if [ "$UPGRADE_OK" != "true" ]; then
+        log "level2_fallback" "start" "  尝试 Level 2 降级..." "reason=level1_failed"
         if [ -z "$BACKUP_DIR" ] && [ -d "$EXTENSIONS_DIR/$PLUGIN_ID" ]; then
             BACKUP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/.qqbot-upgrade-backup-XXXXXX")"
             cp -a "$EXTENSIONS_DIR/$PLUGIN_ID" "$BACKUP_DIR/$PLUGIN_ID"
         fi
-        run_fallback && mark_success
+        if run_fallback; then
+            mark_success
+            log "level2_fallback" "success" "  ✅ Level 2 降级成功"
+        else
+            log "level2_fallback" "fail" "  ❌ Level 2 降级失败"
+        fi
     fi
 fi
 
@@ -644,7 +879,7 @@ if [ "$UPGRADE_OK" != "true" ]; then
     " 2>/dev/null || true
 
     # Level 1: 原生 install（单次尝试，失败后由 Level 2 的 npm pack 多源重试接管）
-    echo "  [Level 1] 尝试 openclaw plugins install..."
+    log "level1_install" "start" "  [Level 1] 尝试 openclaw plugins install..." "method=install"
     ensure_valid_cwd
     RC=0
     run_with_timeout "$INSTALL_TIMEOUT" \
@@ -652,24 +887,29 @@ if [ "$UPGRADE_OK" != "true" ]; then
         $FORCE_UNSAFE_FLAG 2>&1 || RC=$?
 
     if [ $RC -eq 0 ] && [ -f "$EXTENSIONS_DIR/$PLUGIN_ID/package.json" ]; then
-        mark_success; echo "  ✅ Level 1 install 成功"
+        mark_success; log "level1_install" "success" "  ✅ Level 1 install 成功" "method=install"
     else
-        [ $RC -ne 0 ] && echo "  Level 1 install 失败 (exit=$RC)"
+        log "level1_install" "fail" "  Level 1 install 失败 (exit=$RC)" "method=install" "exit_code=$RC"
         # 清理不完整的目录和 stage
         [ -d "$EXTENSIONS_DIR/$PLUGIN_ID" ] && [ ! -f "$EXTENSIONS_DIR/$PLUGIN_ID/package.json" ] && \
             rm -rf "$EXTENSIONS_DIR/$PLUGIN_ID" 2>/dev/null || true
         find "${EXTENSIONS_DIR:-/dev/null}" "${TMPDIR:-/tmp}" -maxdepth 1 -name ".openclaw-install-stage-*" \
             -exec rm -rf {} + 2>/dev/null || true
 
-        echo "  Level 1 失败，尝试 Level 2 降级..."
-        run_fallback && mark_success || {
+        log "level2_fallback" "start" "  Level 1 失败，尝试 Level 2 降级..." "reason=level1_install_failed"
+        if run_fallback; then
+            mark_success
+            log "level2_fallback" "success" "  ✅ Level 2 降级成功"
+        else
+            log "level2_fallback" "fail" "  ❌ Level 2 降级失败"
+            log "upgrade_complete" "fail" "  升级完全失败，已回滚"
             rollback_plugin_dir "安装失败"; restore_config_snapshot
             [ -n "$TEMP_CONFIG_FILE" ] && rm -f "$TEMP_CONFIG_FILE" 2>/dev/null || true
             unset OPENCLAW_CONFIG_PATH 2>/dev/null || true
             echo "QQBOT_NEW_VERSION=unknown"
             echo "QQBOT_REPORT=❌ QQBot 安装失败（已回滚），请检查网络"
             exit 1
-        }
+        fi
     fi
 fi
 
@@ -713,11 +953,12 @@ if [ -d "$TARGET_DIR/node_modules" ]; then
 fi
 
 if [ "$PREFLIGHT_OK" != "true" ]; then
-    echo ""; echo "❌ 验证未通过"
+    echo ""
+    log "validation" "fail" "❌ 验证未通过" "missing=$MISS"
     echo "QQBOT_NEW_VERSION=unknown"; echo "QQBOT_REPORT=⚠️ 验证未通过"
     exit 1
 fi
-echo "  ✅ 验证全部通过"
+log "validation" "success" "  ✅ 验证全部通过"
 
 # 轻量健康检查
 echo ""
@@ -749,7 +990,7 @@ echo "QQBOT_NEW_VERSION=${NEW_VERSION:-unknown}"
     echo "QQBOT_REPORT=⚠️ 无法确认新版本"
 
 echo ""
-echo "==========================================="
+log "upgrade_complete" "success" "==========================================="  "new_version=${NEW_VERSION:-unknown}"
 echo "  ✅ 安装完成"
 echo "==========================================="
 
@@ -805,16 +1046,71 @@ fi
 
 echo "[4/4] 重启 gateway..."
 ensure_valid_cwd
-GW_RC=0; run_with_timeout 90 "gateway restart" openclaw gateway restart 2>&1 || GW_RC=$?
+GW_RC=0; GW_OUTPUT="$(run_with_timeout 90 "gateway restart" openclaw gateway restart 2>&1)" || GW_RC=$?
+echo "$GW_OUTPUT"
 
 if [ $GW_RC -eq 0 ]; then
-    echo "  ✅ gateway 已重启"
+    log "gateway_restart" "success" "  ✅ gateway 已重启"
     [ -n "$NEW_VERSION" ] && echo "" && echo "🎉 QQBot 插件已更新至 v${NEW_VERSION}，在线等候你的吩咐。"
 else
-    [ $GW_RC -eq 124 ] && echo "  ⏰ gateway restart 超时"
-    echo "  ⚠️  重启失败，尝试 doctor --fix..."
-    ensure_valid_cwd
+    if [ $GW_RC -eq 124 ]; then
+        log "gateway_restart" "fail" "  ⏰ gateway restart 超时" "exit_code=$GW_RC"
+    else
+        log "gateway_restart" "fail" "  ⚠️  重启失败" "exit_code=$GW_RC"
+    fi
 
+    # 检测是否是 qqbot 通道配置的 additional properties 校验错误
+    if echo "$GW_OUTPUT" | grep -q "additional properties"; then
+        echo ""
+        log "config_fix" "start" "  [配置修复] 检测到 QQBot 通道配置包含不支持的字段"
+
+        # 备份当前配置
+        _cfg_backup="${CONFIG_FILE}.pre-fix.$(date +%s)"
+        cp -a "$CONFIG_FILE" "$_cfg_backup" 2>/dev/null && \
+            echo "  [配置修复] 已备份当前配置到: $_cfg_backup"
+
+        # 只保留合法字段: enabled/appId/clientSecret/allowFrom/accounts
+        # accounts 内每个条目也只保留: enabled/appId/clientSecret/allowFrom
+        node -e "
+          try {
+            const fs = require('fs');
+            const cfg = JSON.parse(fs.readFileSync('$CONFIG_FILE', 'utf8'));
+            const ch = cfg.channels?.qqbot;
+            if (!ch) process.exit(0);
+
+            const ALLOWED_ROOT = new Set(['enabled', 'appId', 'clientSecret', 'allowFrom', 'accounts']);
+            const ALLOWED_ACCOUNT = new Set(['enabled', 'appId', 'clientSecret', 'allowFrom']);
+
+            const cleaned = {};
+            for (const k of Object.keys(ch)) {
+              if (!ALLOWED_ROOT.has(k)) continue;
+              if (k === 'accounts' && typeof ch.accounts === 'object' && ch.accounts !== null) {
+                cleaned.accounts = {};
+                for (const [accId, acc] of Object.entries(ch.accounts)) {
+                  if (typeof acc !== 'object' || acc === null) continue;
+                  const cleanedAcc = {};
+                  for (const ak of Object.keys(acc)) {
+                    if (ALLOWED_ACCOUNT.has(ak)) cleanedAcc[ak] = acc[ak];
+                  }
+                  if (Object.keys(cleanedAcc).length > 0) cleaned.accounts[accId] = cleanedAcc;
+                }
+                if (Object.keys(cleaned.accounts).length === 0) delete cleaned.accounts;
+              } else {
+                cleaned[k] = ch[k];
+              }
+            }
+
+            cfg.channels.qqbot = cleaned;
+            fs.writeFileSync('$CONFIG_FILE', JSON.stringify(cfg, null, 4) + '\n');
+            process.stdout.write('fixed');
+          } catch (e) { process.stderr.write(String(e)); }
+        " 2>/dev/null && log "config_fix" "success" "  [配置修复] ✅ 已清理 channels.qqbot 中不支持的字段" || \
+            log "config_fix" "fail" "  [配置修复] ⚠️  自动修复失败，请手动编辑 $CONFIG_FILE"
+
+        echo "  [配置修复] 如需恢复原配置: cp $_cfg_backup $CONFIG_FILE"
+    fi
+
+    ensure_valid_cwd
     _bak=""; [ -f "$CONFIG_FILE" ] && _bak="$(mktemp "${TMPDIR:-/tmp}/.qqbot-pre-doctor-XXXXXX")" && cp -a "$CONFIG_FILE" "$_bak"
     run_with_timeout 30 "doctor --fix" openclaw doctor --fix 2>&1 | head -20 | sed 's/^/    /' || true
 
@@ -828,7 +1124,7 @@ else
             else if (b.plugins?.entries?.['$PLUGIN_ID'] && !a.plugins?.entries?.['$PLUGIN_ID']) process.stdout.write('entries');
           } catch {}
         " 2>/dev/null || true)
-        [ -n "$_damaged" ] && echo "  ⚠️  doctor 误删 $_damaged，恢复中..." && cp -a "$_bak" "$CONFIG_FILE" && echo "  ✅ 已恢复"
+        [ -n "$_damaged" ] && log "doctor_fix" "warn" "  ⚠️  doctor 误删 $_damaged，恢复中..." "damaged=$_damaged" && cp -a "$_bak" "$CONFIG_FILE" && echo "  ✅ 已恢复"
         rm -f "$_bak" 2>/dev/null || true
     fi
 
@@ -836,10 +1132,10 @@ else
     ensure_valid_cwd
     RR=0; run_with_timeout 90 "gateway restart (重试)" openclaw gateway restart 2>&1 || RR=$?
     if [ $RR -eq 0 ]; then
-        echo "  ✅ 重启成功"
+        log "gateway_retry" "success" "  ✅ 重启成功"
         [ -n "$NEW_VERSION" ] && echo "" && echo "🎉 QQBot 插件已更新至 v${NEW_VERSION}，在线等候你的吩咐。"
     else
-        echo "  ❌ 仍无法重启，请手动排查:"
+        log "gateway_retry" "fail" "  ❌ 仍无法重启，请手动排查:" "exit_code=$RR"
         echo "    openclaw doctor && openclaw gateway restart"
     fi
 fi
