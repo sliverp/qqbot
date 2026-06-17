@@ -1590,9 +1590,9 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                   if (forwardToolDeliver && toolText) {
                     const textToForward = toolText.slice(0, 2000);
                     try {
-                      forwardedToolTexts.add(toolText);
                       log?.info(`[qqbot:${account.accountId}] Forwarding tool deliver text (${textToForward.length} chars) because forwardToolDeliver=true`);
                       await sendErrorMessage(textToForward);
+                      forwardedToolTexts.add(toolText);
                     } catch (err) {
                       log?.error(`[qqbot:${account.accountId}] Failed to forward tool deliver text: ${err}`);
                     }
