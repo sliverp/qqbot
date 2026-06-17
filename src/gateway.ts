@@ -1424,6 +1424,8 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
           let toolDeliverCount = 0; // tool deliver 计数
           const toolTexts: string[] = []; // 收集所有 tool deliver 文本
           const toolMediaUrls: string[] = []; // 收集所有 tool deliver 媒体 URL
+          const forwardedToolTexts = new Set<string>(); // 已实时转发的 tool 文本，避免 fallback 重复发送
+          const forwardToolDeliver = account.config?.forwardToolDeliver !== false; // 默认转发 verbose/tool 过程文本，可显式设 false 关闭
           let toolFallbackSent = false; // 兜底消息是否已发送（只发一次）
           const blockDeliveredMediaUrls = new Set<string>(); // block deliver 已处理的 mediaUrl，用于 tool 后到时去重
           const responseTimeout = 120000; // 120秒超时（2分钟，与 TTS/文件生成超时对齐）
@@ -1469,10 +1471,15 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
             }
             // 其次转发工具产出的文本
             if (toolTexts.length > 0) {
-              const text = toolTexts.slice(-3).join("\n---\n").slice(0, 2000);
-              log?.info(`[qqbot:${account.accountId}] Tool fallback: forwarding tool text (${text.length} chars)`);
-              await sendErrorMessage(text);
-              return;
+              const fallbackTexts = forwardToolDeliver
+                ? toolTexts.filter((text) => !forwardedToolTexts.has(text))
+                : toolTexts;
+              if (fallbackTexts.length > 0) {
+                const text = fallbackTexts.slice(-3).join("\n---\n").slice(0, 2000);
+                log?.info(`[qqbot:${account.accountId}] Tool fallback: forwarding tool text (${text.length} chars)`);
+                await sendErrorMessage(text);
+                return;
+              }
             }
             // 既无媒体也无文本，静默处理（仅日志记录）
             log?.info(`[qqbot:${account.accountId}] Tool fallback: no media or text collected from ${toolDeliverCount} tool deliver(s), silently dropping`);
@@ -1578,6 +1585,17 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                       }
                     }
                     return;
+                  }
+
+                  if (forwardToolDeliver && toolText) {
+                    const textToForward = toolText.slice(0, 2000);
+                    try {
+                      log?.info(`[qqbot:${account.accountId}] Forwarding tool deliver text (${textToForward.length} chars) because forwardToolDeliver=true`);
+                      await sendErrorMessage(textToForward);
+                      forwardedToolTexts.add(toolText);
+                    } catch (err) {
+                      log?.error(`[qqbot:${account.accountId}] Failed to forward tool deliver text: ${err}`);
+                    }
                   }
 
                   // 兜底已发送，不再续期

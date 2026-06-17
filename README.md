@@ -351,6 +351,25 @@ Open QQ, find your bot, and send a message!
 
 ## ⚙️ Advanced Configuration
 
+### Verbose / Tool Progress Forwarding
+
+The plugin forwards OpenClaw `verbose` / tool progress text to QQ by default, so users can see agent actions such as command execution, file reads/writes, and status checks during a run.
+
+If you need to hide these intermediate tool messages, set `forwardToolDeliver` to `false` under `channels.qqbot` or under a specific account config:
+
+```json
+{
+  "channels": {
+    "qqbot": {
+      "enabled": true,
+      "forwardToolDeliver": false
+    }
+  }
+}
+```
+
+When disabled, the plugin still keeps the original fallback behavior for tool-only runs and media forwarding.
+
 ### Multi-Account Setup (Multi-Bot)
 
 Run multiple QQ bots under a single OpenClaw instance.

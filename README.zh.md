@@ -348,6 +348,25 @@ openclaw gateway restart
 
 ## ⚙️ 进阶配置
 
+### Verbose / Tool 过程转发
+
+插件默认会把 OpenClaw 的 `verbose` / tool 过程文本转发到 QQ，便于在运行中看到 agent 正在执行命令、读取/写入文件、检查状态等操作。
+
+如果需要隐藏这些中间过程消息，可以在 `channels.qqbot` 或具体账号配置下显式设置 `forwardToolDeliver: false`：
+
+```json
+{
+  "channels": {
+    "qqbot": {
+      "enabled": true,
+      "forwardToolDeliver": false
+    }
+  }
+}
+```
+
+关闭后，插件仍保留原有的 tool-only fallback 和媒体转发行为。
+
 ### 多账户配置（Multi-Bot）
 
 支持在同一个 OpenClaw 实例下同时运行多个 QQ 机器人。
