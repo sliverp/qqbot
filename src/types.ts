@@ -149,6 +149,11 @@ export interface QQBotAccountConfig {
    * 注意：仅 C2C（私聊）支持流式消息 API。
    */
   streaming?: boolean;
+  /**
+   * 是否将 OpenClaw verbose/tool 过程文本转发到 QQ（默认 true）。
+   * 执行命令、读写文件等 tool deliver 文本会作为引用回复发送，便于观察 agent 操作过程；设为 false 可关闭。
+   */
+  forwardToolDeliver?: boolean;
 }
 
 /**
