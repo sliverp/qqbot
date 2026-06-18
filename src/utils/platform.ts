@@ -8,12 +8,61 @@
  * - ffmpeg / ffprobe 可执行文件路径
  * - silk-wasm 原生模块兼容性检测
  * - 启动诊断报告
+ * - OpenClaw 运行时状态目录集成
  */
 
 import * as os from "node:os";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import { execFile } from "node:child_process";
+
+// ============ OpenClaw 运行时状态目录 ============
+
+/**
+ * OpenClaw 运行时提供的状态目录（由 runtime 注入）
+ *
+ * 这个变量由 setOpenClawStateDir() 设置，确保插件使用正确的工作目录。
+ * 如果未设置，回退到环境变量 OPENCLAW_STATE_DIR，再回退到默认的 ~/.openclaw
+ */
+let _openclawStateDir: string | null = null;
+
+/**
+ * 设置 OpenClaw 状态目录（在插件初始化时由 gateway 调用）
+ *
+ * @param dir OpenClaw 运行时解析的状态目录路径
+ */
+export function setOpenClawStateDir(dir: string): void {
+  _openclawStateDir = dir;
+  // 仅在调试模式下输出日志，避免生产环境日志过多
+  if (process.env.DEBUG || process.env.QQBOT_VERBOSE) {
+    console.log(`[platform] OpenClaw state dir set to: ${dir}`);
+  }
+}
+
+/**
+ * 获取 OpenClaw 状态目录
+ *
+ * 优先级:
+ * 1. 运行时注入的目录（通过 setOpenClawStateDir 设置）
+ * 2. 环境变量 OPENCLAW_STATE_DIR
+ * 3. 默认 ~/.openclaw
+ *
+ * 这确保插件在开发/生产环境中使用正确的隔离目录
+ */
+export function getOpenClawStateDir(): string {
+  if (_openclawStateDir) {
+    return _openclawStateDir;
+  }
+
+  // 回退: 检查环境变量
+  const envStateDir = process.env.OPENCLAW_STATE_DIR?.trim();
+  if (envStateDir) {
+    return expandTilde(envStateDir);
+  }
+
+  // 最终回退: 默认目录
+  return path.join(getHomeDir(), ".openclaw");
+}
 
 // ============ 基础平台信息 ============
 
@@ -59,12 +108,14 @@ export function getHomeDir(): string {
 /**
  * 获取 .openclaw/qqbot 下的子目录路径，并自动创建
  * 替代各文件中分散的 path.join(HOME, ".openclaw", "qqbot", ...)
+ *
+ * 使用 getOpenClawStateDir() 获取状态目录，支持通过 OPENCLAW_STATE_DIR
+ * 环境变量自定义目录位置，实现多环境数据隔离。
  */
 export function getQQBotDataDir(...subPaths: string[]): string {
-  const dir = path.join(getHomeDir(), ".openclaw", "qqbot", ...subPaths);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
+  const stateDir = getOpenClawStateDir();
+  const dir = path.join(stateDir, "qqbot", ...subPaths);
+  fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
 
@@ -76,12 +127,13 @@ export function getQQBotDataDir(...subPaths: string[]): string {
  * 工具直接访问，不会触发 "Local media path is not under an allowed directory" 错误。
  *
  * 用于存放从 QQ 下载的图片、语音等需要被框架处理的媒体文件。
+ *
+ * 使用 getOpenClawStateDir() 获取状态目录，支持环境隔离。
  */
 export function getQQBotMediaDir(...subPaths: string[]): string {
-  const dir = path.join(getHomeDir(), ".openclaw", "media", "qqbot", ...subPaths);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
+  const stateDir = getOpenClawStateDir();
+  const dir = path.join(stateDir, "media", "qqbot", ...subPaths);
+  fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
 
