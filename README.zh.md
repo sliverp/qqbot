@@ -96,6 +96,8 @@
 
 AI 可直接发送图片，支持本地文件路径和网络 URL。格式：jpg/png/gif/webp/bmp。
 
+当 MiniMax 已配置为 OpenClaw 图片生成 provider 时，生图请求会通过内置 `image_generate` 能力执行，并沿用同一条 QQ 富媒体链路投递。QQBot 媒体 skill 会在运行时发现已配置的 MiniMax 模型，不写死模型或端点。
+
 <img width="360" src="docs/images/image-send.jpg" alt="发图片演示" />
 
 ### 🔊 语音发送
