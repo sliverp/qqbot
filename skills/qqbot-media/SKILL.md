@@ -1,6 +1,6 @@
 ---
 name: qqbot-media
-description: QQBot 富媒体收发与 MiniMax 图片生成能力。使用 <qqmedia> 标签，系统根据文件扩展名自动识别类型（图片/语音/视频/文件）。
+description: QQBot rich-media send/receive and MiniMax image generation. Use <qqmedia> tags; media types are detected from file extensions.
 metadata: {"openclaw":{"emoji":"📸","requires":{"config":["channels.qqbot"]}}}
 ---
 
@@ -24,15 +24,14 @@ metadata: {"openclaw":{"emoji":"📸","requires":{"config":["channels.qqbot"]}}}
 - 用户发来的**图片**自动下载到本地，路径在上下文【附件】中，可直接用 `<qqmedia>路径</qqmedia>` 回发
 - 用户发来的**语音**路径在上下文中；若有 STT 能力则优先转写
 
-## MiniMax 图片生成
+## MiniMax image generation
 
-当用户要求生成或编辑图片时，使用 OpenClaw 的 `image_generate` 工具，不要直接请求 provider HTTP API：
+When a user asks to generate or edit an image, use OpenClaw's `image_generate` tool instead of calling a provider HTTP API directly:
 
-1. 先用 `action=list` 查看当前可用的 provider 和模型。
-2. 选择列表中返回的 `minimax/*` 模型；不要猜测或编造模型 ID。
-3. 用 `action=generate` 传入用户的 prompt；编辑图片时，将上下文中的本地图片路径作为 `image` 传入。
-4. `image_generate` 已投递生成结果时不要重复发送；如果它只返回了未投递的本地绝对路径，再用 `<qqmedia>绝对路径</qqmedia>` 发给用户。
-5. 如果工具不可用或列表中没有 MiniMax provider，明确告知用户需要先完成 OpenClaw 的 MiniMax provider 配置；不要声称已生成图片。
+1. If `image_generate` is unavailable, tell the user that image generation is not enabled. Do not claim that an image was generated.
+2. Call `image_generate` with `action=list` and select a listed MiniMax model: `minimax/*` for API-key auth or `minimax-portal/*` for OAuth. Do not guess model IDs. If no MiniMax entry is listed, ask the user to configure a MiniMax image-generation provider.
+3. Call `action=generate` once with the user's prompt. For edits, pass the local image path from the current attachment context as `image`.
+4. Image generation runs asynchronously in chat sessions. Wait for the completion event and let its attachment use the normal QQ delivery path; do not call `image_generate` again or wrap the same result in `<qqmedia>`.
 
 ## 规则
 
