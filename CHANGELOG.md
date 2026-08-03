@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.0.0] - 2026-07-13
+
+### Added
+
+- **Modular Layered Architecture**: Refactored codebase into 12 sub-modules (adapter / dispatch / gateway / middleware / outbound / transport, etc.) for better maintainability and extensibility.
+- **Runtime Adapter**: New runtime adaptation layer supporting automatic multi-version OpenClaw SDK compatibility, including older OpenClaw versions.
+- **Outbound Pipeline**: Unified outbound delivery pipeline (TTS voice → media → text debounce) with streaming controller, reply rate limiter, and outbound text sanitization (strips thinking tags).
+- **Middleware Layer**: Three new middlewares — access control, attachment processing, and policy injection — with flexible composition support.
+- **New Slash Command**: `/bot-pairing` (QR code pairing).
+
+### Changed
+
+- Build switched to `tsup` pre-compilation (`dist/index.cjs`) for faster loading.
+- `qqbot_channel_api` tool renamed to `qqbot_platform_api`.
+- Dependency upgrades: `@tencent-connect/qqbot-connector` 1.2.0, added `@tencent-connect/qqbot-nodejs ^1.0.3`.
+
+### Improved
+
+- Runtime contract pre-check at startup to detect missing APIs early.
+- Unified logging system (`PluginLogger`) with prefix levels.
+- Added Markdown table chunking and text sanitization unit tests.
+
+---
+
 ## [1.7.2] - 2026-06-05
 
 ### Added

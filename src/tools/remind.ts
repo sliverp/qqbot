@@ -303,4 +303,6 @@ export function registerRemindTool(api: OpenClawPluginApi): void {
     },
     { name: "qqbot_remind" },
   );
+
 }
+

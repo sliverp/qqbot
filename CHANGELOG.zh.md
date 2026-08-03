@@ -4,6 +4,30 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/)。
 
+## [2.0.0] - 2026-07-13
+
+### 新增
+
+- **模块化分层架构**：代码重构为 12 个子模块（adapter / dispatch / gateway / middleware / outbound / transport 等），提升可维护性和扩展性。
+- **Runtime Adapter**：新增运行时适配层，支持多版本 OpenClaw SDK 自动适配，兼容低版本 OpenClaw。
+- **出站流水线**：统一出站分发管道（TTS 语音 → 媒体 → 文本 debounce），新增流式控制器、回复限速、出站文本清理（剥离 thinking 标签）。
+- **中间件层**：新增访问控制、附件处理、策略注入三个中间件，支持灵活编排。
+- **新增斜杠指令**：`/bot-pairing`（QR 码配对）。
+
+### 变更
+
+- 构建方式改为 `tsup` 预编译（`dist/index.cjs`），提升加载速度。
+- `qqbot_channel_api` 工具重命名为 `qqbot_platform_api`。
+- 依赖升级：`@tencent-connect/qqbot-connector` 1.2.0，新增 `@tencent-connect/qqbot-nodejs ^1.0.3`。
+
+### 改进
+
+- 启动时 runtime contract 预检，提前发现 API 缺失。
+- 统一日志体系（`PluginLogger`），支持前缀分级。
+- 新增 Markdown 表格分块和文本清理单元测试。
+
+---
+
 ## [1.7.2] - 2026-06-05
 
 ### 新增

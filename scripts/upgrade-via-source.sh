@@ -319,14 +319,14 @@ find "${TMPDIR:-/tmp}" -maxdepth 1 -name ".openclaw-qqbot-nm-bak-*" -exec rm -rf
 # 导致新增的模块（如 streaming.js）缺失。
 echo "  清空 dist/ 确保全量重新构建..."
 rm -rf "$PROJ_DIR/dist"
-if [ ! -f "$PROJ_DIR/dist/index.js" ]; then
+if [ ! -f "$PROJ_DIR/dist/index.cjs" ] && [ ! -f "$PROJ_DIR/dist/index.js" ]; then
     echo "  dist/ 不存在，先执行构建..."
     if [ ! -d "$PROJ_DIR/node_modules" ]; then
         npm install --prefix "$PROJ_DIR" 2>&1 || true
     fi
     npm run --prefix "$PROJ_DIR" build 2>&1 || true
-    if [ ! -f "$PROJ_DIR/dist/index.js" ]; then
-        echo "  ❌ 构建失败：dist/index.js 未生成"
+    if [ ! -f "$PROJ_DIR/dist/index.cjs" ] && [ ! -f "$PROJ_DIR/dist/index.js" ]; then
+        echo "  ❌ 构建失败：dist/index.cjs 未生成"
         echo "  请手动执行: cd $PROJ_DIR && npm install && npm run build"
         exit 1
     fi
@@ -360,7 +360,7 @@ if [ -n "$_NM_BACKUP" ] && [ -d "$_NM_BACKUP" ]; then
     mv "$_NM_BACKUP" "$PROJ_DIR/node_modules"
     echo "  已恢复源码目录 node_modules"
 fi
-if [ ! -f "$_INSTALL_DIR/dist/index.js" ] || [ ! -f "$_INSTALL_DIR/preload.cjs" ]; then
+if { [ ! -f "$_INSTALL_DIR/dist/index.cjs" ] && [ ! -f "$_INSTALL_DIR/dist/index.js" ]; } || [ ! -f "$_INSTALL_DIR/preload.cjs" ]; then
     echo ""
     echo "❌ 插件安装失败！"
     echo "========================================="

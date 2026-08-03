@@ -9,7 +9,7 @@
 
 **让你的 AI 助手接入 QQ — 私聊、群聊、富媒体，一个插件全搞定。**
 
-### 🚀 当前版本： `v1.7.1`
+### 🚀 当前版本： `v2.0.0`
 
 [![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![QQ Bot](https://img.shields.io/badge/QQ_Bot-API_v2-red)](https://bot.q.qq.com/wiki/)
@@ -239,9 +239,9 @@ AI 可直接发送视频，支持本地文件和公网 URL。
 
 `/bot-clear-storage` 列出对话产生的文件以及下载的资源目录里的文件，使用`/bot-clear-storage -- force`确定删除。
 
-#### `/bot-group-allways` — 群消息响应模式切换
+#### `/bot-group-always` — 群消息响应模式切换
 
-> **你**：`/bot-group-allways`
+> **你**：`/bot-group-always`
 >
 > **QQBot**：🤖 群自主发言状态：❌ 仅被 @ 时回复
 
@@ -249,9 +249,9 @@ AI 可直接发送视频，支持本地文件和公网 URL。
 
 | 子命令 | 说明 |
 |--------|------|
-| `/bot-group-allways on` | AI 自主判断何时发言（无需 @） |
-| `/bot-group-allways off` | 仅在被 @ 时回复 |
-| `/bot-group-allways`（无参数） | 查看当前设置 |
+| `/bot-group-always on` | AI 自主判断何时发言（无需 @） |
+| `/bot-group-always off` | 仅在被 @ 时回复 |
+| `/bot-group-always`（无参数） | 查看当前设置 |
 
 > ⚠️ 此指令修改账户级 `defaultRequireMention`，优先级低于具体群的 `groups.{groupId}.requireMention` 配置。
 
@@ -283,6 +283,22 @@ AI 可直接发送视频，支持本地文件和公网 URL。
 > 详细图文教程请参阅 [官方指南](https://cloud.tencent.com/developer/article/2626045)。
 
 ### 第二步 — 安装 / 升级插件
+
+**方式零：QR 码扫码登录（推荐，无需手动填写凭证）**
+
+v2.0.0 起支持 QR 码扫码绑定，无需手动复制 AppID/AppSecret：
+
+```bash
+# 安装插件
+openclaw plugins install @tencent-connect/openclaw-qqbot@latest
+
+# 扫码登录（二选一）
+openclaw onboard
+# 或
+openclaw channels login --channel qqbot
+```
+
+终端会显示一个二维码，用手机 QQ 扫描即可自动完成凭证写入和账户配置，整个过程无需手动输入任何密钥。
 
 **方式一：远程一键执行（最简单，无需 clone 仓库）**
 
@@ -527,7 +543,7 @@ openclaw message send --channel "qqbot" \
 >
 > - 工作群设为 `requireMention: true` — 避免 AI 对每条闲聊都插嘴
 > - 专属 AI 陪伴群设为 `requireMention: false` — 像真人一样自然参与对话
-> - 通过 `/bot-group-allways on|off` 指令可在运行时动态切换账户级默认值
+> - 通过 `/bot-group-always on|off` 指令可在运行时动态切换账户级默认值
 
 #### 其他群配置项
 
@@ -594,7 +610,7 @@ openclaw message send --channel "qqbot" \
 }
 ```
 
-> 也可通过 [**`/bot-group-allways`** 指令](#bot-group-allways--群消息响应模式切换) 在运行时动态切换账户级默认值，无需重启。
+> 也可通过 [**`/bot-group-always`** 指令](#bot-group-always--群消息响应模式切换) 在运行时动态切换账户级默认值，无需重启。
 
 ---
 

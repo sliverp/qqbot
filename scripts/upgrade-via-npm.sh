@@ -929,22 +929,53 @@ NEW_VERSION=""; [ -f "$TARGET_DIR/package.json" ] && NEW_VERSION="$(read_pkg_ver
 PREFLIGHT_OK=true
 [ -z "$NEW_VERSION" ] && echo "  ❌ 无法读取版本号" && PREFLIGHT_OK=false || echo "  ✅ 版本: $NEW_VERSION"
 
-ENTRY=""; for f in "dist/index.js" "index.js"; do [ -f "$TARGET_DIR/$f" ] && ENTRY="$f" && break; done
+ENTRY=""; for f in "dist/index.cjs" "dist/index.js" "index.js"; do [ -f "$TARGET_DIR/$f" ] && ENTRY="$f" && break; done
 [ -z "$ENTRY" ] && echo "  ❌ 缺少入口文件" && PREFLIGHT_OK=false || echo "  ✅ 入口: $ENTRY"
 
+# 检测构建模式：bundled (tsup dist/index.cjs) vs unbundled (dist/src/ 独立文件)
+# 优先看 dist/src/ 是否存在；存在 → unbundled；否则依赖入口文件大小判断
+IS_BUNDLED=false
 if [ -d "$TARGET_DIR/dist/src" ]; then
-    JS_COUNT=$(find "$TARGET_DIR/dist/src" -name "*.js" -type f 2>/dev/null | wc -l | tr -d ' ')
-    echo "  ✅ dist/src/ 含 ${JS_COUNT} 个 JS"
-    [ "$JS_COUNT" -lt 5 ] && echo "  ❌ JS 数量异常偏少" && PREFLIGHT_OK=false
-else
-    echo "  ❌ 缺少 dist/src/"; PREFLIGHT_OK=false
+    IS_BUNDLED=false
+elif [ -f "$TARGET_DIR/$ENTRY" ]; then
+    BUNDLE_SIZE=$(wc -c < "$TARGET_DIR/$ENTRY" 2>/dev/null || echo "0")
+    # bundled 输出通常 > 200KB，unbundled 入口 < 50KB
+    [ "$BUNDLE_SIZE" -gt 200000 ] 2>/dev/null && IS_BUNDLED=true
 fi
 
-MISS=""
-for m in "dist/src/gateway.js" "dist/src/api.js" "dist/src/admin-resolver.js"; do
-    [ ! -f "$TARGET_DIR/$m" ] && MISS="$MISS $m"
-done
-[ -n "$MISS" ] && echo "  ❌ 缺少:$MISS" && PREFLIGHT_OK=false || echo "  ✅ 关键模块完整"
+if [ "$IS_BUNDLED" = "true" ]; then
+    echo "  ✅ bundled 构建 (${BUNDLE_SIZE} bytes)"
+
+    # 内联验证：bundle 中 grep 关键导出
+    BUNDLE_MISS=""
+    for sig in "GatewayConnection" "dispatchToOpenClaw" "qqbotPlugin" "sendText" "sendMedia"; do
+        if ! grep -qF "$sig" "$TARGET_DIR/$ENTRY" 2>/dev/null; then
+            BUNDLE_MISS="$BUNDLE_MISS $sig"
+        fi
+    done
+    [ -n "$BUNDLE_MISS" ] && echo "  ❌ bundle 缺少签名:$BUNDLE_MISS" && PREFLIGHT_OK=false || echo "  ✅ 关键模块签名完整"
+
+    # ws 依赖应该被 tsup noExternal 打包进 bundle
+    if grep -qF "ws" "$TARGET_DIR/$ENTRY" 2>/dev/null; then
+        echo "  ✅ ws bundled"
+    else
+        echo "  ⚠️  ws 未打包"
+    fi
+else
+    if [ -d "$TARGET_DIR/dist/src" ]; then
+        JS_COUNT=$(find "$TARGET_DIR/dist/src" -name "*.js" -type f 2>/dev/null | wc -l | tr -d ' ')
+        echo "  ✅ dist/src/ 含 ${JS_COUNT} 个 JS"
+        [ "$JS_COUNT" -lt 5 ] && echo "  ❌ JS 数量异常偏少" && PREFLIGHT_OK=false
+    else
+        echo "  ❌ 缺少 dist/src/"; PREFLIGHT_OK=false
+    fi
+
+    MISS=""
+    for m in "dist/src/gateway.js" "dist/src/api.js" "dist/src/admin-resolver.js"; do
+        [ ! -f "$TARGET_DIR/$m" ] && MISS="$MISS $m"
+    done
+    [ -n "$MISS" ] && echo "  ❌ 缺少:$MISS" && PREFLIGHT_OK=false || echo "  ✅ 关键模块完整"
+fi
 
 if [ -d "$TARGET_DIR/node_modules" ]; then
     BOK=true
