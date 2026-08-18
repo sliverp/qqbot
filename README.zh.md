@@ -698,6 +698,6 @@ STT 支持两级配置，按优先级查找：
 
 <div align="center">
 
-[![Star History Chart](https://api.star-history.com/svg?repos=tencent-connect/openclaw-qqbot&type=date&legend=top-left)](https://www.star-history.com/#tencent-connect/openclaw-qqbot&type=date&legend=top-left)
+[![Star History Chart](https://star-history.dera.page/svg?repos=tencent-connect/openclaw-qqbot&type=date&legend=top-left)](https://star-history.dera.page/#tencent-connect/openclaw-qqbot&type=date&legend=top-left)
 
 </div>
