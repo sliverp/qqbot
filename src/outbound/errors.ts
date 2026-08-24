@@ -5,8 +5,8 @@
  */
 export function botNotRunningMessage(accountId: string): string {
   return (
-    `Bot "${accountId}" has no live connection in this process. ` +
-    `The WebSocket is owned by the OpenClaw gateway; send from that process ` +
-    `(or via \`openclaw gateway call send\`).`
+    `Bot "${accountId}" has no live QQ connection in this process. ` +
+    `The WebSocket is owned by the OpenClaw gateway — ensure the gateway is running ` +
+    `and qqbot account "${accountId}" is started (channels status / gateway logs).`
   );
 }
