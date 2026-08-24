@@ -8,6 +8,7 @@
 import os from 'node:os';
 import type { QQBot } from '@tencent-connect/qqbot-nodejs';
 import { getGateway } from './outbound/outbound-service.js';
+import { botNotRunningMessage } from './outbound/errors.js';
 import { getPackageVersion } from './utils/pkg-version.js';
 
 
@@ -45,7 +46,7 @@ export function buildUserAgent(suffix?: string): string {
 export function getBotForAccount(accountId: string): QQBot {
   const gw = getGateway(accountId);
   if (!gw) {
-    throw new Error(`[qqbot] Bot "${accountId}" not running — gateway not started`);
+    throw new Error(`[qqbot] ${botNotRunningMessage(accountId)}`);
   }
   return gw.bot;
 }

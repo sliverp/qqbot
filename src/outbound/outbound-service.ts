@@ -10,6 +10,7 @@ import type { QQBotGateway } from '../gateway/index.js';
 import type { ResolvedQQBotAccount } from '../types.js';
 import { parseTarget } from './target.js';
 import { ReplyLimiter } from './reply-limiter.js';
+import { botNotRunningMessage } from './errors.js';
 
 // ── Gateway + Limiter 注册表（生命周期由 channel.ts 管理）──
 
@@ -80,7 +81,7 @@ export async function sendText(params: {
 }): Promise<SendResult> {
   const accountId = params.account.accountId;
   const gw = gateways.get(accountId);
-  if (!gw) return { error: `Bot "${accountId}" not running` };
+  if (!gw) return { error: botNotRunningMessage(accountId) };
   try {
     const target = parseTarget(params.to);
     const msgId = resolveMsgId(params.replyToId, accountId);
@@ -100,7 +101,7 @@ export async function sendMedia(params: {
 }): Promise<SendResult> {
   const accountId = params.account.accountId;
   const gw = gateways.get(accountId);
-  if (!gw) return { error: `Bot "${accountId}" not running` };
+  if (!gw) return { error: botNotRunningMessage(accountId) };
   try {
     const target = parseTarget(params.to);
     const kind = params.mediaKind ?? 'image';
@@ -133,7 +134,7 @@ export async function sendVoice(params: {
 }): Promise<SendResult> {
   const accountId = params.account.accountId;
   const gw = gateways.get(accountId);
-  if (!gw) return { error: `Bot "${accountId}" not running` };
+  if (!gw) return { error: botNotRunningMessage(accountId) };
   try {
     const target = parseTarget(params.to);
     const msgId = resolveMsgId(params.replyToId, accountId);
@@ -151,7 +152,7 @@ export async function sendVideo(params: {
 }): Promise<SendResult> {
   const accountId = params.account.accountId;
   const gw = gateways.get(accountId);
-  if (!gw) return { error: `Bot "${accountId}" not running` };
+  if (!gw) return { error: botNotRunningMessage(accountId) };
   try {
     const target = parseTarget(params.to);
     const msgId = resolveMsgId(params.replyToId, accountId);

@@ -180,7 +180,7 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
 
   // ── 出站 ──
   outbound: {
-    deliveryMode: 'direct' as const,
+    deliveryMode: 'gateway' as const,
     sanitizeText: ({ text }: { text: string; payload: any }) => sanitizeQQBotText(text),
     chunker: (text, limit) => {
       const adapters = getAdapters(getQQBotRuntime());

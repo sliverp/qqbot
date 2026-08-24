@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Fixed
+
+- Declare `outbound.deliveryMode: "gateway"` so `openclaw message send` is routed through the OpenClaw gateway process that owns the live WebSocket. Fixes CLI `Bot "default" not running` when the gateway is connected ([#298](https://github.com/tencent-connect/openclaw-qqbot/issues/298)).
+- Clarify the in-process "bot not running" error so it no longer implies the gateway bot is down.
+
+---
+
 ## [2.0.3] - 2026-08-25
 
 ### Fixed

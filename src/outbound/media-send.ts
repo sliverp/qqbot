@@ -21,6 +21,7 @@ import { getAdapters } from '../adapter/resolve.js';
 import type { PluginLogger } from '../utils/plugin-logger.js';
 import { validateRemoteUrl } from '../utils/ssrf-guard.js';
 import { getGateway } from './outbound-service.js';
+import { botNotRunningMessage } from './errors.js';
 import { parseTarget } from './target.js';
 import {
   isLocalFilePath,
@@ -158,7 +159,7 @@ export async function sendMedia(params: SendMediaParams): Promise<SendMediaResul
   // 3. 获取 gateway
   const gw = getGateway(accountId);
   if (!gw) {
-    return { error: `Bot "${accountId}" not running` };
+    return { error: botNotRunningMessage(accountId) };
   }
 
   const target = parseTarget(params.to);

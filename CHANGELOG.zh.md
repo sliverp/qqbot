@@ -4,6 +4,15 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/)。
 
+## [Unreleased]
+
+### 修复
+
+- 将 `outbound.deliveryMode` 改为 `"gateway"`，使 `openclaw message send` 走持有活 WebSocket 的 OpenClaw gateway 进程，修复 gateway 已连接时 CLI 仍报 `Bot "default" not running`（[#298](https://github.com/tencent-connect/openclaw-qqbot/issues/298)）。
+- 澄清进程内「bot not running」文案，避免被理解成 gateway 里的机器人没在跑。
+
+---
+
 ## [2.0.3] - 2026-08-25
 
 ### 修复

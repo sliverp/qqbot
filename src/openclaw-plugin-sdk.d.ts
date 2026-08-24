@@ -311,7 +311,7 @@ declare module "openclaw/plugin-sdk" {
    * 频道插件 Outbound 接口
    */
   export interface ChannelPluginOutbound {
-    deliveryMode?: "direct" | "queued";
+    deliveryMode?: "direct" | "gateway" | "hybrid";
     chunker?: (text: string, limit: number) => string[];
     chunkerMode?: "markdown" | "plain";
     textChunkLimit?: number;
