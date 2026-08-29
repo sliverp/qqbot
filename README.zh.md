@@ -52,6 +52,31 @@
 
 > **说明：** 本插件仅作为**消息通道**，负责在 QQ 和 OpenClaw 之间传递消息。图片理解、语音转录、AI 画图等能力取决于你配置的 **AI 模型**以及在 OpenClaw 中安装的 **skill**，而非插件本身提供。
 
+### 搭配 TweetClaw 处理 X/Twitter 工作流
+
+QQ Bot 可以作为聊天入口，具体的来源工具交给其他 OpenClaw 插件处理。如果你的 QQ 群聊或私聊需要搜索推文、搜索推文回复、导出粉丝、查询用户、监控推文、接收 webhooks、运行抽奖，或在审批后发布推文和回复，可以把 [TweetClaw](https://github.com/Xquik-dev/tweetclaw) 安装在本通道插件旁边。
+
+```bash
+openclaw plugins install @xquik/tweetclaw
+openclaw plugins inspect tweetclaw --runtime
+```
+
+把 Xquik API key 保存在 TweetClaw/OpenClaw 插件配置中，不要写入 QQ Bot 配置。`tools.alsoAllow` 是 OpenClaw 的工具白名单配置，只会为需要访问 X/Twitter 自动化能力的 QQ 会话额外开放 `explore` 和 `tweetclaw` 工具，不会改变 QQ Bot 的命令审批策略。继续用 `/bot-approve` 保持白名单或严格模式，让写入类动作在执行前仍然请求确认。
+
+```json
+{
+  "tools": {
+    "alsoAllow": ["explore", "tweetclaw"]
+  }
+}
+```
+
+两个插件都运行后，可以在 QQ 中这样使用：
+
+- `@bot 用 TweetClaw 搜索 "OpenClaw plugins" 相关推文，总结值得关注的账号。`
+- `@bot 搜索这个活动链接的推文回复，列出我们需要回应的异议。`
+- `@bot 起草一条回复这条推文的内容，发布前先请求确认。`
+
 ### 💬 引用消息上下文
 
 用户在 QQ 中引用某条消息发送时，插件会自动解析被引用的消息内容并注入 AI 上下文，让模型清楚地知道"用户在回复哪条消息"，从而给出更准确的回复。支持文本及媒体消息（图片/语音/视频/文件），换设备后同样可用。
@@ -263,7 +288,7 @@ AI 可直接发送视频，支持本地文件和公网 URL。
 
 ### 第一步 — 在 QQ 开放平台创建机器人
 
-1. 前往 [QQ 开放平台](https://q.qq.com/)，用**手机 QQ 扫描页面二维码**即可注册/登录。若尚未注册，扫码后系统会自动完成注册并绑定你的 QQ 账号。
+1. 前往 [QQ 开放平台](https://q.qq.com/qqbot/openclaw/login.html)，用**手机 QQ 扫描页面二维码**即可注册/登录。若尚未注册，扫码后系统会自动完成注册并绑定你的 QQ 账号。
 
 <img width="3246" height="1886" alt="Clipboard_Screenshot_1772980354" src="https://github.com/user-attachments/assets/d8491859-57e8-47e4-9d39-b21138be54d0" />
 

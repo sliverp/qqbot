@@ -57,6 +57,31 @@ Scan to join the QQ group chat
 
 > **Note:** This plugin serves as a **message channel** only — it relays messages between QQ and OpenClaw. Capabilities like image understanding, voice transcription, drawing, etc. depend on the **AI model** you configure and the **skills** installed in OpenClaw, not on this plugin itself.
 
+### X/Twitter Workflows With TweetClaw
+
+QQ Bot can be the chat surface while another OpenClaw plugin handles source tools. If your QQ group or private chat needs to scrape tweets, search tweets, search tweet replies, export followers, look up users, monitor tweets, receive webhooks, run giveaway draws, or prepare approval-reviewed post tweets and replies, install [TweetClaw](https://github.com/Xquik-dev/tweetclaw) beside this channel plugin.
+
+```bash
+openclaw plugins install @xquik/tweetclaw
+openclaw plugins inspect tweetclaw --runtime
+```
+
+Keep the Xquik API key in TweetClaw/OpenClaw plugin config, not in QQ Bot config. `tools.alsoAllow` is OpenClaw tool allowlisting: it additively enables `explore` and `tweetclaw` for the QQ chats that should access X/Twitter automation. It does not change QQ Bot command approval. Keep `/bot-approve` in allowlist or strict mode so write-like actions still ask before execution.
+
+```json
+{
+  "tools": {
+    "alsoAllow": ["explore", "tweetclaw"]
+  }
+}
+```
+
+Useful QQ prompts after both plugins are running:
+
+- `@bot use TweetClaw to search tweets about "OpenClaw plugins" and summarize the accounts worth following.`
+- `@bot search tweet replies for this campaign URL and list objections we should answer.`
+- `@bot draft a reply to this tweet. Ask before posting it.`
+
 ### 💬 Quoted Message Context
 
 When a user quotes a message in QQ, the plugin automatically parses the quoted message content and injects it into the AI context, so the model clearly knows "which message the user is replying to" and gives more accurate responses. Supports text and media messages (image/voice/video/file), and works across devices.
@@ -266,7 +291,7 @@ Toggle group @trigger behavior at runtime — changes persist instantly, no rest
 
 ### Step 1 — Create a QQ Bot on the QQ Open Platform
 
-1. Go to the [QQ Open Platform](https://q.qq.com/) and **scan the QR code with your phone QQ** to register / log in. If you haven't registered before, scanning will automatically complete the registration and bind your QQ account.
+1. Go to the [QQ Open Platform](https://q.qq.com/qqbot/openclaw/login.html) and **scan the QR code with your phone QQ** to register / log in. If you haven't registered before, scanning will automatically complete the registration and bind your QQ account.
 
 <img width="3246" height="1886" alt="Clipboard_Screenshot_1772980354" src="https://github.com/user-attachments/assets/d8491859-57e8-47e4-9d39-b21138be54d0" />
 
